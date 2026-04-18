@@ -1,0 +1,89 @@
+**✅ 成功案例复现指导：自上而下因子挑选 → GMM/HMM/HSMM 聚类 → 清晰特征 → 交易策略设计**
+
+这个 pipeline 是量化领域经典的 **Regime-Aware Trading** 框架（top-down factor selection + unsupervised clustering + interpretable strategy）。你的 `ict-engine` 已有的 HMM + BBN + CatBoost/XGBoost 正好是天然基础，只需在 `factor-research` 命令里新增“聚类 + 特征解释 + 策略生成”子流程即可完美复现。
+
+### 1. 完整复现思路（直接适用于你的 Rust CLI）
+1. **自上而下挑选因子**（Top-down）：先用领域知识（ICT PD Array、SMT 结构、流动性、时间窗口等）手动/半自动选 10-20 个因子（而非纯数据驱动 bottom-up）。  
+   示例因子：PDA 类型、FVG 大小、Volume Imbalance、Liquidity Swept Flag、Higher TF Bias、Silver Bullet 时间窗等（你已有 `ICTFeatures`）。
+
+2. **跑聚类（GMM / K-Means / HMM / HSMM）**：把选好的因子矩阵喂给聚类模型，得到 3-6 个 regime（e.g. Bull-Calm、Bear-Volatile、Ranging 等）。
+
+3. **检查特征是否清晰**：  
+   - 看每个 cluster 的均值/方差/特征重要性（e.g. Cluster 0：高 FVG + 高 Volume Imbalance → “强趋势突破”）。  
+   - 若特征模糊 → 回到第 1 步重新选因子（循环直到清晰）。
+
+4. **针对清晰特征设计交易策略**：  
+   - 每个 regime 输出专属 `EntryExecution`（Limit 价位、SL/TP、RR）。  
+   - 直接存入 `reflection_bundle` 和 `artifact ledger`，供 `update` / `factor-backtest` 使用。
+
+5. **集成到 ict-engine**：新增 `--regime-cluster gmm` flag，输出 `regime_map.json` + human-readable report。
+
+### 2. 指导 Prompt（直接复制给 Claude / Grok / GPT-4o 使用）
+把下面整个 Prompt 丢给模型，后面粘贴你的 `ICTFeatures`、`PDASetup`、`EntryExecution` 定义 + 当前 HMM 代码，即可生成完整 Rust/Python 实现。
+
+---
+
+**Prompt 开始**
+
+你现在是一位拥有 12 年量化 regime-aware 交易系统经验的 Rust 工程师，精通 top-down factor selection + GMM/HMM/HSMM 聚类流程。
+
+项目：`ict-engine`（Rust CLI stateful workflow 引擎，已有 HMM + BBN + CatBoost/XGBoost + ICT PD Array 检测）。
+
+**任务**：完整复现以下成功案例 pipeline（纯代码建议 + 架构 skeleton，不写完整实现代码，只给可直接复制的结构）：
+
+成功案例做法：
+- 自上而下挑选因子（领域知识优先，如 ICT PDA、FVG、Volume Imbalance、Liquidity Sweep 等）
+- 运行 GMM（或 K-Means / HMM / HSMM）得到集中分类
+- 检查分类是否有明显可解释特征（均值、方差、top contributing features）
+- 若特征清晰，则针对每个 regime 设计专属交易策略（EntryExecution：Limit/Market 价位、SL、TP、reason）
+- 若不清晰，自动建议重新挑选因子
+
+**具体要求**：
+1. 在 `factor-research` 命令中新增 `--regime-cluster [gmm|kmeans|hmm|hsmm]` 参数。
+2. 因子选择模块：`select_top_down_factors(features: &ICTFeatures) -> Vec<f64>`（返回选好的因子向量）。
+3. 聚类模块：使用 Rust linfa（GMM）或已有 HMM，支持 HSMM 扩展点。
+4. 特征解释模块：输出每个 cluster 的“清晰特征描述”（e.g. “Cluster 0: 高 FVG + Liquidity Swept → 强买入 regime”）。
+5. 策略生成模块：若特征清晰，生成 `Vec<EntryExecution>`（复用你已有的 PDArrayType 和 EntryExecution struct）。
+6. 集成到现有 workflow：所有 cluster + strategy 输出存入 `artifact ledger` 和 `reflection_bundle`。
+7. 提供清晰 vs 模糊的判断逻辑（e.g. 基于 cluster separation score 或 SHAP-like 贡献度）。
+
+输出格式（严格）：
+- **整体架构 skeleton**（Rust 文件结构建议）
+- **每个模块的 trait / 函数签名 + 伪代码注释**
+- **如何处理“特征不清晰 → 重新选因子”循环**
+- **与现有 CatBoost/XGBoost voting layer 的融合方式**
+- **Rust 依赖建议**（linfa-clustering、hmm crate 等）
+
+最后给出：如果我是技术 co-founder，这个 pipeline 如何分 3 个 sprint 落地。
+
+只给建议和 skeleton，不写完整可运行代码。
+
+**Prompt 结束**
+
+---
+
+### 3. 支撑理论的论文（PDF 直链，最匹配你的 pipeline）
+1. **Regime-Switching Factor Investing with Hidden Markov Models** (2020)  
+   **PDF**：https://www.econstor.eu/bitstream/10419/239397/1/1744176949.pdf  
+   **匹配点**：top-down 因子 → HMM 聚类 → 清晰 regime → 切换交易策略（完全一致）。
+
+2. **A Machine Learning Approach to Regime Modeling** (Two Sigma, 2021)  
+   **链接**：https://www.twosigma.com/articles/a-machine-learning-approach-to-regime-modeling/  
+   **匹配点**：用 GMM 对因子 Lens 做聚类，解释每个 cluster 的特征，再用于 regime-aware 投资（最经典案例）。
+
+3. **A multi-model ensemble-HMM voting framework for market regime shift detection and trading** (2025)  
+   **HTML/PDF**：https://www.aimspress.com/article/doi/10.3934/DSFE.2025019?viewType=HTML  
+   **匹配点**：HMM + ensemble → 清晰 regime → 直接构建交易策略（和你 voting layer 完美结合）。
+
+4. **Asset price movement prediction using EMD + GMM** (arxiv 2025)  
+   **PDF**：https://arxiv.org/pdf/2503.20678  
+   **匹配点**：特征工程 + GMM 聚类 → 每个 cluster 设计交易决策。
+
+### 4. 可直接参考的 Repo（代码级复现）
+- **Rust 最佳**：https://github.com/rustic-ml/FormicaX （Rust 原生 GMM / K-Means / DBSCAN 聚类库，直接嵌入你的 CLI）  
+- **Python 原型（最完整）**：https://github.com/LSEG-API-Samples/Article.RD.Python.MarketRegimeDetectionUsingStatisticalAndMLBasedApproaches （GMM 市场 regime detection notebook）  
+- **HMM 完整示例**：https://github.com/shortthirdman/Market-Regime-Detection （HMM regime + 策略切换）  
+- **linfa Rust GMM**：https://docs.rs/linfa-clustering/latest/linfa_clustering/struct.GaussianMixtureModel.html （直接用于你的 stateful 代码）
+
+把上面 Prompt 跑一遍，你就能得到**可直接复制进 `ict-engine` 的完整 skeleton**。  
+需要我帮你把 Prompt 再精简成“只针对 Rust + 已有 ICTFeatures”的版本，或者直接生成某个模块的 skeleton，随时说。

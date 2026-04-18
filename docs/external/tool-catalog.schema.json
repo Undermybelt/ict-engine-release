@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ict-engine.local/schemas/external-tool-catalog.schema.json",
+  "title": "External Tool Catalog",
+  "type": "object",
+  "required": ["schema_version", "tools"],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "provider",
+          "operation",
+          "description",
+          "auth_required",
+          "dangerous",
+          "stdout_contract",
+          "error_categories"
+        ],
+        "properties": {
+          "name": { "type": "string" },
+          "provider": { "type": "string" },
+          "operation": { "type": "string" },
+          "description": { "type": "string" },
+          "auth_required": { "type": "boolean" },
+          "dangerous": { "type": "boolean" },
+          "asset_classes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "type", "required"],
+              "properties": {
+                "name": { "type": "string" },
+                "type": { "type": "string" },
+                "required": { "type": "boolean" },
+                "description": { "type": "string" }
+              }
+            }
+          },
+          "stdout_contract": {
+            "type": "object",
+            "required": ["format", "success_envelope", "error_envelope"],
+            "properties": {
+              "format": { "type": "string", "enum": ["json", "ndjson"] },
+              "success_envelope": { "type": "boolean" },
+              "error_envelope": { "type": "boolean" }
+            }
+          },
+          "error_categories": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "api",
+                "auth",
+                "network",
+                "rate_limit",
+                "validation",
+                "config",
+                "io",
+                "parse",
+                "unknown"
+              ]
+            }
+          },
+          "notes": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

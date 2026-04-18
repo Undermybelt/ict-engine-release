@@ -1,0 +1,9 @@
+/target
+/.DS_Store
+/state
+/state*/
+/state_autoresearch_cycle_validation.next-spec.json
+__pycache__/
+*.pyc
+tmp_cycle_seed_spec.json
+*.log
