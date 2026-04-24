@@ -1,10 +1,17 @@
+pub mod artifacts;
 pub mod backtest;
 pub mod belief;
+pub mod command_inputs;
 pub mod data_sources;
 pub mod decision_freshness;
 pub mod decision_utils;
+pub mod execution;
 pub mod factor_lifecycle;
+pub mod factor_pipeline_debug;
 pub mod multi_timeframe_inputs;
 pub mod orchestration;
+pub mod output_foundation;
 pub mod reflection;
+pub mod regime;
+pub mod release_closure;
 pub mod reporting;

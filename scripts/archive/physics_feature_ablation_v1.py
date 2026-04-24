@@ -25,14 +25,15 @@ import pathlib
 import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from path_defaults import resolve_binary_path, resolve_cleaned_data_root, resolve_repo_root
 
-REPO = pathlib.Path('/Users/thrill3r/projects-ict-engine/ict-engine')
+REPO = resolve_repo_root(__file__)
 STATE = REPO / 'state_feature_ablation_v1'
 STATE.mkdir(parents=True, exist_ok=True)
 RESULTS_FILE = STATE / 'results.json'
 
-DATA_BASE = '/Users/thrill3r/Downloads/Tomac/ict-cleaned-mtf'
-BIN = str(REPO / 'target' / 'release' / 'ict-engine')
+DATA_BASE = str(resolve_cleaned_data_root(__file__))
+BIN = str(resolve_binary_path(__file__))
 
 RUNS = [
     {

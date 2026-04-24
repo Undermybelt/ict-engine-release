@@ -74,6 +74,7 @@ impl SpotInstrumentKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OptionsChainSummary {
     pub symbol: String,
+    pub source: Option<String>,
     pub underlying_price: Option<f64>,
     pub call_open_interest: f64,
     pub put_open_interest: f64,
@@ -229,6 +230,7 @@ impl OpenAliceProvider {
 
         Ok(OptionsChainSummary {
             symbol: symbol.to_string(),
+            source: Some("openalice:/derivatives/options/chains".to_string()),
             underlying_price,
             call_open_interest,
             put_open_interest,
@@ -272,6 +274,9 @@ impl OpenAliceProvider {
         let mut short_bias: f64 = 0.0;
         let mut uncertainty_penalty: f64 = 0.0;
         let mut notes = Vec::new();
+        if let Some(source) = &options_summary.source {
+            notes.push(format!("options_data_source={source}"));
+        }
 
         match (spot_return, futures_return) {
             (Some(spot_ret), Some(fut_ret)) if spot_ret > 0.0 && fut_ret > 0.0 => {

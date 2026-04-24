@@ -4,9 +4,12 @@ import json
 from pathlib import Path
 from collections import Counter, defaultdict
 
-SRC = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/tomac_bbn_evidence_v2.csv')
-OUT_JSON = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/repo_bbn_trading_cpt_init_smoothed.json')
-OUT_SUMMARY = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/repo_bbn_trading_cpt_init_smoothed_summary.txt')
+from path_defaults import resolve_policy_training_dir
+
+BASE = resolve_policy_training_dir(__file__)
+SRC = BASE / 'tomac_bbn_evidence_v2.csv'
+OUT_JSON = BASE / 'repo_bbn_trading_cpt_init_smoothed.json'
+OUT_SUMMARY = BASE / 'repo_bbn_trading_cpt_init_smoothed_summary.txt'
 LAPLACE = 1.0
 
 MARKET_STATES = ['bull', 'bear', 'range']

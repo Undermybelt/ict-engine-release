@@ -143,6 +143,7 @@ impl OpenBBProvider {
 
                 OptionsChainSummary {
                     symbol: symbol_key,
+                    source: Some("openbb:yahoo_finance".to_string()),
                     underlying_price,
                     call_open_interest,
                     put_open_interest,
@@ -562,6 +563,7 @@ impl OpenBBProvider {
 
         Ok(OptionsChainSummary {
             symbol: symbol.to_string(),
+            source: Some(format!("openbb:volatility_proxy:{proxy_symbol}")),
             underlying_price: None,
             call_open_interest: 0.0,
             put_open_interest: 0.0,

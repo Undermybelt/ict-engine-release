@@ -11,9 +11,19 @@ mod packet_tests {
             segmentation_version: "v1".into(),
             active_regime_cluster: Some("trend_high_vol".into()),
             transition_hazard: Some(0.23),
+            duration_elapsed_bars: None,
+            duration_model: None,
+            duration_remaining_expected_bars: None,
             regime_membership: std::collections::BTreeMap::new(),
             feature_attribution: std::collections::BTreeMap::new(),
             evidence: vec!["phase1".into()],
+            wasserstein_label: None,
+            wasserstein_distance: None,
+            governor_confidence: None,
+            governor_entropy: None,
+            governor_min_hold_active: None,
+            timeframe_alignment: None,
+            timeframe_alignment_score: None,
         };
         packet
             .regime_membership
@@ -29,6 +39,41 @@ mod packet_tests {
             parsed.regime_membership.get("trend_high_vol").copied(),
             Some(0.81)
         );
+    }
+
+    #[test]
+    fn regime_segmentation_packet_round_trip_with_hybrid_fields() {
+        let mut packet = RegimeSegmentationPacket {
+            method: "hybrid_regime_first_pass_v1".into(),
+            segmentation_version: "v2".into(),
+            active_regime_cluster: Some("range_calm".into()),
+            transition_hazard: Some(0.18),
+            duration_elapsed_bars: Some(3),
+            duration_model: Some("negative_binomial".into()),
+            duration_remaining_expected_bars: Some(4.5),
+            regime_membership: std::collections::BTreeMap::new(),
+            feature_attribution: std::collections::BTreeMap::new(),
+            evidence: vec!["governor_commit=true".into()],
+            wasserstein_label: Some("range_calm".into()),
+            wasserstein_distance: Some(0.12),
+            governor_confidence: Some(0.74),
+            governor_entropy: Some(0.81),
+            governor_min_hold_active: Some(false),
+            timeframe_alignment: Some(true),
+            timeframe_alignment_score: Some(1.0),
+        };
+        packet.regime_membership.insert("range_calm".into(), 0.74);
+        packet
+            .regime_membership
+            .insert("trend_impulse".into(), 0.26);
+
+        let json = serde_json::to_string(&packet).expect("serialize segmentation packet");
+        let parsed: RegimeSegmentationPacket =
+            serde_json::from_str(&json).expect("deserialize segmentation packet");
+        assert_eq!(parsed.wasserstein_label.as_deref(), Some("range_calm"));
+        assert_eq!(parsed.timeframe_alignment, Some(true));
+        assert_eq!(parsed.governor_confidence, Some(0.74));
+        assert_eq!(parsed.duration_elapsed_bars, Some(3));
     }
 
     #[test]

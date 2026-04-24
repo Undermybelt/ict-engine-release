@@ -8,7 +8,9 @@ use crate::analyze::multi_timeframe_parse::{
 };
 use crate::bbn::adapters::belief_evidence_packet_from_pre_bayes_filter;
 use crate::bbn::engine::InferenceEngineRegistry;
+use crate::domain::regime::RegimeSegmentationPacket;
 use crate::factor_lab::{FactorDiagnostics, PairedMarketQualityReport};
+use crate::pda_sequence::PdaSequenceAnalysisArtifact;
 use crate::planner::ProbabilisticDecisionSnapshot;
 use crate::reporting::belief::BeliefReportPacket;
 use crate::state::{
@@ -232,14 +234,44 @@ pub fn build_canonical_belief_report(
     raw_liquidity_context_trace: Option<&FactorPipelineLabelSource>,
     raw_multi_timeframe_resonance_trace: Option<&FactorPipelineLabelSource>,
 ) -> Result<BeliefReportPacket> {
-    InferenceEngineRegistry::default().build_report(belief_evidence_packet_from_pre_bayes_filter(
+    build_canonical_belief_report_with_pda(
         symbol,
         market,
         filter,
         raw_market_regime_trace,
         raw_liquidity_context_trace,
         raw_multi_timeframe_resonance_trace,
-    ))
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_canonical_belief_report_with_pda(
+    symbol: &str,
+    market: Option<&str>,
+    filter: &PreBayesEvidenceFilter,
+    raw_market_regime_trace: Option<&FactorPipelineLabelSource>,
+    raw_liquidity_context_trace: Option<&FactorPipelineLabelSource>,
+    raw_multi_timeframe_resonance_trace: Option<&FactorPipelineLabelSource>,
+    pda_sequence_artifact: Option<&PdaSequenceAnalysisArtifact>,
+    hybrid_regime_packet: Option<&RegimeSegmentationPacket>,
+) -> Result<BeliefReportPacket> {
+    let mut packet = belief_evidence_packet_from_pre_bayes_filter(
+        symbol,
+        market,
+        filter,
+        raw_market_regime_trace,
+        raw_liquidity_context_trace,
+        raw_multi_timeframe_resonance_trace,
+    );
+    if let Some(artifact) = pda_sequence_artifact {
+        crate::bbn::adapters::apply_pda_sequence_artifact_to_belief_packet(&mut packet, artifact);
+    }
+    if let Some(hybrid) = hybrid_regime_packet {
+        crate::bbn::adapters::apply_hybrid_regime_packet_to_belief_packet(&mut packet, hybrid);
+    }
+    InferenceEngineRegistry::default().build_report(packet)
 }
 
 pub fn build_canonical_belief_snapshot(
@@ -247,7 +279,26 @@ pub fn build_canonical_belief_snapshot(
     market: Option<&str>,
     filter: &PreBayesEvidenceFilter,
 ) -> Result<BeliefReportPacket> {
-    build_canonical_belief_report(symbol, market, filter, None, None, None)
+    build_canonical_belief_snapshot_with_pda(symbol, market, filter, None, None)
+}
+
+pub fn build_canonical_belief_snapshot_with_pda(
+    symbol: &str,
+    market: Option<&str>,
+    filter: &PreBayesEvidenceFilter,
+    pda_sequence_artifact: Option<&PdaSequenceAnalysisArtifact>,
+    hybrid_regime_packet: Option<&RegimeSegmentationPacket>,
+) -> Result<BeliefReportPacket> {
+    build_canonical_belief_report_with_pda(
+        symbol,
+        market,
+        filter,
+        None,
+        None,
+        None,
+        pda_sequence_artifact,
+        hybrid_regime_packet,
+    )
 }
 
 pub fn market_category_from_symbol(symbol: &str) -> &'static str {
@@ -323,10 +374,15 @@ fn summarize_frame_physics_trace(frame_physics_trace: &BTreeMap<String, f64>) ->
     let pythagorean_fvg = frame_physics_trace
         .get("pythagorean_distance_to_last_fvg")
         .copied();
+    let pythagorean_overstretch = frame_physics_trace.get("pythagorean_overstretch").copied();
     let ou_target = frame_physics_trace
         .get("ou_mean_reversion_target_bps")
         .copied();
     let ou_pullback_bps = frame_physics_trace.get("ou_expected_pullback_bps").copied();
+    let ising_phase_risk = frame_physics_trace
+        .get("ising_phase_transition_risk")
+        .copied();
+    let ising_herding = frame_physics_trace.get("ising_herding_bias").copied();
 
     let mut notes = Vec::new();
     if let (Some(range_mid), Some(pullback)) = (range_mid, pullback) {
@@ -396,6 +452,13 @@ fn summarize_frame_physics_trace(frame_physics_trace: &BTreeMap<String, f64>) ->
             }
         }
     }
+    if let Some(overstretch) = pythagorean_overstretch {
+        if overstretch >= 0.5 {
+            notes.push(format!(
+                "pythagorean overstretch is elevated ({overstretch:.2}), so execution extension risk is rising"
+            ));
+        }
+    }
     if let (Some(target), Some(pullback_bps)) = (ou_target, ou_pullback_bps) {
         if target.abs() >= 500.0 && pullback_bps >= 100.0 {
             notes.push(format!(
@@ -403,6 +466,11 @@ fn summarize_frame_physics_trace(frame_physics_trace: &BTreeMap<String, f64>) ->
                 target, pullback_bps
             ));
         }
+    }
+    if let (Some(phase_risk), Some(herding)) = (ising_phase_risk, ising_herding) {
+        notes.push(format!(
+            "ising herding_bias={herding:.2} with phase_transition_risk={phase_risk:.2}"
+        ));
     }
 
     if notes.is_empty() {
@@ -573,6 +641,7 @@ fn max_probability_label(probabilities: &BTreeMap<String, f64>) -> (Option<Strin
         .unwrap_or((None, 0.0))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn raw_market_regime_trace(
     regime_label: &str,
     regime_evidence_label: &str,
@@ -612,6 +681,7 @@ pub fn raw_market_regime_trace(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn raw_liquidity_context_trace(
     liquidity_label: &str,
     liquidity_evidence_label: &str,

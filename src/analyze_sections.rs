@@ -2,6 +2,11 @@ use serde::Serialize;
 
 use crate::types::{Direction, RegimeProbs};
 
+pub use crate::analyze::multi_timeframe_section::AnalyzeMultiTimeframeSection;
+pub use crate::analyze::options_hedging_section::OptionsHedgingSection;
+pub use crate::analyze::smt_correlation_section::SmtCorrelationSection;
+pub use crate::analyze::technical_price_section::TechnicalPriceSection;
+
 #[derive(Debug, Serialize)]
 pub struct AnalyzeSections {
     pub price_action: PriceActionSection,
@@ -10,26 +15,6 @@ pub struct AnalyzeSections {
     pub regime_bayesian: RegimeBayesianSection,
     pub multi_timeframe: AnalyzeMultiTimeframeSection,
     pub trade_plan: TradePlanSection,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AnalyzeMultiTimeframeSection {
-    pub probability_role: String,
-    pub source_mode: String,
-    pub direction_bias: String,
-    pub alignment_score: Option<f64>,
-    pub entry_alignment_score: Option<f64>,
-    pub resonance_label: String,
-    pub intervals: Vec<AnalyzeMultiTimeframeInterval>,
-    pub summary: Vec<String>,
-    pub narrative: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AnalyzeMultiTimeframeInterval {
-    pub interval: String,
-    pub bars: usize,
-    pub source_detail: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -53,57 +38,17 @@ pub struct PriceActionSection {
 }
 
 #[derive(Debug, Serialize)]
-pub struct TechnicalPriceSection {
-    pub probability_role: String,
-    pub last_closed_bar_close: f64,
-    pub live_market_price: Option<f64>,
-    pub live_spot_price: Option<f64>,
-    pub ema20: Option<f64>,
-    pub ema50: Option<f64>,
-    pub rsi14: Option<f64>,
-    pub adx14: Option<f64>,
-    pub atr14: Option<f64>,
-    pub macd_line: Option<f64>,
-    pub macd_signal: Option<f64>,
-    pub macd_histogram: Option<f64>,
-    pub bollinger_upper: Option<f64>,
-    pub bollinger_middle: Option<f64>,
-    pub bollinger_lower: Option<f64>,
-    pub bollinger_squeeze: bool,
-    pub momentum_5_bar: Option<f64>,
-    pub options_hedging: OptionsHedgingSection,
-    pub narrative: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct OptionsHedgingSection {
-    pub probability_role: String,
-    pub options_symbol: Option<String>,
-    pub put_call_oi_ratio: Option<f64>,
-    pub put_call_volume_ratio: Option<f64>,
-    pub near_atm_implied_volatility: Option<f64>,
-    pub near_atm_delta: Option<f64>,
-    pub near_atm_gamma: Option<f64>,
-    pub near_atm_vega: Option<f64>,
-    pub call_gamma_oi: Option<f64>,
-    pub put_gamma_oi: Option<f64>,
-    pub gamma_skew: Option<f64>,
-    pub hedge_pressure_direction: Option<String>,
-    pub hedge_pressure_score: Option<f64>,
-    pub long_bias_contribution: Option<f64>,
-    pub short_bias_contribution: Option<f64>,
-    pub uncertainty_penalty_contribution: Option<f64>,
-    pub narrative: String,
-}
-
-pub use crate::analyze::smt_correlation_section::SmtCorrelationSection;
-
-#[derive(Debug, Serialize)]
 pub struct RegimeBayesianSection {
     pub hmm_state: String,
     pub regime_probs: RegimeProbs,
     pub regime_label: String,
     pub liquidity_label: String,
+    pub hybrid_regime_label: Option<String>,
+    pub hybrid_transition_hazard: Option<f64>,
+    pub hybrid_duration_model: Option<String>,
+    pub hybrid_remaining_expected_bars: Option<f64>,
+    pub pda_cluster_family: Option<String>,
+    pub pda_hybrid_alignment: Option<bool>,
     pub long_score: f64,
     pub short_score: f64,
     pub win_prob_long: f64,

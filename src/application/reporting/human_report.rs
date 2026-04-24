@@ -1,7 +1,35 @@
 use super::glossary_map::humanize_term;
 
+pub fn humanize_next_step_line(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "recommended_command_unavailable" {
+        return "(no next step)".to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("ask-user: ") {
+        let prompt = rest
+            .split(" | blocked until ")
+            .next()
+            .unwrap_or(rest)
+            .trim()
+            .trim_end_matches('.')
+            .to_string();
+        let deferred = rest
+            .split(" | then ")
+            .nth(1)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        return match deferred {
+            Some(cmd) => format!("Ask the user: {prompt}. Then run: {cmd}"),
+            None => format!("Ask the user: {prompt}"),
+        };
+    }
+    trimmed.to_string()
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct HumanAnalyzeReport {
+    pub execution_triage_line: Option<String>,
     pub summary_line: Option<String>,
     pub decision_line: Option<String>,
     pub action_line: Option<String>,
@@ -16,6 +44,9 @@ pub struct HumanAnalyzeReport {
 impl HumanAnalyzeReport {
     pub fn render(&self) -> String {
         let mut sections = Vec::new();
+        if let Some(triage_line) = &self.execution_triage_line {
+            sections.push(triage_line.clone());
+        }
         if let Some(summary_line) = &self.summary_line {
             sections.push(summary_line.clone());
         }
@@ -42,6 +73,7 @@ impl HumanAnalyzeReport {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_human_analyze_report(
     summary_line: Option<String>,
     decision_line: Option<String>,
@@ -54,6 +86,7 @@ pub fn build_human_analyze_report(
     trade_plan: impl Into<String>,
 ) -> HumanAnalyzeReport {
     HumanAnalyzeReport {
+        execution_triage_line: None,
         summary_line: summary_line.map(|line| humanize_term(&line)),
         decision_line: decision_line.map(|line| humanize_term(&line)),
         action_line: action_line.map(|line| humanize_term(&line)),
@@ -69,6 +102,31 @@ pub fn build_human_analyze_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn humanize_next_step_line_converts_ask_user_to_natural_language() {
+        let raw = "ask-user: Before using historical data for NQ again, ask the user which dataset to use. recorded_paths=/tmp/a.json, /tmp/b.json | blocked until user_selected_historical_data | then ict-engine factor-research --symbol NQ --data /tmp/a.json --state-dir state";
+        let rendered = humanize_next_step_line(raw);
+        assert!(!rendered.contains("ask-user:"));
+        assert!(rendered.contains("Ask the user"));
+        assert!(rendered.contains("Then run:"));
+        assert!(rendered.contains("ict-engine factor-research"));
+    }
+
+    #[test]
+    fn humanize_next_step_line_passes_through_ict_engine_command() {
+        let raw = "ict-engine analyze --symbol NQ --state-dir state";
+        assert_eq!(humanize_next_step_line(raw), raw);
+    }
+
+    #[test]
+    fn humanize_next_step_line_handles_empty_and_unavailable() {
+        assert_eq!(humanize_next_step_line(""), "(no next step)");
+        assert_eq!(
+            humanize_next_step_line("recommended_command_unavailable"),
+            "(no next step)"
+        );
+    }
 
     #[test]
     fn human_report_renders_five_sections() {

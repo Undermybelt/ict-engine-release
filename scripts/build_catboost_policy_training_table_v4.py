@@ -6,9 +6,12 @@ from pathlib import Path
 from datetime import datetime
 import pandas as pd
 
-BASE = Path('/Users/thrill3r/Downloads/Tomac')
-OUT = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/tomac_policy_training_v4.csv')
-REPORT = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/tomac_policy_training_v4_quality_report.txt')
+from path_defaults import resolve_policy_training_dir, resolve_tomac_root
+
+POLICY_DIR = resolve_policy_training_dir(__file__)
+BASE = resolve_tomac_root(__file__)
+OUT = POLICY_DIR / 'tomac_policy_training_v4.csv'
+REPORT = POLICY_DIR / 'tomac_policy_training_v4_quality_report.txt'
 
 FIELDNAMES = [
     'symbol',

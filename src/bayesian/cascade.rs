@@ -399,7 +399,9 @@ fn check_entry_trigger_bull(ltf: &[Candle], atr: &[f64]) -> bool {
         return false;
     }
     let curr = &ltf[ltf.len() - 1];
-    let atr_val = atr.last().unwrap();
+    let Some(atr_val) = atr.last() else {
+        return false;
+    };
 
     // Check for bullish pinbar
     curr.body() < curr.lower_wick() && curr.range() > atr_val * 1.5
@@ -410,7 +412,9 @@ fn check_entry_trigger_bear(ltf: &[Candle], atr: &[f64]) -> bool {
         return false;
     }
     let curr = &ltf[ltf.len() - 1];
-    let atr_val = atr.last().unwrap();
+    let Some(atr_val) = atr.last() else {
+        return false;
+    };
 
     // Check for bearish pinbar
     curr.body() < curr.upper_wick() && curr.range() > atr_val * 1.5

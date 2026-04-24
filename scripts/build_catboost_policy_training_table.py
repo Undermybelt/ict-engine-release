@@ -5,8 +5,10 @@ from functools import lru_cache
 from pathlib import Path
 import pandas as pd
 
-BASE = Path('/Users/thrill3r/Downloads/Tomac')
-OUT = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/tomac_policy_training_v3.csv')
+from path_defaults import resolve_policy_training_dir, resolve_tomac_root
+
+BASE = resolve_tomac_root(__file__)
+OUT = resolve_policy_training_dir(__file__) / 'tomac_policy_training_v3.csv'
 
 FIELDNAMES = [
     'symbol',

@@ -3,7 +3,9 @@ import csv
 from pathlib import Path
 from collections import Counter
 
-BASE = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training')
+from path_defaults import resolve_policy_training_dir
+
+BASE = resolve_policy_training_dir(__file__)
 LOGIC_MAP = BASE / 'tomac_entry_logic_map.csv'
 V4 = BASE / 'tomac_policy_training_v4.csv'
 V4_TRAINABLE = BASE / 'tomac_policy_training_v4_trainable.csv'

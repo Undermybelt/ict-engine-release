@@ -1074,11 +1074,13 @@ fn best_regime(regime_scores: &HashMap<String, f64>) -> Regime {
 fn infer_regime(candles: &[Candle], index: usize, _config: &BacktestConfig) -> Regime {
     let start = index.saturating_sub(20);
     let window = &candles[start..=index];
-    let total_move = if window.first().unwrap().close.abs() <= f64::EPSILON {
+    let (Some(first), Some(last)) = (window.first(), window.last()) else {
+        return Regime::ManipulationExpansion;
+    };
+    let total_move = if first.close.abs() <= f64::EPSILON {
         0.0
     } else {
-        (window.last().unwrap().close - window.first().unwrap().close)
-            / window.first().unwrap().close
+        (last.close - first.close) / first.close
     };
     let avg_range = window
         .iter()

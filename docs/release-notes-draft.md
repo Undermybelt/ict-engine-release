@@ -9,6 +9,10 @@ Status: draft
   - `scripts/search_local.py`
   - `scripts/search_cluster.py`
   - `scripts/evaluate_bottleneck.py`
+- Cleared source-repo oversized-history debt by removing generated `state*` artifacts from git history.
+- Deepened release-closure surfaces:
+  - richer `research-verdict` contamination evidence
+  - richer `evidence-quality-breakdown` policy / bridge / soft-evidence fields
 - Public wrappers now default to help-only mode instead of launching long runs.
 - Added non-executing backend summaries via `--backend-help`.
 - Added release-facing onboarding docs:
@@ -37,7 +41,7 @@ python3 scripts/evaluate_bottleneck.py
 ## Important caveats
 
 - Public wrappers are safer than the archived backends they call.
-- Archived backends still contain machine-local hard-coded paths and are not yet fully portable across machines.
+- Archived backends now use shared repo/data/bin path discovery instead of machine-local absolute paths.
 - Treat this release as an agent-first / researcher-preview surface, not a fully generalized packaged distribution.
 
 ## Best commands for current users
@@ -59,7 +63,6 @@ python3 scripts/evaluate_bottleneck.py
 
 ## Known limitations
 
-- archived backend portability not finished
 - public wrappers summarize backend behavior, but archived backends do not yet expose a stable full public argparse surface
 - some experiments still assume local cleaned-data layouts and repo-root-relative state conventions
 
@@ -83,4 +86,6 @@ Reason:
 - core CLI is real and usable
 - release-facing docs are now present
 - wrapper UX is much safer
-- backend portability cleanup is still pending
+- source repo history is pushable again
+- release-closure surfaces are deeper and less placeholder-like
+- backend path portability landed, but the public experiment surface is still preview-grade

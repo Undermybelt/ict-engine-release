@@ -1,0 +1,36 @@
+# Configuration for RAmmStein
+# Paper: https://arxiv.org/abs/2602.19419v2
+# All values cited to paper section or flagged as [UNSPECIFIED]
+
+ou_process:
+  estimation_window: 200        # [UNSPECIFIED] "rolling window" — size not stated
+  theta_clip_min: 0.0           # §IV-B — θ truncated to [0,1]
+  theta_clip_max: 1.0           # §IV-B — θ truncated to [0,1]
+  sigma_clip_max: 0.1           # §IV-B — σ̃ clipped at 0.1
+
+state_vector:
+  dim: 8                        # §IV-B — "8-dimensional state vector"
+  delta_p_clip: 0.1             # [UNSPECIFIED] — clip normalized deviation
+
+ddqn:
+  hidden_dim: 128               # §VI-A — "2-layer, 128 hidden"
+  n_layers: 2                   # §VI-A — "2-layer"
+  activation: "relu"            # [UNSPECIFIED] — not stated, using ReLU
+  lr: 1.0e-4                    # §VI-A — "learning rate 1e-4"
+  gamma: 0.99                   # §VI-A — "discount factor 0.99"
+  batch_size: 64                # §VI-A — "batch size 64"
+  buffer_size: 100000           # §VI-A — "replay buffer 100k"
+  target_update_freq: 1000      # §VI-A — "target net update every 1000 steps"
+  epsilon_start: 1.0            # §VI-A — "ε-greedy 1.0"
+  epsilon_end: 0.01             # §VI-A — "ε-greedy → 0.01"
+  epsilon_decay_steps: 50000    # §VI-A — "over 50k steps"
+
+environment:
+  n_actions: 2                  # §IV-C — {wait=0, rebalance=1}
+  rebalance_cost_bps: 30        # [UNSPECIFIED] — typical DEX cost
+  fee_rate_bps: 3               # [UNSPECIFIED] — typical Uniswap fee
+
+training:
+  n_episodes: 1000              # [UNSPECIFIED]
+  max_steps_per_episode: 500    # [UNSPECIFIED]
+  seed: 42

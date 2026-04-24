@@ -6,6 +6,7 @@ use crate::data::realtime::openalice::AuxiliaryMarketEvidence;
 pub struct OptionsHedgingSection {
     pub probability_role: String,
     pub options_symbol: Option<String>,
+    pub options_data_source: Option<String>,
     pub put_call_oi_ratio: Option<f64>,
     pub put_call_volume_ratio: Option<f64>,
     pub near_atm_implied_volatility: Option<f64>,
@@ -80,6 +81,12 @@ pub fn build_options_hedging_section(
     OptionsHedgingSection {
         probability_role: "options_hedging_is_auxiliary_evidence_not_trade_trigger".to_string(),
         options_symbol: auxiliary.map(|aux| aux.options_symbol.clone()),
+        options_data_source: auxiliary.and_then(|aux| {
+            aux.notes.iter().find_map(|note| {
+                note.strip_prefix("options_data_source=")
+                    .map(|value| value.to_string())
+            })
+        }),
         put_call_oi_ratio: auxiliary.and_then(|aux| aux.put_call_oi_ratio),
         put_call_volume_ratio: auxiliary.and_then(|aux| aux.put_call_volume_ratio),
         near_atm_implied_volatility: auxiliary.and_then(|aux| aux.near_atm_implied_volatility),

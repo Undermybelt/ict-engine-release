@@ -306,28 +306,28 @@ pub fn build_footprint_chain(
     }
 
     if cisds.iter().any(|cisd| cisd.direction == anchor_direction) {
-        let cisd = cisds
+        if let Some(cisd) = cisds
             .iter()
             .rev()
             .find(|cisd| cisd.direction == anchor_direction)
-            .unwrap();
-        nodes.push(FootprintNode {
-            kind: FootprintNodeKind::Cisd,
-            phase: if cisd.confirm_bar >= anchor_bar {
-                FootprintPhase::RightContext
-            } else {
-                FootprintPhase::LeftContext
-            },
-            direction: cisd.direction,
-            timeframe: "ltf".to_string(),
-            bars_from_anchor: cisd.confirm_bar as i32 - anchor_bar as i32,
-            price_reference: candles.get(cisd.confirm_bar).map(|candle| candle.close),
-            note: format!("cisd_strength={}", cisd.strength),
-        });
+        {
+            nodes.push(FootprintNode {
+                kind: FootprintNodeKind::Cisd,
+                phase: if cisd.confirm_bar >= anchor_bar {
+                    FootprintPhase::RightContext
+                } else {
+                    FootprintPhase::LeftContext
+                },
+                direction: cisd.direction,
+                timeframe: "ltf".to_string(),
+                bars_from_anchor: cisd.confirm_bar as i32 - anchor_bar as i32,
+                price_reference: candles.get(cisd.confirm_bar).map(|candle| candle.close),
+                note: format!("cisd_strength={}", cisd.strength),
+            });
+        }
     }
 
-    if !order_blocks.is_empty() {
-        let ob = order_blocks.last().unwrap();
+    if let Some(ob) = order_blocks.last() {
         nodes.push(FootprintNode {
             kind: FootprintNodeKind::OrderBlock,
             phase: if ob.bar_index >= anchor_bar {

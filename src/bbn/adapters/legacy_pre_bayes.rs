@@ -6,8 +6,10 @@ use crate::application::belief::{
 use crate::domain::belief::{BeliefEvidencePacket, BeliefNodePosteriorSnapshot};
 use crate::domain::regime::{
     JumpModelRegimeSummary, RegimeFeatures, RegimeGateDecision, RegimePosterior,
+    RegimeSegmentationPacket,
 };
 use crate::domain::strategy::StrategyRecommendation;
+use crate::pda_sequence::{summarize_pda_sequence_artifact, PdaSequenceAnalysisArtifact};
 use crate::state::{FactorPipelineLabelSource, PreBayesEvidenceFilter, PreBayesEvidencePacket};
 
 fn market_category(market: Option<&str>) -> Option<String> {
@@ -186,6 +188,123 @@ pub fn belief_evidence_packet_from_pre_bayes_packet(
         packet.timed_pda_summary.inversed_pda_count.to_string(),
     );
     belief
+}
+
+pub fn apply_pda_sequence_artifact_to_belief_packet(
+    packet: &mut BeliefEvidencePacket,
+    artifact: &PdaSequenceAnalysisArtifact,
+) {
+    let summary = summarize_pda_sequence_artifact(artifact);
+    packet
+        .timed_pda_summary
+        .insert("pda_sequence_method".to_string(), summary.method.clone());
+    packet.timed_pda_summary.insert(
+        "pda_sequence_valid_sessions".to_string(),
+        summary.valid_sessions.to_string(),
+    );
+    packet.timed_pda_summary.insert(
+        "pda_sequence_consistency_ratio".to_string(),
+        format!("{:.4}", summary.consistency_ratio),
+    );
+    packet.timed_pda_summary.insert(
+        "pda_sequence_ensemble_mean_confidence".to_string(),
+        format!("{:.4}", summary.ensemble_mean_confidence),
+    );
+    if let Some(label) = summary.primary_cluster_label.clone() {
+        packet
+            .timed_pda_summary
+            .insert("pda_sequence_primary_cluster".to_string(), label.clone());
+        packet
+            .factor_evidence
+            .push(format!("pda_sequence_primary_cluster={label}"));
+    }
+    if let Some(confidence) = summary.primary_cluster_confidence {
+        packet.factor_evidence.push(format!(
+            "pda_sequence_primary_cluster_confidence={confidence:.4}"
+        ));
+    }
+    packet.factor_evidence.push(format!(
+        "pda_sequence_consistency_ratio={:.4}",
+        summary.consistency_ratio
+    ));
+    packet.factor_evidence.push(format!(
+        "pda_sequence_ensemble_mean_confidence={:.4}",
+        summary.ensemble_mean_confidence
+    ));
+
+    let latest_packet = artifact.ensemble_packets.last();
+    let regime_membership = latest_packet
+        .map(|packet| {
+            packet
+                .vote_distribution
+                .iter()
+                .enumerate()
+                .map(|(idx, votes)| {
+                    (
+                        format!("cluster_{idx}"),
+                        *votes as f64 / packet.votes.len() as f64,
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    packet.regime_features.segmentation_context = Some(RegimeSegmentationPacket {
+        method: summary.method,
+        segmentation_version: format!("kmer_k={}", summary.kmer_k),
+        active_regime_cluster: summary.primary_cluster_label,
+        transition_hazard: summary
+            .primary_cluster_confidence
+            .map(|c| (1.0 - c).clamp(0.0, 1.0)),
+        duration_elapsed_bars: None,
+        duration_model: None,
+        duration_remaining_expected_bars: None,
+        regime_membership,
+        feature_attribution: BTreeMap::from([
+            ("consistency_ratio".to_string(), summary.consistency_ratio),
+            (
+                "ensemble_mean_confidence".to_string(),
+                summary.ensemble_mean_confidence,
+            ),
+        ]),
+        evidence: vec![
+            format!("valid_sessions={}", summary.valid_sessions),
+            format!("kmer_k={}", summary.kmer_k),
+        ],
+        wasserstein_label: None,
+        wasserstein_distance: None,
+        governor_confidence: None,
+        governor_entropy: None,
+        governor_min_hold_active: None,
+        timeframe_alignment: None,
+        timeframe_alignment_score: None,
+    });
+}
+
+pub fn apply_hybrid_regime_packet_to_belief_packet(
+    packet: &mut BeliefEvidencePacket,
+    hybrid: &RegimeSegmentationPacket,
+) {
+    let merged = if let Some(existing) = packet.regime_features.segmentation_context.clone() {
+        let mut packet_out = hybrid.clone();
+        packet_out.evidence.extend(existing.evidence);
+        for (key, value) in existing.regime_membership {
+            packet_out.regime_membership.entry(key).or_insert(value);
+        }
+        for (key, value) in existing.feature_attribution {
+            packet_out.feature_attribution.entry(key).or_insert(value);
+        }
+        if packet_out.active_regime_cluster.is_none() {
+            packet_out.active_regime_cluster = existing.active_regime_cluster;
+        }
+        if packet_out.transition_hazard.is_none() {
+            packet_out.transition_hazard = existing.transition_hazard;
+        }
+        packet_out
+    } else {
+        hybrid.clone()
+    };
+    packet.regime_features.segmentation_context = Some(merged);
 }
 
 pub fn regime_posterior_from_pre_bayes_filter(filter: &PreBayesEvidenceFilter) -> RegimePosterior {
@@ -524,5 +643,123 @@ mod tests {
             .any(|line| line == "market_family=energy"));
         assert_eq!(gate.market_family.as_deref(), Some("energy"));
         assert!(gate.selected_subgraph.starts_with("energy_"));
+    }
+
+    #[test]
+    fn belief_packet_can_include_pda_sequence_artifact_summary() {
+        let mut packet = BeliefEvidencePacket::default();
+        let artifact = PdaSequenceAnalysisArtifact {
+            artifact_id: "pda-sequence-NQ-1".to_string(),
+            generated_at: chrono::Utc::now(),
+            symbol: "NQ".to_string(),
+            method: "pda_sequence_analysis_v2".to_string(),
+            k: 2,
+            n_states: 3,
+            kmer_k: 2,
+            total_sessions: 8,
+            valid_sessions: 8,
+            silhouette_score: 0.5,
+            consistency_ratio: 0.75,
+            ensemble_mean_confidence: 0.83,
+            dtw_packets: Vec::new(),
+            hmm_classifications: Vec::new(),
+            fcgr_labels: vec![0, 1],
+            ensemble_packets: vec![crate::pda_sequence::PdaClusteringPacket {
+                method: "pda_ensemble_majority_v1".to_string(),
+                primary_cluster: 1,
+                confidence: 1.0,
+                vote_distribution: vec![0, 3],
+                votes: [1, 1, 1],
+                voter_names: ["dtw".to_string(), "hmm".to_string(), "fcgr".to_string()],
+            }],
+            provenance: crate::state::RunProvenance::default(),
+        };
+
+        apply_pda_sequence_artifact_to_belief_packet(&mut packet, &artifact);
+        assert_eq!(
+            packet
+                .timed_pda_summary
+                .get("pda_sequence_primary_cluster")
+                .map(String::as_str),
+            Some("cluster_1")
+        );
+        assert!(packet
+            .factor_evidence
+            .iter()
+            .any(|line| line.starts_with("pda_sequence_consistency_ratio=")));
+        assert_eq!(
+            packet
+                .regime_features
+                .segmentation_context
+                .as_ref()
+                .and_then(|ctx| ctx.active_regime_cluster.as_deref()),
+            Some("cluster_1")
+        );
+    }
+
+    #[test]
+    fn belief_packet_can_merge_hybrid_regime_packet_over_pda_context() {
+        let mut packet = BeliefEvidencePacket::default();
+        let artifact = PdaSequenceAnalysisArtifact {
+            artifact_id: "pda-sequence-NQ-1".to_string(),
+            generated_at: chrono::Utc::now(),
+            symbol: "NQ".to_string(),
+            method: "pda_sequence_analysis_v2".to_string(),
+            k: 2,
+            n_states: 3,
+            kmer_k: 2,
+            total_sessions: 8,
+            valid_sessions: 8,
+            silhouette_score: 0.5,
+            consistency_ratio: 0.75,
+            ensemble_mean_confidence: 0.83,
+            dtw_packets: Vec::new(),
+            hmm_classifications: Vec::new(),
+            fcgr_labels: vec![0, 1],
+            ensemble_packets: vec![crate::pda_sequence::PdaClusteringPacket {
+                method: "pda_ensemble_majority_v1".to_string(),
+                primary_cluster: 1,
+                confidence: 1.0,
+                vote_distribution: vec![0, 3],
+                votes: [1, 1, 1],
+                voter_names: ["dtw".to_string(), "hmm".to_string(), "fcgr".to_string()],
+            }],
+            provenance: crate::state::RunProvenance::default(),
+        };
+        apply_pda_sequence_artifact_to_belief_packet(&mut packet, &artifact);
+        apply_hybrid_regime_packet_to_belief_packet(
+            &mut packet,
+            &RegimeSegmentationPacket {
+                method: "hybrid_regime_first_pass_v1".to_string(),
+                segmentation_version: "v2".to_string(),
+                active_regime_cluster: Some("trend_impulse".to_string()),
+                transition_hazard: Some(0.30),
+                duration_elapsed_bars: Some(3),
+                duration_model: Some("negative_binomial".to_string()),
+                duration_remaining_expected_bars: Some(4.0),
+                regime_membership: BTreeMap::from([("trend_impulse".to_string(), 0.7)]),
+                feature_attribution: BTreeMap::from([("trend_distance".to_string(), 0.8)]),
+                evidence: vec!["pda_hybrid_alignment=false".to_string()],
+                wasserstein_label: Some("trend_impulse".to_string()),
+                wasserstein_distance: Some(0.12),
+                governor_confidence: Some(0.64),
+                governor_entropy: Some(0.90),
+                governor_min_hold_active: Some(false),
+                timeframe_alignment: Some(true),
+                timeframe_alignment_score: Some(1.0),
+            },
+        );
+        let segmentation = packet.regime_features.segmentation_context.unwrap();
+        assert_eq!(
+            segmentation.active_regime_cluster.as_deref(),
+            Some("trend_impulse")
+        );
+        assert!(segmentation
+            .evidence
+            .iter()
+            .any(|line| line == "pda_hybrid_alignment=false"));
+        assert!(segmentation
+            .feature_attribution
+            .contains_key("ensemble_mean_confidence"));
     }
 }

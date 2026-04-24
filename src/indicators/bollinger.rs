@@ -47,27 +47,22 @@ pub fn latest_bollinger(
     num_std: f64,
 ) -> Option<(f64, f64, f64)> {
     let bands = compute_bollinger(candles, period, num_std);
-    if bands.upper.is_empty() {
-        None
-    } else {
-        Some((
-            *bands.upper.last().unwrap(),
-            *bands.middle.last().unwrap(),
-            *bands.lower.last().unwrap(),
-        ))
-    }
+    Some((
+        *bands.upper.last()?,
+        *bands.middle.last()?,
+        *bands.lower.last()?,
+    ))
 }
 
 /// Check if price is squeezing (bands are narrow)
 pub fn is_squeeze(candles: &[Candle], period: usize, num_std: f64, threshold: f64) -> bool {
     let bands = compute_bollinger(candles, period, num_std);
-    if bands.upper.is_empty() {
+    let (Some(last_upper), Some(last_lower), Some(last_middle)) =
+        (bands.upper.last(), bands.lower.last(), bands.middle.last())
+    else {
         return false;
-    }
-
-    let last_upper = bands.upper.last().unwrap();
-    let last_lower = bands.lower.last().unwrap();
-    let band_width = (last_upper - last_lower) / bands.middle.last().unwrap();
+    };
+    let band_width = (last_upper - last_lower) / last_middle;
 
     band_width < threshold
 }

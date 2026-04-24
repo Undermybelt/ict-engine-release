@@ -1,7 +1,7 @@
 use crate::state::{
     DatasetComparability, DecisionThresholds, FactorFamilyDecision, FactorFamilyOutcome,
-    PersistedFactorRanking, ProbabilityDiff, PromotionDecision, RankingDiffItem,
-    RollbackRecommendation,
+    FactorIterationPrompt, PersistedFactorRanking, PreBayesEvidenceFilter, ProbabilityDiff,
+    PromotionDecision, RankingDiffItem, RollbackRecommendation,
 };
 use anyhow::{bail, Result};
 
@@ -49,6 +49,173 @@ pub fn normalize_distribution(values: &mut [f64]) {
     for value in values {
         *value /= sum;
     }
+}
+
+pub fn pre_bayes_gate_rank(status: &str) -> u8 {
+    match status {
+        "pass_hard" => 2,
+        "pass_neutralized" => 1,
+        "observe_only" => 0,
+        _ => 0,
+    }
+}
+
+pub fn pre_bayes_gate_is_hard_pass(status: &str) -> bool {
+    status == "pass_hard"
+}
+
+pub fn pre_bayes_gate_regressed(previous: &str, current: &str) -> bool {
+    pre_bayes_gate_rank(current) < pre_bayes_gate_rank(previous)
+}
+
+pub fn build_analyze_decision_hint(
+    dataset_comparability: &DatasetComparability,
+    factor_iteration_queue: &[FactorIterationPrompt],
+    factor_diagnostics: &crate::factor_lab::FactorDiagnostics,
+) -> String {
+    if !dataset_comparability.comparable {
+        return format!(
+            "Observe only: current run not comparable to last analyze ({}).",
+            dataset_comparability.reason
+        );
+    }
+    if factor_diagnostics.uncertainty >= 0.45 {
+        return "Wait: evidence uncertainty remains high; defer action until structure clears."
+            .to_string();
+    }
+    if let Some(next) = factor_iteration_queue.first() {
+        return format!(
+            "Comparable run, but factor backlog remains: {} {} first.",
+            next.iteration_action, next.factor_name
+        );
+    }
+    "Comparable run and factor stack stable; no immediate factor action required.".to_string()
+}
+
+pub fn append_pda_sequence_hint(
+    base_hint: &str,
+    pda_sequence_summary: Option<&crate::pda_sequence::PdaSequenceArtifactSummary>,
+    pre_bayes_evidence_filter: &PreBayesEvidenceFilter,
+) -> String {
+    let suffix = match pda_sequence_summary {
+        Some(summary)
+            if pre_bayes_conflict(filter_has(
+                pre_bayes_evidence_filter,
+                "pda_sequence_sparse_sessions",
+            )) =>
+        {
+            format!(
+                "|pda_sequence=sparse_sessions:{}:{:.3}:{:.3}",
+                summary
+                    .primary_cluster_label
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                summary.primary_cluster_confidence.unwrap_or_default(),
+                summary.consistency_ratio,
+            )
+        }
+        Some(summary)
+            if pre_bayes_conflict(filter_has(
+                pre_bayes_evidence_filter,
+                "pda_sequence_low_consistency",
+            )) =>
+        {
+            format!(
+                "|pda_sequence=low_consistency:{}:{:.3}:{:.3}",
+                summary
+                    .primary_cluster_label
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                summary.primary_cluster_confidence.unwrap_or_default(),
+                summary.consistency_ratio,
+            )
+        }
+        Some(summary)
+            if pre_bayes_conflict(filter_has(
+                pre_bayes_evidence_filter,
+                "pda_sequence_low_confidence",
+            )) =>
+        {
+            format!(
+                "|pda_sequence=low_confidence:{}:{:.3}:{:.3}",
+                summary
+                    .primary_cluster_label
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                summary.primary_cluster_confidence.unwrap_or_default(),
+                summary.consistency_ratio,
+            )
+        }
+        Some(summary)
+            if pre_bayes_conflict(filter_has(
+                pre_bayes_evidence_filter,
+                "pda_regime_family_disagreement",
+            )) =>
+        {
+            format!(
+                "|pda_sequence=regime_disagreement:{}:{}:{:.3}",
+                summary
+                    .primary_cluster_label
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                summary
+                    .primary_cluster_family
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                summary.primary_cluster_confidence.unwrap_or_default(),
+            )
+        }
+        Some(summary)
+            if pre_bayes_evidence_filter
+                .conflict_flags
+                .iter()
+                .any(|flag| flag == "pda_sequence_cluster_weak") =>
+        {
+            format!(
+                "|pda_sequence=weak_cluster:{}:{:.3}:{:.3}",
+                summary
+                    .primary_cluster_label
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                summary.primary_cluster_confidence.unwrap_or_default(),
+                summary.consistency_ratio,
+            )
+        }
+        Some(summary)
+            if summary.primary_cluster_confidence.unwrap_or_default() >= 0.80
+                && summary.consistency_ratio >= 0.70
+                && summary.ensemble_mean_confidence >= 0.70 =>
+        {
+            format!(
+                "|pda_sequence=reinforcing_cluster:{}:{:.3}:{:.3}",
+                summary
+                    .primary_cluster_label
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                summary.primary_cluster_confidence.unwrap_or_default(),
+                summary.consistency_ratio,
+            )
+        }
+        Some(summary) => format!(
+            "|pda_sequence=informational_cluster:{}:{:.3}:{:.3}",
+            summary
+                .primary_cluster_label
+                .as_deref()
+                .unwrap_or("unknown"),
+            summary.primary_cluster_confidence.unwrap_or_default(),
+            summary.consistency_ratio,
+        ),
+        None => "|pda_sequence=unavailable".to_string(),
+    };
+    format!("{base_hint}{suffix}")
+}
+
+fn filter_has(filter: &PreBayesEvidenceFilter, flag: &str) -> bool {
+    filter.conflict_flags.iter().any(|item| item == flag)
+}
+
+fn pre_bayes_conflict(value: bool) -> bool {
+    value
 }
 
 pub fn derive_family_outcomes(

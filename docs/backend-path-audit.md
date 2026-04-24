@@ -2,11 +2,18 @@
 
 Purpose: document release-blocking hard-coded local paths still present in archived or auxiliary Python backends.
 
+Status note (2026-04-24)
+
+The highest-impact script path hard-coding called out in this audit has now been removed from the active `scripts/` tree.
+Shared path discovery now lives in `scripts/path_defaults.py`, and the previously named archived backends no longer embed machine-local `/Users/...` repo/data/bin paths.
+
+This file should now be read as historical audit context plus a follow-up sweep list for any future script additions, not as the current state of the named backends below.
+
 ## Summary
 
 Current public wrappers are release-safer than the archived backends they call.
 The wrappers now default to help-only mode and expose non-executing backend summaries.
-However, many archived or auxiliary scripts still embed machine-local absolute paths such as:
+Historically, many archived or auxiliary scripts embedded machine-local absolute paths such as:
 - `/Users/thrill3r/projects-ict-engine/ict-engine`
 - `/Users/thrill3r/Downloads/Tomac/ict-cleaned-mtf`
 - repo-local `state/*` outputs anchored from hard-coded absolute repo roots
@@ -47,19 +54,17 @@ Examples observed during scan:
 
 Current release posture should be stated honestly:
 - wrapper UX: preview-release ready
-- archived backend portability: not yet portable across machines without path cleanup
+- archived backend path discovery for the named backends above: fixed
+- public script family remains experiment-grade rather than a stable packaged interface
 
 ## Recommended next cleanup order
 
-1. Public-wrapper backends first:
-   - `factor_local_search_v2d.py`
-   - `factor_cluster_jump_v2.py`
-   - `pre_bayes_policy_tuning.py`
-2. Shared helper extraction for:
+1. Keep new scripts on the shared helper path:
    - repo root discovery
    - cleaned data root selection
    - binary resolution
-3. Then secondary archived scripts and training-table builders.
+2. Sweep any future archived additions for new machine-local literals before release.
+3. If public wrappers gain richer argparse surfaces, route those through the same helper rather than duplicating path logic.
 
 ## Preferred fix pattern
 

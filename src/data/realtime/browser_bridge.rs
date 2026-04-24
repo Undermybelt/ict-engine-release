@@ -221,7 +221,10 @@ pub fn yahoo_finance_options_summary(symbol: &str) -> Result<OptionsChainSummary
         ),
     )?;
 
-    serde_json::from_value(value).context("failed to decode browser options summary")
+    let mut summary: OptionsChainSummary =
+        serde_json::from_value(value).context("failed to decode browser options summary")?;
+    summary.source = Some("browser_bridge:yahoo_finance".to_string());
+    Ok(summary)
 }
 
 fn daemon_client() -> Result<Client> {

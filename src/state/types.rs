@@ -14,6 +14,8 @@ pub const FACTOR_AUTORESEARCH_SESSIONS_FILE: &str = "factor_autoresearch_session
 pub const FACTOR_AUTORESEARCH_ATTEMPTS_FILE: &str = "factor_autoresearch_attempts.json";
 pub const FACTOR_AUTORESEARCH_LIVE_FILE: &str = "factor_autoresearch_live.json";
 pub const FACTOR_AUTORESEARCH_FINAL_FILE: &str = "factor_autoresearch_final.json";
+pub const FACTOR_AUTORESEARCH_EXPERIMENTS_FILE: &str = "experiments.tsv";
+pub const FACTOR_AUTORESEARCH_RETROSPECTIVE_FILE: &str = "factor_autoresearch_retrospective.md";
 pub const BACKTEST_RUNS_FILE: &str = "backtest_runs.json";
 pub const UPDATE_RUNS_FILE: &str = "update_runs.json";
 pub const WORKFLOW_SNAPSHOT_FILE: &str = "workflow_snapshot.json";
@@ -1177,6 +1179,8 @@ pub struct TrainRunRecord {
     #[serde(default)]
     pub recommended_next_command: String,
     #[serde(default)]
+    pub recommended_next_command_meta: RecommendedNextCommandMeta,
+    #[serde(default)]
     pub agent_context_bundle: AgentContextBundle,
     #[serde(default)]
     pub agent_context_bundle_minimal: AgentContextBundleMinimal,
@@ -1230,6 +1234,8 @@ pub struct ResearchRunRecord {
     #[serde(default)]
     pub recommended_next_command: String,
     #[serde(default)]
+    pub recommended_next_command_meta: RecommendedNextCommandMeta,
+    #[serde(default)]
     pub agent_context_bundle: AgentContextBundle,
     #[serde(default)]
     pub agent_context_bundle_minimal: AgentContextBundleMinimal,
@@ -1237,6 +1243,16 @@ pub struct ResearchRunRecord {
     pub feedback_history_summary: FeedbackHistorySummary,
     #[serde(default)]
     pub artifact_action_summary: Vec<String>,
+    #[serde(default)]
+    pub duration_sizing_scale: Option<f64>,
+    #[serde(default)]
+    pub hybrid_duration_model: Option<String>,
+    #[serde(default)]
+    pub hybrid_remaining_expected_bars: Option<f64>,
+    #[serde(default)]
+    pub backtest_conformal_coverage_1sigma: f64,
+    #[serde(default)]
+    pub backtest_trade_count: usize,
     #[serde(default)]
     pub artifact_decision_summary: ArtifactDecisionSummary,
     #[serde(default)]
@@ -1248,6 +1264,18 @@ pub struct ResearchRunRecord {
     pub factor_mutation_evaluation: Option<FactorMutationEvaluation>,
     #[serde(default)]
     pub multi_timeframe_summary: Vec<String>,
+    #[serde(default)]
+    pub execution_artifact_id: Option<String>,
+    #[serde(default)]
+    pub execution_edge_share: Option<f64>,
+    #[serde(default)]
+    pub prediction_edge_share: Option<f64>,
+    #[serde(default)]
+    pub execution_readiness: Option<f64>,
+    #[serde(default)]
+    pub execution_gate_status: Option<String>,
+    #[serde(default)]
+    pub pda_cluster_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1441,6 +1469,14 @@ pub struct AnalyzeRunRecord {
     pub selected_entry_quality: String,
     pub decision_hint: String,
     #[serde(default)]
+    pub hybrid_regime_label: Option<String>,
+    #[serde(default)]
+    pub hybrid_regime_age_bars: Option<usize>,
+    #[serde(default)]
+    pub hybrid_duration_model: Option<String>,
+    #[serde(default)]
+    pub hybrid_remaining_expected_bars: Option<f64>,
+    #[serde(default)]
     pub pre_bayes_evidence_filter: PreBayesEvidenceFilter,
     #[serde(default)]
     pub pre_bayes_entry_quality_bridge: PreBayesEntryQualityBridge,
@@ -1453,11 +1489,23 @@ pub struct AnalyzeRunRecord {
     pub agent_action_plan: AgentActionPlan,
     pub recommended_commands: CommandRecommendations,
     pub recommended_next_command: String,
+    #[serde(default)]
+    pub recommended_next_command_meta: RecommendedNextCommandMeta,
     pub agent_context_bundle: AgentContextBundle,
     pub agent_context_bundle_minimal: AgentContextBundleMinimal,
     pub feedback_history_summary: FeedbackHistorySummary,
     #[serde(default)]
     pub multi_timeframe_summary: Vec<String>,
+    #[serde(default)]
+    pub execution_artifact_id: Option<String>,
+    #[serde(default)]
+    pub execution_edge_share: Option<f64>,
+    #[serde(default)]
+    pub prediction_edge_share: Option<f64>,
+    #[serde(default)]
+    pub execution_readiness: Option<f64>,
+    #[serde(default)]
+    pub execution_gate_status: Option<String>,
     #[serde(default)]
     pub artifact_action_summary: Vec<String>,
     #[serde(default)]
@@ -1491,6 +1539,10 @@ impl Default for AnalyzeRunRecord {
             selected_direction: Direction::Neutral,
             selected_entry_quality: String::new(),
             decision_hint: String::new(),
+            hybrid_regime_label: None,
+            hybrid_regime_age_bars: None,
+            hybrid_duration_model: None,
+            hybrid_remaining_expected_bars: None,
             pre_bayes_evidence_filter: PreBayesEvidenceFilter::default(),
             pre_bayes_entry_quality_bridge: PreBayesEntryQualityBridge::default(),
             factor_family_decisions: Vec::new(),
@@ -1502,10 +1554,16 @@ impl Default for AnalyzeRunRecord {
             agent_action_plan: AgentActionPlan::default(),
             recommended_commands: CommandRecommendations::default(),
             recommended_next_command: String::new(),
+            recommended_next_command_meta: RecommendedNextCommandMeta::default(),
             agent_context_bundle: AgentContextBundle::default(),
             agent_context_bundle_minimal: AgentContextBundleMinimal::default(),
             feedback_history_summary: FeedbackHistorySummary::default(),
             multi_timeframe_summary: Vec::new(),
+            execution_artifact_id: None,
+            execution_edge_share: None,
+            prediction_edge_share: None,
+            execution_readiness: None,
+            execution_gate_status: None,
             artifact_action_summary: Vec::new(),
             artifact_decision_summary: ArtifactDecisionSummary::default(),
             artifact_decision_section: ArtifactDecisionSection::default(),
@@ -1568,6 +1626,8 @@ pub struct UpdateRunRecord {
     #[serde(default)]
     pub recommended_next_command: String,
     #[serde(default)]
+    pub recommended_next_command_meta: RecommendedNextCommandMeta,
+    #[serde(default)]
     pub agent_context_bundle: AgentContextBundle,
     #[serde(default)]
     pub agent_context_bundle_minimal: AgentContextBundleMinimal,
@@ -1575,6 +1635,22 @@ pub struct UpdateRunRecord {
     pub feedback_history_summary: FeedbackHistorySummary,
     #[serde(default)]
     pub artifact_action_summary: Vec<String>,
+    #[serde(default)]
+    pub duration_sizing_scale: Option<f64>,
+    #[serde(default)]
+    pub hybrid_duration_model: Option<String>,
+    #[serde(default)]
+    pub hybrid_remaining_expected_bars: Option<f64>,
+    #[serde(default)]
+    pub execution_artifact_id: Option<String>,
+    #[serde(default)]
+    pub execution_edge_share: Option<f64>,
+    #[serde(default)]
+    pub prediction_edge_share: Option<f64>,
+    #[serde(default)]
+    pub execution_readiness: Option<f64>,
+    #[serde(default)]
+    pub execution_gate_status: Option<String>,
     #[serde(default)]
     pub artifact_decision_summary: ArtifactDecisionSummary,
     #[serde(default)]
@@ -1658,6 +1734,8 @@ pub struct BacktestRunRecord {
     #[serde(default)]
     pub recommended_next_command: String,
     #[serde(default)]
+    pub recommended_next_command_meta: RecommendedNextCommandMeta,
+    #[serde(default)]
     pub agent_context_bundle: AgentContextBundle,
     #[serde(default)]
     pub agent_context_bundle_minimal: AgentContextBundleMinimal,
@@ -1665,6 +1743,22 @@ pub struct BacktestRunRecord {
     pub feedback_history_summary: FeedbackHistorySummary,
     #[serde(default)]
     pub artifact_action_summary: Vec<String>,
+    #[serde(default)]
+    pub duration_sizing_scale: Option<f64>,
+    #[serde(default)]
+    pub hybrid_duration_model: Option<String>,
+    #[serde(default)]
+    pub hybrid_remaining_expected_bars: Option<f64>,
+    #[serde(default)]
+    pub execution_artifact_id: Option<String>,
+    #[serde(default)]
+    pub execution_edge_share: Option<f64>,
+    #[serde(default)]
+    pub prediction_edge_share: Option<f64>,
+    #[serde(default)]
+    pub execution_readiness: Option<f64>,
+    #[serde(default)]
+    pub execution_gate_status: Option<String>,
     #[serde(default)]
     pub artifact_decision_summary: ArtifactDecisionSummary,
     #[serde(default)]
@@ -1807,6 +1901,98 @@ pub struct RecommendedCommand {
     pub recorded_data_paths: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RecommendedNextCommandKind {
+    IctEngine,
+    AskUser,
+    Blocked,
+    Unavailable,
+    Other,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RecommendedNextCommandMeta {
+    #[serde(default)]
+    pub kind: RecommendedNextCommandKind,
+    #[serde(default)]
+    pub requires_user_input: bool,
+    #[serde(default)]
+    pub blocked: bool,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub executable_command: Option<String>,
+    #[serde(default)]
+    pub recorded_data_paths: Vec<String>,
+}
+
+pub fn recommended_next_command_meta(raw: &str) -> RecommendedNextCommandMeta {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "recommended_command_unavailable" {
+        return RecommendedNextCommandMeta {
+            kind: RecommendedNextCommandKind::Unavailable,
+            ..RecommendedNextCommandMeta::default()
+        };
+    }
+    if let Some(rest) = trimmed.strip_prefix("ask-user: ") {
+        let prompt = rest
+            .split(" | blocked until ")
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let executable_command = rest
+            .split("| then ")
+            .nth(1)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let recorded_data_paths = rest
+            .split("recorded_paths=")
+            .nth(1)
+            .and_then(|tail| tail.split('|').next())
+            .map(|paths| {
+                paths
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        return RecommendedNextCommandMeta {
+            kind: RecommendedNextCommandKind::AskUser,
+            requires_user_input: true,
+            blocked: true,
+            prompt,
+            executable_command,
+            recorded_data_paths,
+        };
+    }
+    if trimmed.starts_with("blocked:") {
+        return RecommendedNextCommandMeta {
+            kind: RecommendedNextCommandKind::Blocked,
+            blocked: true,
+            ..RecommendedNextCommandMeta::default()
+        };
+    }
+    if trimmed.starts_with("ict-engine ") {
+        return RecommendedNextCommandMeta {
+            kind: RecommendedNextCommandKind::IctEngine,
+            executable_command: Some(trimmed.to_string()),
+            ..RecommendedNextCommandMeta::default()
+        };
+    }
+    RecommendedNextCommandMeta {
+        kind: RecommendedNextCommandKind::Other,
+        executable_command: Some(trimmed.to_string()),
+        ..RecommendedNextCommandMeta::default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CommandRecommendations {
     pub analyze: RecommendedCommand,
@@ -1873,6 +2059,8 @@ pub struct WorkflowPhaseSnapshot {
     pub comparable_to_previous: bool,
     pub comparison_class: String,
     pub recommended_next_command: String,
+    #[serde(default)]
+    pub recommended_next_command_meta: RecommendedNextCommandMeta,
     pub phase_summary: String,
     pub top_actions: Vec<String>,
     pub risk_flags: Vec<String>,
@@ -1927,6 +2115,33 @@ pub struct WorkflowPhaseSnapshot {
     #[serde(default)]
     pub objective_market_credibility_shrink:
         Option<crate::domain::belief::ObjectiveMarketCredibilityShrink>,
+    #[serde(default)]
+    pub execution_edge_share: Option<f64>,
+    #[serde(default)]
+    pub prediction_edge_share: Option<f64>,
+    #[serde(default)]
+    pub execution_readiness: Option<f64>,
+    #[serde(default)]
+    pub execution_gate_status: Option<String>,
+    #[serde(default)]
+    pub pda_cluster_label: Option<String>,
+    #[serde(default)]
+    pub hybrid_duration_model: Option<String>,
+    #[serde(default)]
+    pub hybrid_remaining_expected_bars: Option<f64>,
+    /// Round 2 §3.4: spectral entropy from the latest execution_artifact. None
+    /// when the spectral layer did not fit (window too short) or when the
+    /// artifact has not been populated yet.
+    #[serde(default)]
+    pub spectral_entropy: Option<f64>,
+    /// Round 2 §3.4: softshrink sparsity ratio from the latest mece_recovery
+    /// artifact. None when MECE recovery has not been run.
+    #[serde(default)]
+    pub sparsity_ratio: Option<f64>,
+    /// Round 2 §3.4: "promote" / "blocked" verdict from the MECE recovery
+    /// segments gate. None when recovery segments are empty or unrun.
+    #[serde(default)]
+    pub segments_gate: Option<String>,
 }
 
 impl Default for WorkflowPhaseSnapshot {
@@ -1943,6 +2158,7 @@ impl Default for WorkflowPhaseSnapshot {
             comparable_to_previous: false,
             comparison_class: String::new(),
             recommended_next_command: String::new(),
+            recommended_next_command_meta: RecommendedNextCommandMeta::default(),
             phase_summary: String::new(),
             top_actions: Vec::new(),
             risk_flags: Vec::new(),
@@ -1971,6 +2187,16 @@ impl Default for WorkflowPhaseSnapshot {
             family_score_map: BTreeMap::new(),
             factor_score_map: BTreeMap::new(),
             objective_market_credibility_shrink: None,
+            execution_edge_share: None,
+            prediction_edge_share: None,
+            execution_readiness: None,
+            execution_gate_status: None,
+            pda_cluster_label: None,
+            hybrid_duration_model: None,
+            hybrid_remaining_expected_bars: None,
+            spectral_entropy: None,
+            sparsity_ratio: None,
+            segments_gate: None,
         }
     }
 }
@@ -2018,6 +2244,8 @@ pub struct WorkflowSnapshot {
     #[serde(default)]
     pub blocking_truth: WorkflowBlockingTruth,
     pub recommended_next_command: String,
+    #[serde(default)]
+    pub recommended_next_command_meta: RecommendedNextCommandMeta,
     pub pending_actions: Vec<String>,
     pub risk_flags: Vec<String>,
     #[serde(default)]
@@ -2095,6 +2323,7 @@ impl Default for WorkflowSnapshot {
             current_focus_reason: String::new(),
             blocking_truth: WorkflowBlockingTruth::default(),
             recommended_next_command: String::new(),
+            recommended_next_command_meta: RecommendedNextCommandMeta::default(),
             pending_actions: Vec::new(),
             risk_flags: Vec::new(),
             latest_train: None,
@@ -2149,6 +2378,8 @@ pub struct AgentContextBundle {
     pub workflow_state: WorkflowState,
     pub decision_hint: String,
     pub recommended_next_command: String,
+    #[serde(default)]
+    pub recommended_next_command_meta: RecommendedNextCommandMeta,
     pub recommended_commands: CommandRecommendations,
     pub family_history_window: usize,
     pub comparable_to_last_run: bool,
@@ -2198,6 +2429,12 @@ pub struct AgentContextBundle {
     pub artifact_consumed_gate_reason: String,
     #[serde(default)]
     pub artifact_consumed_gate_targets: Vec<String>,
+    #[serde(default)]
+    pub pda_sequence_summary: Option<String>,
+    #[serde(default)]
+    pub pda_cluster_label: Option<String>,
+    #[serde(default)]
+    pub pda_cluster_confidence: Option<f64>,
     pub top_factor_actions: Vec<String>,
     pub family_actions: Vec<String>,
     pub stage_views: Vec<StageAgentContext>,
@@ -2219,6 +2456,8 @@ pub struct StageAgentContext {
 pub struct AgentContextBundleMinimal {
     pub workflow_phase: String,
     pub recommended_next_command: String,
+    #[serde(default)]
+    pub recommended_next_command_meta: RecommendedNextCommandMeta,
     pub family_history_window: usize,
     pub comparable_to_last_run: bool,
     #[serde(default)]
@@ -2247,6 +2486,8 @@ pub struct AgentContextBundleMinimal {
     pub multi_timeframe_summary: Vec<String>,
     #[serde(default)]
     pub artifact_consumed_gate_status: String,
+    #[serde(default)]
+    pub pda_cluster_label: Option<String>,
     pub top_factor_actions: Vec<String>,
     pub stage_views: Vec<StageAgentContextMinimal>,
 }

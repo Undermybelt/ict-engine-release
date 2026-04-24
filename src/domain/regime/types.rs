@@ -26,9 +26,19 @@ pub struct RegimeSegmentationPacket {
     pub segmentation_version: String,
     pub active_regime_cluster: Option<String>,
     pub transition_hazard: Option<f64>,
+    pub duration_elapsed_bars: Option<usize>,
+    pub duration_model: Option<String>,
+    pub duration_remaining_expected_bars: Option<f64>,
     pub regime_membership: BTreeMap<String, f64>,
     pub feature_attribution: BTreeMap<String, f64>,
     pub evidence: Vec<String>,
+    pub wasserstein_label: Option<String>,
+    pub wasserstein_distance: Option<f64>,
+    pub governor_confidence: Option<f64>,
+    pub governor_entropy: Option<f64>,
+    pub governor_min_hold_active: Option<bool>,
+    pub timeframe_alignment: Option<bool>,
+    pub timeframe_alignment_score: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

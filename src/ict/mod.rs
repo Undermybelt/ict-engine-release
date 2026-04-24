@@ -6,6 +6,7 @@ pub mod liquidity;
 pub mod ob;
 pub mod pda;
 pub mod pda_state;
+pub mod pythagorean_extension;
 pub mod rb;
 pub mod swing;
 
@@ -17,5 +18,6 @@ pub use liquidity::*;
 pub use ob::*;
 pub use pda::*;
 pub use pda_state::*;
+pub use pythagorean_extension::*;
 pub use rb::*;
 pub use swing::*;

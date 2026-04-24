@@ -3,8 +3,9 @@
 Print comparison table and recommend next action."""
 
 import json, pathlib
+from path_defaults import resolve_repo_root
 
-REPO = pathlib.Path('/Users/thrill3r/projects-ict-engine/ict-engine')
+REPO = resolve_repo_root(__file__)
 
 
 def load_best_from_local_search():

@@ -1389,10 +1389,13 @@ fn close_returns(closes: &[f64]) -> Vec<f64> {
 }
 
 fn total_return(candles: &[Candle]) -> f64 {
-    if candles.len() < 2 || candles[0].close.abs() <= f64::EPSILON {
+    let (Some(first), Some(last)) = (candles.first(), candles.last()) else {
+        return 0.0;
+    };
+    if candles.len() < 2 || first.close.abs() <= f64::EPSILON {
         return 0.0;
     }
-    (candles.last().unwrap().close - candles[0].close) / candles[0].close
+    (last.close - first.close) / first.close
 }
 
 fn normalize_signed(value: f64, cap: f64) -> f64 {

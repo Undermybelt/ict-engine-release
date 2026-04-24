@@ -10,16 +10,14 @@ import pathlib
 import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from path_defaults import resolve_binary_path, resolve_cleaned_data_root, resolve_repo_root
 
-REPO = pathlib.Path(__file__).resolve().parents[2]
+REPO = resolve_repo_root(__file__)
 PHASE_DIR = REPO / 'state_policy_tuning'
 PHASE_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_FILE = PHASE_DIR / 'results.json'
-
-DEFAULT_DATA_ROOT = REPO.parent.parent / 'Downloads' / 'Tomac' / 'ict-cleaned-mtf'
-DATA_BASE = pathlib.Path(os.environ.get('ICT_ENGINE_DATA_ROOT', DEFAULT_DATA_ROOT)).expanduser().resolve()
-DEFAULT_BIN = REPO / 'target' / 'release' / 'ict-engine'
-BIN = pathlib.Path(os.environ.get('ICT_ENGINE_BIN', DEFAULT_BIN)).expanduser().resolve()
+DATA_BASE = resolve_cleaned_data_root(__file__)
+BIN = resolve_binary_path(__file__)
 
 DEFAULTS = {
     'lookback': 20.0,

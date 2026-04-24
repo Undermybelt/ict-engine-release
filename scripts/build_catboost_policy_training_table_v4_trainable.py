@@ -2,10 +2,13 @@
 import csv
 from pathlib import Path
 
-SRC = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/tomac_policy_training_v4.csv')
-OUT = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/tomac_policy_training_v4_trainable.csv')
-RULES = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/tomac_policy_training_v4_trainable_rules.txt')
-REPORT = Path('/Users/thrill3r/projects-ict-engine/ict-engine/state/policy_training/tomac_policy_training_v4_trainable_report.txt')
+from path_defaults import resolve_policy_training_dir
+
+BASE = resolve_policy_training_dir(__file__)
+SRC = BASE / 'tomac_policy_training_v4.csv'
+OUT = BASE / 'tomac_policy_training_v4_trainable.csv'
+RULES = BASE / 'tomac_policy_training_v4_trainable_rules.txt'
+REPORT = BASE / 'tomac_policy_training_v4_trainable_report.txt'
 
 ALLOWED_RESULTS = {'TP', 'BE', 'SL', 'EOD', 'Long_Div', 'Short_Div'}
 DROP_UNKNOWN_DIRECTION = True

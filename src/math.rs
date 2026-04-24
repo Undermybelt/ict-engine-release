@@ -1,3 +1,6 @@
+pub mod geometry;
+pub mod spectral;
+
 pub fn wilder_smooth(values: &[f64], period: usize) -> Vec<f64> {
     if values.len() < period {
         return Vec::new();
@@ -9,7 +12,7 @@ pub fn wilder_smooth(values: &[f64], period: usize) -> Vec<f64> {
     result.push(first / period as f64);
 
     for value in values.iter().skip(period) {
-        let prev = result.last().unwrap();
+        let prev = result.last().copied().unwrap_or_default();
         let smoothed = (prev * (period - 1) as f64 + *value) / period as f64;
         result.push(smoothed);
     }
@@ -41,7 +44,7 @@ pub fn ema(values: &[f64], period: usize) -> Vec<f64> {
         result.push(first_sma);
 
         for value in values.iter().skip(period) {
-            let previous = *result.last().unwrap();
+            let previous = result.last().copied().unwrap_or(first_sma);
             let next = (*value - previous) * multiplier + previous;
             result.push(next);
         }

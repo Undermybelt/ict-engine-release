@@ -4,7 +4,9 @@ import re
 import subprocess
 from pathlib import Path
 
-ROOT = Path('/Users/thrill3r/projects-ict-engine/ict-engine')
+from path_defaults import resolve_repo_root
+
+ROOT = resolve_repo_root(__file__)
 
 
 def run_help(args):

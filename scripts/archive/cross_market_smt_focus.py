@@ -16,14 +16,15 @@ import pathlib
 import subprocess
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from path_defaults import resolve_binary_path, resolve_cleaned_data_root, resolve_repo_root
 
-REPO = pathlib.Path('/Users/thrill3r/projects-ict-engine/ict-engine')
+REPO = resolve_repo_root(__file__)
 PHASE_DIR = REPO / 'state_cross_market_smt_focus'
 PHASE_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_FILE = PHASE_DIR / 'results.json'
 
-DATA_BASE = '/Users/thrill3r/Downloads/Tomac/ict-cleaned-mtf'
-BIN = str(REPO / 'target' / 'release' / 'ict-engine')
+DATA_BASE = str(resolve_cleaned_data_root(__file__))
+BIN = str(resolve_binary_path(__file__))
 
 DATA = f'{DATA_BASE}/cleaned-15m/nq.continuous-15m.json'
 PAIRED_CANDIDATES = {

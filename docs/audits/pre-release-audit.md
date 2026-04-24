@@ -113,6 +113,11 @@ Remaining caveat:
 
 ### 5. `src/main.rs` remains a structural debt hotspot
 
+Status note (2026-04-24)
+
+This section is now historical. The runtime-hotspot extraction line landed later in commits `8ce1024` and `3e45254`.
+For current remaining debt, use `docs/plans/2026-04-24-post-main-debt-inventory.md`.
+
 Current state:
 - large monolith
 - not a release blocker

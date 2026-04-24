@@ -16,7 +16,9 @@ pub fn check_bull_expansion_exists(
         return false;
     }
 
-    let current_atr = *atr.last().unwrap();
+    let Some(&current_atr) = atr.last() else {
+        return false;
+    };
     let start_idx = candles.len() - lookback;
 
     // Find the lowest low in the lookback period
@@ -26,7 +28,9 @@ pub fn check_bull_expansion_exists(
         .fold(f64::INFINITY, f64::min);
 
     // Check if current price has moved significantly above the low
-    let current_price = candles.last().unwrap().close;
+    let Some(current_price) = candles.last().map(|candle| candle.close) else {
+        return false;
+    };
     let move_size = current_price - lowest_low;
 
     move_size > current_atr * atr_multiplier
@@ -47,7 +51,9 @@ pub fn check_bear_expansion_exists(
         return false;
     }
 
-    let current_atr = *atr.last().unwrap();
+    let Some(&current_atr) = atr.last() else {
+        return false;
+    };
     let start_idx = candles.len() - lookback;
 
     // Find the highest high in the lookback period
@@ -57,7 +63,9 @@ pub fn check_bear_expansion_exists(
         .fold(f64::NEG_INFINITY, f64::max);
 
     // Check if current price has moved significantly below the high
-    let current_price = candles.last().unwrap().close;
+    let Some(current_price) = candles.last().map(|candle| candle.close) else {
+        return false;
+    };
     let move_size = highest_high - current_price;
 
     move_size > current_atr * atr_multiplier
@@ -89,7 +97,9 @@ pub fn expansion_strength(candles: &[Candle], lookback: usize) -> f64 {
         return 0.0;
     }
 
-    let current_atr = *atr.last().unwrap();
+    let Some(&current_atr) = atr.last() else {
+        return 0.0;
+    };
     let start_idx = candles.len() - lookback;
 
     let highest_high = candles[start_idx..]

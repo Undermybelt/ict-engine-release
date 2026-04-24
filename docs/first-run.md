@@ -98,6 +98,11 @@ For an autoresearch session:
 3. `<state_dir>/<SYM>/factor_autoresearch_attempts.json`
 4. `factor-pipeline-debug` on the best/current attempt if needed
 
+State precedence:
+- `--state-dir` overrides `ICT_ENGINE_STATE_DIR`
+- if neither is set, the repo falls back to `./state`
+- shared state is only for intentional iterative loops; use isolated state for fair comparison
+
 For isolated comparison:
 1. stdout JSON
 2. `factor_mutation_runs.json`
@@ -147,3 +152,7 @@ cargo run -- factor-autoresearch-status --symbol <SYM> --state-dir <dir> --lates
 ```
 
 or the relevant JSON result produced by the current command.
+
+Derived-surface rule:
+- if a derived surface disagrees with canonical JSON, trust canonical JSON
+- use `experiments.tsv` and retrospective markdown only as convenience surfaces

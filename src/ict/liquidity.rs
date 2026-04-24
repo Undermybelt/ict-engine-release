@@ -14,7 +14,7 @@ pub fn detect_liquidity_pools(
     let tolerance = if atr.is_empty() {
         10.0
     } else {
-        atr.last().unwrap() * atr_multiplier
+        atr.last().copied().unwrap_or(10.0) * atr_multiplier
     };
 
     let mut used = vec![false; swings.len()];
@@ -55,7 +55,11 @@ pub fn detect_liquidity_pools(
         }
     }
 
-    pools.sort_by(|a, b| a.price_level.partial_cmp(&b.price_level).unwrap());
+    pools.sort_by(|a, b| {
+        a.price_level
+            .partial_cmp(&b.price_level)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     pools
 }
 

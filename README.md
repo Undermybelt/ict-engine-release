@@ -15,6 +15,16 @@ cargo run -- factor-research --help
 
 If you only want the core CLI, Rust is enough. Python scripts are optional research helpers.
 
+## Contributor baseline
+
+Before sending a PR, please run locally:
+
+- `cargo check --all-targets`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test`
+
+All three must be green. CI (`.github/workflows/ci.yml`) runs these on every push.
+
 ## Common workflows
 
 ### Analyze market data
@@ -97,7 +107,7 @@ python3 scripts/research_verdict.py <state-or-result-dir>
 
 ## Output modes
 
-`analyze` and `workflow-status` support four output surfaces:
+`analyze`, `backtest`, `factor-backtest`, `factor-research`, and `workflow-status` support four output surfaces:
 
 ```bash
 cargo run -- analyze --symbol NQ --data-htf <1d.json> --data-mtf <1h.json> --data-ltf <15m.json> --output-format json
@@ -112,10 +122,15 @@ cargo run -- workflow-status --symbol NQ --state-dir state --human
 ```
 
 Use:
-- `json` for full archival/debug output
+- `json` for full archival/debug output (default when no flag is passed)
 - `compact` for low-token summary
 - `agent` for next-step automation surface
 - `human` for release-style readable summary
+
+Notes:
+- `--compact`, `--agent`, and `--human` are sugar for `--output-format <mode>`. Do not combine them with `--output-format`.
+- There is no `--json` alias; JSON is the default, so `workflow-status --output-format json` is the explicit form and plain `workflow-status` already prints JSON.
+- `backtest` requires roughly 70+ candles (warmup + hold bars). The bundled `examples/demo/demo-15m.json` (~52 candles) is sized for `analyze`/`factor-backtest` and will error out from `backtest`. Point `--data` at a larger cleaned dataset when running `backtest`.
 
 Agent consumers should prefer:
 - `decision_summary` over `decision_hint_raw`
@@ -168,7 +183,36 @@ Important files:
 - `workflow_snapshot.json`
 - `artifact_ledger.json`
 
+Derived autoresearch surfaces:
+- `experiments.tsv` — grep/diff-friendly ledger derived from autoresearch attempts
+- `factor_autoresearch_retrospective.md` — human-readable recap derived from autoresearch status/canonical state
+
+Trust rule:
+- if a derived surface disagrees with canonical JSON, canonical JSON wins
+- `docs/autoresearch-derived-surfaces-contract.md` defines the boundary in detail
+
 Runtime state directories are ignored by git via `state*/`.
+
+Query the ledger via `ict-engine artifact-status`. Filter flags have the following semantics:
+- `--latest-only` keeps the latest row **per `artifact_kind`** (one entry per kind, chosen by `generated_at` then `version`), not a single global latest row. Combine with `--kind <name>` to reduce to one row for a specific kind.
+- `--recent-n <N>` keeps the N most recent rows across all kinds.
+- `--actionable-only` / `--rule-break-only` / `--consumed-only` are additive filters.
+
+State precedence:
+- `--state-dir` overrides `ICT_ENGINE_STATE_DIR`
+- if neither is set, `ict-engine` uses `./state`
+- shared state is for intentional cumulative loops only; use isolated state for fair comparison
+
+Trust rule:
+- if a derived surface disagrees with canonical JSON, canonical JSON wins
+- `factor-autoresearch-status` is the preferred read surface for autoresearch session truth
+- `experiments.tsv` and retrospective markdown are convenience surfaces only
+
+State defaults and environment knobs:
+- `ICT_ENGINE_STATE_DIR` overrides the default `./state` location
+- `ict-engine env` prints the currently effective ICT-related environment settings
+- `docs/environment-variables.md` documents supported variables
+- `docs/state-directory-lifecycle.md` documents cleanup and lifecycle guidance
 
 ## Historical data reuse rule
 
@@ -214,6 +258,8 @@ Using the wrong input surface:
 
 - `docs/first-run.md`
 - `docs/research-system-map.md`
+- `docs/autoresearch-derived-surfaces-contract.md`
+- `docs/autoresearch-state-transitions.md`
 - `docs/objective-scoring-map.md`
 - `docs/smoke-acceptance.md`
 
@@ -221,6 +267,15 @@ Using the wrong input surface:
 
 - `docs/agent-first-runbook.md`
 - `docs/release-notes-draft.md`
+- `docs/release-mirror-runbook.md` — **authoritative release procedure**
+- `docs/external/external-patterns-synthesis-2026-04-23.md` — consolidated external pattern absorb/reject matrix
+
+### Publishing policy (post-v0.0.1)
+
+- The source repo has no working publishing origin; GitHub rejects pushes because of oversized historical state artifacts.
+- Every external release goes through the private release mirror `Undermybelt/ict-engine-release` via the mirror runbook (`git archive HEAD` export, fresh init, tag, push).
+- Do **not** run `git push origin …` from the source repo and do **not** add a public remote to it. Local commits accumulate on the local clone(s) only.
+- See `docs/release-mirror-runbook.md` for the full flow and version-bump rules.
 
 ## 中文简介
 

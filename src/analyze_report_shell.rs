@@ -2,15 +2,16 @@ use serde::Serialize;
 
 use crate::agent::AgentPromptPack;
 use crate::analyze_sections::AnalyzeSections;
+use crate::application::orchestration::ExecutionTriage;
+use crate::domain::execution::ExecutionArtifact;
 use crate::state::{
-    AgentActionPlan, AgentContextBundle, AgentContextBundleMinimal, AnalyzeRunRecord,
-    CommandRecommendations, DatasetComparability, DecisionHistorySummary, DecisionThresholds,
-    FactorFamilyDecision, FactorFamilyDiff, FactorFamilyHistory, FactorFamilyOutcome,
-    FactorIterationPrompt, FeedbackHistorySummary, PersistedFactorRanking, PromotionDecision,
-    RollbackRecommendation, RunProvenance, WorkflowSnapshot, WorkflowState,
+    AgentActionPlan, AgentContextBundle, AgentContextBundleMinimal, CommandRecommendations,
+    DatasetComparability, DecisionHistorySummary, DecisionThresholds, FactorFamilyDecision,
+    FactorFamilyDiff, FactorFamilyHistory, FactorFamilyOutcome, FactorIterationPrompt,
+    FeedbackHistorySummary, PersistedFactorRanking, PromotionDecision, RollbackRecommendation,
+    RunProvenance, WorkflowSnapshot, WorkflowState,
 };
 use crate::types::TradePlan;
-use serde_json::Value;
 
 #[derive(Debug, Serialize)]
 pub struct AnalyzeReport {
@@ -46,6 +47,7 @@ pub struct AnalyzeSupporting {
     pub factor_diagnostics: crate::factor_lab::FactorDiagnostics,
     pub pre_bayes_evidence_filter: crate::state::PreBayesEvidenceFilter,
     pub pre_bayes_entry_quality_bridge: crate::state::PreBayesEntryQualityBridge,
+    pub objective_jump_weight: Option<f64>,
     pub canonical_belief_report: crate::reporting::belief::BeliefReportPacket,
     pub decision_thresholds: DecisionThresholds,
     pub factor_ranking: Vec<PersistedFactorRanking>,
@@ -71,6 +73,12 @@ pub struct AnalyzeSupporting {
     pub multi_timeframe_summary: Vec<String>,
     pub raw_trade_plan: TradePlan,
     pub workflow_snapshot: WorkflowSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub staged_orchestration_trace: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_artifact: Option<ExecutionArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_triage: Option<ExecutionTriage>,
 }
 
 #[derive(Debug, Serialize)]

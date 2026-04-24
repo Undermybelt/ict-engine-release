@@ -17,7 +17,9 @@ pub fn classify_premium_discount(candles: &[Candle], lookback: usize) -> (bool, 
     let low = range.iter().map(|c| c.low).fold(f64::INFINITY, f64::min);
     let midpoint = (high + low) / 2.0;
 
-    let current_price = candles.last().unwrap().close;
+    let Some(current_price) = candles.last().map(|candle| candle.close) else {
+        return (false, false, false);
+    };
 
     // Premium: above midpoint
     let is_premium = current_price > midpoint;

@@ -4,18 +4,19 @@ Runs 20 specs in parallel (4 workers), evaluate_expansion_preview=false."""
 
 import json, subprocess, time, pathlib, copy, itertools, random
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from path_defaults import resolve_binary_path, resolve_cleaned_data_root, resolve_repo_root
 
 random.seed(2026)
 
-REPO = pathlib.Path('/Users/thrill3r/projects-ict-engine/ict-engine')
+REPO = resolve_repo_root(__file__)
 STATE = REPO / 'state_local_search_v2'
 STATE.mkdir(parents=True, exist_ok=True)
 OUTDIR = STATE / 'runs'
 OUTDIR.mkdir(parents=True, exist_ok=True)
 RESULTS_FILE = STATE / 'results.json'
 
-DATA_BASE = '/Users/thrill3r/Downloads/Tomac/ict-cleaned-mtf'
-BIN = str(REPO / 'target' / 'release' / 'ict-engine')
+DATA_BASE = str(resolve_cleaned_data_root(__file__))
+BIN = str(resolve_binary_path(__file__))
 
 ARGS_COMMON = [
     BIN, 'factor-research', '--symbol', 'NQ',
