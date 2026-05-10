@@ -131,7 +131,9 @@ pub fn trade_evidence_from_pre_bayes_filter(
             .nodes
             .get(node_id)
             .ok_or_else(|| anyhow!("unknown node '{}'", node_id))?;
-        if filter.uses_soft_evidence && !soft_distribution.is_empty() {
+        let use_soft_distribution =
+            (filter.uses_soft_evidence || !filter.pass_to_bbn) && !soft_distribution.is_empty();
+        if use_soft_distribution {
             evidence.insert(
                 node_id.to_string(),
                 EvidenceType::Soft(distribution_from_named_map(node, soft_distribution)?),

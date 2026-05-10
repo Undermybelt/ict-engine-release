@@ -53,6 +53,18 @@ pub struct BeliefEvidencePacket {
     pub timed_pda_summary: BTreeMap<String, String>,
     pub multi_timeframe_evidence: BTreeMap<String, String>,
     pub evidence_assignments: BTreeMap<String, String>,
+    #[serde(default)]
+    pub uses_soft_evidence: bool,
+    #[serde(default)]
+    pub soft_market_regime_distribution: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub soft_liquidity_context_distribution: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub soft_factor_alignment_distribution: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub soft_factor_uncertainty_distribution: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub soft_multi_timeframe_resonance_distribution: BTreeMap<String, f64>,
     pub microstructure_context: Option<MicrostructureContextPacket>,
     pub market_policy: Option<MarketPolicyPacket>,
 }

@@ -1,0 +1,12 @@
+{
+  "aggregate_weights": {
+    "volatility": 0.30,
+    "liquidity": 0.20,
+    "structure": 0.30,
+    "behavior": 0.20
+  },
+  "override_volatility": null,
+  "override_liquidity": null,
+  "override_structure": null,
+  "override_behavior": null
+}

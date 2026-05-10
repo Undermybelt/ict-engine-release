@@ -249,6 +249,8 @@ fn backtest_feedback_records(symbol: &str, result: &BacktestResult) -> Vec<Feedb
                     },
                     pnl: trade.pnl,
                     regime_at_entry: trade.regime_at_entry,
+                    structural_feedback: None,
+                    reflection_mismatch_tags: Vec::new(),
                 }
             })
         })

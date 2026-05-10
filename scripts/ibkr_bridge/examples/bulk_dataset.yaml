@@ -1,0 +1,92 @@
+# =============================================================================
+# Bulk historical-dataset construction config (for fetch_external.py ibkr-bulk)
+# =============================================================================
+# Use this when you want to back-fill a backtest dataset across many
+# symbols and bar sizes in one batch. Each (symbol, bar_size, what_to_show)
+# triple writes to its own CSV under `output.directory`. Idempotent: re-runs
+# skip files that already exist (use --force on the CLI to overwrite).
+#
+# Run:
+#   .venv/bin/python fetch_external.py ibkr-bulk \
+#       --config scripts/ibkr_bridge/examples/bulk_dataset.yaml
+# =============================================================================
+
+gateway:
+  host: 127.0.0.1
+  port: 4002
+  client_id: 22  # bridge=20, single fetch=21, bulk=22 — avoids client-id clash
+
+output:
+  directory: user_data/data/ibkr_bulk
+  filename_template: '{symbol}_{bar_suffix}.csv'
+  # filename_template substitutions: {symbol} {bar_suffix} {bar_size} {what}
+  # e.g. '{symbol}_{bar_suffix}_{what}.csv' -> 'SPY_5min_trades.csv'
+  force: false  # CLI --force overrides this
+
+defaults:
+  # These apply to every symbol unless overridden per-entry
+  bar_size: '5 mins'
+  duration: '60 D'
+  what_to_show: TRADES
+  rth: true
+  exchange: SMART
+  currency: USD
+
+symbols:
+  # Equities — daily + 5-min in one shot via bar_sizes list
+  - symbol: SPY
+    sec_type: STK
+    primary_exchange: ARCA
+    bar_sizes: ['1 day', '1 hour', '5 mins']
+    duration: '1 Y'   # 1 Y of daily, 1 Y of hourly, 60 D of 5-min (per IBKR limit)
+
+  - symbol: QQQ
+    sec_type: STK
+    primary_exchange: NASDAQ
+    bar_sizes: ['1 day', '5 mins']
+
+  - symbol: IWM
+    sec_type: STK
+    primary_exchange: ARCA
+    bar_sizes: ['1 day', '5 mins']
+
+  # Tech mega-caps for factor research
+  - symbol: AAPL
+    sec_type: STK
+    primary_exchange: NASDAQ
+    bar_sizes: ['1 day', '5 mins']
+
+  - symbol: MSFT
+    sec_type: STK
+    primary_exchange: NASDAQ
+    bar_sizes: ['1 day', '5 mins']
+
+  - symbol: NVDA
+    sec_type: STK
+    primary_exchange: NASDAQ
+    bar_sizes: ['1 day', '5 mins']
+
+  # Forex — daily + 5-min midpoint (FX TRADES is sparse, use MIDPOINT)
+  - symbol: EURUSD
+    sec_type: CASH
+    exchange: IDEALPRO
+    what_to_show: MIDPOINT
+    rth: false
+    bar_sizes: ['1 day', '5 mins']
+
+  - symbol: USDJPY
+    sec_type: CASH
+    exchange: IDEALPRO
+    currency: JPY
+    what_to_show: MIDPOINT
+    rth: false
+    bar_sizes: ['1 day', '5 mins']
+
+  # Crypto — needs MIDPOINT (TRADES errors 10299 for PAXOS crypto)
+  - symbol: BTC
+    sec_type: CRYPTO
+    exchange: PAXOS
+    what_to_show: MIDPOINT
+    rth: false
+    bar_sizes: ['1 day', '5 mins']
+    duration: '1 Y'  # max for daily crypto on IBKR

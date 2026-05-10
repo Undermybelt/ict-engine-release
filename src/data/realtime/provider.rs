@@ -5,7 +5,7 @@ use futures::stream::BoxStream;
 
 use crate::types::{Candle, Timeframe};
 
-use super::openalice::Quote;
+use super::market_support::Quote;
 
 #[async_trait]
 pub trait RealtimeDataProvider: Send + Sync {

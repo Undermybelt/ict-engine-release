@@ -72,6 +72,164 @@ impl RegimeProbs {
     }
 }
 
+// ========== Regime V2 (8-state granular) ==========
+/// Granular regime states for factor runtime integration.
+/// Maps to ICT concepts with finer distinction for strategy parameter switching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RegimeV2 {
+    /// Strong bullish trend - Accumulation late stage
+    TrendUpStrong,
+    /// Weak bullish trend - ManipulationExpansion early stage
+    TrendUpWeak,
+    /// Strong bearish trend - Distribution mid/late stage
+    TrendDownStrong,
+    /// Weak bearish trend - Distribution early stage
+    TrendDownWeak,
+    /// Quiet range - Accumulation compression phase
+    RangeQuiet,
+    /// Volatile range - ManipulationExpansion expansion phase
+    RangeVolatile,
+    /// State transition point - reduce exposure
+    Transition,
+    /// Post-crash recovery - reversal opportunity
+    CrashRecovery,
+}
+
+impl RegimeV2 {
+    /// Map to legacy 3-state Regime for backward compatibility
+    pub fn to_legacy(&self) -> Regime {
+        match self {
+            RegimeV2::TrendUpStrong | RegimeV2::TrendUpWeak => Regime::ManipulationExpansion,
+            RegimeV2::TrendDownStrong | RegimeV2::TrendDownWeak => Regime::Distribution,
+            RegimeV2::RangeQuiet => Regime::Accumulation,
+            RegimeV2::RangeVolatile => Regime::ManipulationExpansion,
+            RegimeV2::Transition => Regime::Accumulation, // Default to conservative
+            RegimeV2::CrashRecovery => Regime::Distribution,
+        }
+    }
+
+    /// Get regime family (trend/range/transition)
+    pub fn family(&self) -> &'static str {
+        match self {
+            RegimeV2::TrendUpStrong
+            | RegimeV2::TrendUpWeak
+            | RegimeV2::TrendDownStrong
+            | RegimeV2::TrendDownWeak => "trend",
+            RegimeV2::RangeQuiet | RegimeV2::RangeVolatile => "range",
+            RegimeV2::Transition | RegimeV2::CrashRecovery => "transition",
+        }
+    }
+
+    /// Suggested stop-loss multiplier (relative to ATR)
+    pub fn stop_loss_atr_mult(&self) -> f64 {
+        match self {
+            RegimeV2::TrendUpStrong | RegimeV2::TrendDownStrong => 2.0,
+            RegimeV2::TrendUpWeak | RegimeV2::TrendDownWeak => 1.5,
+            RegimeV2::RangeQuiet => 0.8,
+            RegimeV2::RangeVolatile => 1.2,
+            RegimeV2::Transition => 0.5,
+            RegimeV2::CrashRecovery => 0.6,
+        }
+    }
+}
+
+/// Probability distribution over 8 regime states
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegimeProbsV2 {
+    pub trend_up_strong: f64,
+    pub trend_up_weak: f64,
+    pub trend_down_strong: f64,
+    pub trend_down_weak: f64,
+    pub range_quiet: f64,
+    pub range_volatile: f64,
+    pub transition: f64,
+    pub crash_recovery: f64,
+}
+
+impl RegimeProbsV2 {
+    pub fn dominant(&self) -> RegimeV2 {
+        let probs = [
+            (RegimeV2::TrendUpStrong, self.trend_up_strong),
+            (RegimeV2::TrendUpWeak, self.trend_up_weak),
+            (RegimeV2::TrendDownStrong, self.trend_down_strong),
+            (RegimeV2::TrendDownWeak, self.trend_down_weak),
+            (RegimeV2::RangeQuiet, self.range_quiet),
+            (RegimeV2::RangeVolatile, self.range_volatile),
+            (RegimeV2::Transition, self.transition),
+            (RegimeV2::CrashRecovery, self.crash_recovery),
+        ];
+        probs
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(r, _)| *r)
+            .unwrap_or(RegimeV2::RangeQuiet)
+    }
+
+    pub fn confidence(&self) -> f64 {
+        self.trend_up_strong
+            .max(self.trend_up_weak)
+            .max(self.trend_down_strong)
+            .max(self.trend_down_weak)
+            .max(self.range_quiet)
+            .max(self.range_volatile)
+            .max(self.transition)
+            .max(self.crash_recovery)
+    }
+
+    /// Normalize probabilities to sum to 1.0
+    pub fn normalize(&mut self) {
+        let total = self.trend_up_strong
+            + self.trend_up_weak
+            + self.trend_down_strong
+            + self.trend_down_weak
+            + self.range_quiet
+            + self.range_volatile
+            + self.transition
+            + self.crash_recovery;
+        if total > 0.0 {
+            let scale = 1.0 / total;
+            self.trend_up_strong *= scale;
+            self.trend_up_weak *= scale;
+            self.trend_down_strong *= scale;
+            self.trend_down_weak *= scale;
+            self.range_quiet *= scale;
+            self.range_volatile *= scale;
+            self.transition *= scale;
+            self.crash_recovery *= scale;
+        }
+    }
+
+    /// Convert to legacy 3-state probabilities
+    pub fn to_legacy(&self) -> RegimeProbs {
+        RegimeProbs {
+            accumulation: self.range_quiet + self.transition * 0.5,
+            manipulation_expansion: self.trend_up_strong
+                + self.trend_up_weak
+                + self.range_volatile
+                + self.crash_recovery * 0.3,
+            distribution: self.trend_down_strong
+                + self.trend_down_weak
+                + self.transition * 0.5
+                + self.crash_recovery * 0.7,
+        }
+    }
+}
+
+impl Default for RegimeProbsV2 {
+    fn default() -> Self {
+        Self {
+            trend_up_strong: 0.15,
+            trend_up_weak: 0.10,
+            trend_down_strong: 0.10,
+            trend_down_weak: 0.10,
+            range_quiet: 0.20,
+            range_volatile: 0.15,
+            transition: 0.15,
+            crash_recovery: 0.05,
+        }
+    }
+}
+
 // ========== 决策树 ==========
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CascadeLayer {
@@ -284,6 +442,74 @@ pub enum StructureType {
     CHoCH,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PropulsionBlock {
+    pub bar_index: usize,
+    pub direction: Direction,
+    pub body_ratio: f64,
+    pub range_atr: f64,
+    pub volume_z: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InverseFairValueGap {
+    pub top: f64,
+    pub bottom: f64,
+    pub original_direction: Direction,
+    pub direction: Direction,
+    pub origin_bar: usize,
+    pub fill_bar: usize,
+    pub confirm_bar: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BreakerBlock {
+    pub high: f64,
+    pub low: f64,
+    pub original_direction: Direction,
+    pub direction: Direction,
+    pub origin_bar: usize,
+    pub violation_bar: usize,
+    pub retest_bar: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MitigationBlock {
+    pub level: f64,
+    pub direction: Direction,
+    pub anchor_bar: usize,
+    pub retest_bar: usize,
+    pub confirm_bar: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiquidityVoid {
+    pub top: f64,
+    pub bottom: f64,
+    pub direction: Direction,
+    pub start_bar: usize,
+    pub gap_atr: f64,
+    pub filled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VolumeImbalance {
+    pub bar_index: usize,
+    pub direction: Direction,
+    pub volume: f64,
+    pub mean: f64,
+    pub std_dev: f64,
+    pub z_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketStructureShift {
+    pub bar_index: usize,
+    pub direction: Direction,
+    pub broken_swing_index: usize,
+    pub broken_swing_price: f64,
+}
+
 // ========== 交易计划 ==========
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradePlan {
@@ -325,7 +551,7 @@ pub struct FactorIC {
 }
 
 // ========== HMM ==========
-pub const OBS_DIM: usize = 12;
+pub const OBS_DIM: usize = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HMMParams {

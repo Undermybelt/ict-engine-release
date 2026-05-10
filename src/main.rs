@@ -1,21 +1,45 @@
 use anyhow::{anyhow, bail, Context, Result};
 mod analyze_live_command;
 mod analyze_shared;
+mod auto_quant_command;
 mod factor_backtest_runtime;
+mod factor_research_command;
 mod factor_research_runtime;
+mod market_data_command;
+mod policy_training_command;
 mod probabilistic_backtest_runtime;
+mod release_closure_command;
+mod research_debug_command;
+mod status_command;
+mod training_command;
 mod update_command;
 mod update_output;
+mod validate_market_state_command;
+mod workflow_snapshot_runtime;
 use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 mod analyze_command;
 use analyze_command::analyze_command;
-use analyze_live_command::{analyze_live_command, AnalyzeLiveCommandInput};
+use analyze_live_command::{analyze_live_shell, AnalyzeLiveShellInput};
 use analyze_shared::{
     apply_command_context_to_analyze_report, persist_analyze_run,
     persist_execution_candidate_from_analyze, persist_pending_update_artifact_from_analyze,
 };
-use factor_backtest_runtime::run_factor_backtest;
+use auto_quant_command::{
+    auto_quant_adoption_decision_shell, auto_quant_adoption_review_shell,
+    auto_quant_agent_material_batch_shell, auto_quant_agent_material_dispatch_shell,
+    auto_quant_agent_material_rank_shell, auto_quant_bootstrap_shell,
+    auto_quant_consume_live_signals_shell, auto_quant_ingest_real_trades_shell,
+    auto_quant_pda_unit_batch_shell, auto_quant_pda_unit_dispatch_shell, auto_quant_prepare_shell,
+    auto_quant_prior_init_shell, auto_quant_promote_canonical_setup_shell,
+    auto_quant_results_import_shell, auto_quant_seed_evidence_shell, auto_quant_status_shell,
+    auto_quant_update_shell,
+};
+use factor_backtest_runtime::{run_factor_backtest, RunFactorBacktestInput};
+use factor_research_command::{
+    factor_autoresearch_shell, factor_research_shell, FactorAutoresearchShellInput,
+    FactorResearchShellInput,
+};
 use factor_research_runtime::run_factor_research;
 use ict_engine::agent::{
     dataset_audit_prompt, factor_iteration_prompt_pack, promotion_gate_prompt,
@@ -56,6 +80,22 @@ use ict_engine::application::{
         pending_update_quality_score, pending_update_review_rule_version, pending_update_summary,
         ArtifactDiffCommandInput, ArtifactLineageCommandInput, ArtifactStatusCommandInput,
     },
+    auto_quant::command_entry::{
+        auto_quant_adoption_decision_command, auto_quant_adoption_review_command,
+        auto_quant_agent_material_batch_command, auto_quant_agent_material_dispatch_command,
+        auto_quant_agent_material_rank_command, auto_quant_bootstrap_command,
+        auto_quant_consume_live_signals_command, auto_quant_factor_autoresearch_command,
+        auto_quant_factor_research_command, auto_quant_ingest_real_trades_command,
+        auto_quant_pda_unit_batch_command, auto_quant_pda_unit_dispatch_command,
+        auto_quant_prepare_workspace_command, auto_quant_prior_init_command,
+        auto_quant_results_import_command, auto_quant_seed_evidence_command,
+        auto_quant_status_command, auto_quant_update_command,
+        AutoQuantAgentMaterialBatchCommandInput, AutoQuantAgentMaterialDispatchCommandInput,
+        AutoQuantAgentMaterialRankCommandInput, AutoQuantConsumeLiveSignalsInput,
+        AutoQuantIngestRealTradesInput, AutoQuantPdaUnitBatchCommandInput,
+        AutoQuantPdaUnitDispatchCommandInput, AutoQuantPriorInitCommandInput,
+    },
+    auto_quant::{AutoQuantFactorAutoresearchCommandInput, AutoQuantFactorResearchCommandInput},
     backtest::{
         apply_feedback_to_trade_outcome_network, artifact_consumed_decision_gate,
         augment_action_plan_with_artifact_trends,
@@ -75,7 +115,9 @@ use ict_engine::application::{
         CommandContext,
     },
     belief::{
-        apply_factor_outcome_overlay, build_canonical_belief_snapshot_with_pda,
+        apply_duration_sizing_adjustment, apply_factor_outcome_overlay,
+        apply_regime_execution_guardrail,
+        build_canonical_belief_snapshot_with_pda_and_structural_prior_state,
         build_expansion_factor_pipeline_report as build_expansion_factor_pipeline_report_v2,
         build_expansion_factor_pipeline_report_with_registry as build_expansion_factor_pipeline_report_with_registry_v2,
         build_pre_bayes_entry_quality_bridge, combine_bias_vectors, combine_liquidity_labels,
@@ -87,9 +129,11 @@ use ict_engine::application::{
         pre_bayes_policy_lineage_summary, probability_map, PreBayesEntryQualityBridgeInput,
     },
     data_sources::{
-        build_expansion_sop_market_report, run_clean_futures, run_clean_futures_multi_timeframe,
+        build_expansion_sop_market_report, market_data_harness_fetch_command,
+        market_data_harness_plan_command, run_clean_futures, run_clean_futures_multi_timeframe,
         run_expansion_sop_with, run_futures_sop_with, ExpansionSopMarketInput, ExpansionSopReport,
-        FuturesSopMarketInput, FuturesSopReport, RunExpansionSopInput,
+        FuturesSopMarketInput, FuturesSopReport, MarketDataHarnessCommandInput,
+        RunExpansionSopInput,
     },
     decision_utils::{
         append_pda_sequence_hint, build_analyze_decision_hint, derive_family_outcomes,
@@ -97,6 +141,7 @@ use ict_engine::application::{
         normalize_trade_outcome_label, parse_research_objective, pre_bayes_gate_is_hard_pass,
         pre_bayes_gate_regressed, research_objective_label, ResearchObjectiveMode,
     },
+    entry_models::build_entry_model_packet_store_for_analyze,
     factor_lifecycle::build_factor_lifecycle_view,
     factor_lifecycle::{
         apply_expansion_manipulation_objective, expansion_factor_scores_for_market,
@@ -109,17 +154,18 @@ use ict_engine::application::{
         build_live_multi_timeframe_signal, build_multi_timeframe_research_signal,
         build_multi_timeframe_summary, infer_interval_for_analyze_frame,
         resolve_analyze_cli_inputs, resolve_analyze_multi_timeframe_inputs,
-        resolve_multi_timeframe_inputs,
+        resolve_multi_timeframe_inputs, MultiTimeframeInputPaths,
     },
     orchestration::{
         build_execution_tree_artifact, build_execution_triage, build_stub_ensemble_vote_from_input,
-        build_stub_ensemble_vote_from_research, persist_execution_tree_artifact, run_stage_plan,
-        staged_orchestration_enabled, AnalyzeEnsembleVoteInput, CatBoostCompatiblePolicyEngine,
-        DefaultExecutionTreeScorer, ExecutionShapProvider, ExecutionTreeArtifact,
-        ExecutionTreeInput, ExecutionTreeScorer, FinalOutputAdapter, FinalSurfaceAdapter,
-        PipelineState, StagePlan, StagedArtifactsInput, StructuralExecutionShap,
-        EXECUTION_TREE_TRACE_FILE,
+        build_stub_ensemble_vote_from_research, persist_execution_tree_artifact,
+        refresh_consumer_reason, run_stage_plan, staged_orchestration_enabled,
+        AnalyzeEnsembleVoteInput, CatBoostCompatiblePolicyEngine, DefaultExecutionTreeScorer,
+        ExecutionShapProvider, ExecutionTreeArtifact, ExecutionTreeInput, ExecutionTreeScorer,
+        FinalOutputAdapter, FinalSurfaceAdapter, PipelineState, StagePlan, StagedArtifactsInput,
+        StructuralExecutionShap, EXECUTION_TREE_TRACE_FILE,
     },
+    provider_catalog::provider_status_command,
     reflection::{build_reflection_bundle, ReflectionBundleInput},
     regime::{
         build_mece_recovery_artifact, build_multi_timeframe_training_observations,
@@ -131,13 +177,10 @@ use ict_engine::backtest::engine::{AmbiguousBarPolicy, ExecutionRealismConfig};
 use ict_engine::backtest::BacktestEngine;
 use ict_engine::bayesian::{cascade_bear, cascade_bull, CascadeConfig};
 use ict_engine::bbn::learning::cpt_updater::{CPTUpdater, TradeOutcome};
-use ict_engine::bbn::trading::{
-    topology::{build_trading_network, upgrade_trading_network},
-    update::{
-        entry_quality_bias_from_signal, infer_entry_quality, infer_entry_quality_with_bias,
-        infer_trade_outcome, infer_trade_outcome_with_entry_quality_bias,
-        trade_evidence_from_labels, trade_evidence_from_pre_bayes_filter,
-    },
+use ict_engine::bbn::trading::update::{
+    entry_quality_bias_from_signal, infer_entry_quality, infer_entry_quality_with_bias,
+    infer_trade_outcome, infer_trade_outcome_with_entry_quality_bias, trade_evidence_from_labels,
+    trade_evidence_from_pre_bayes_filter,
 };
 use ict_engine::config::{
     build_frame_features, build_pre_bayes_evidence_filter, compute_hash, env_f64,
@@ -147,7 +190,7 @@ use ict_engine::data::{
     load_candles,
     realtime::{
         build_live_data_source,
-        openalice::{AuxiliaryMarketEvidence, SpotInstrumentKind},
+        market_support::{AuxiliaryMarketEvidence, SpotInstrumentKind},
         LiveDataBackend,
     },
 };
@@ -161,7 +204,7 @@ use ict_engine::factor_lab::{
     FactorLab,
 };
 use ict_engine::factors::{FactorRegistry, WeightUpdater};
-use ict_engine::hmm::{init_hmm_params, state_name, BaumWelch, ForwardBackward, Viterbi};
+use ict_engine::hmm::{state_name, BaumWelch, ForwardBackward, Viterbi};
 use ict_engine::ict::{
     check_bear_expansion_exists, check_bull_expansion_exists, count_recent_breaks,
     count_recent_sweeps, detect_cisd, detect_liquidity_pools, detect_liquidity_sweep,
@@ -169,25 +212,65 @@ use ict_engine::ict::{
     find_swing_lows, find_unfilled_fvgs, find_untested_obs, has_recent_pinbar,
 };
 use ict_engine::indicators::compute_atr;
+use ict_engine::pda_timeline::{build_pda_timeline, PdaEvent};
 use ict_engine::planner::{
     generate_probabilistic_trade_plan, probabilistic_decision_snapshot,
     ProbabilisticDecisionSnapshot, ProbabilisticPlanConfig, ProbabilisticTradePlanInput,
 };
+use market_data_command::{
+    clean_futures_shell, expansion_sop_shell, futures_sop_shell, market_data_harness_shell,
+};
+use policy_training_command::{
+    apply_structural_path_ranking_external_scores_shell,
+    clear_structural_path_ranking_trainer_artifact_shell,
+    disable_structural_path_ranking_runtime_shell, enable_structural_path_ranking_runtime_shell,
+    export_structural_path_ranking_target_shell, policy_training_status_shell,
+    register_structural_path_ranking_trainer_artifact_shell,
+};
 use probabilistic_backtest_runtime::{finalize_backtest_report, run_probabilistic_backtest};
+use release_closure_command::{evidence_quality_breakdown_shell, research_verdict_shell};
+use research_debug_command::{
+    factor_backtest_shell, factor_pipeline_debug_shell, FactorBacktestShellInput,
+};
 use serde_json::Value;
-use update_command::update_command;
+use status_command::{
+    artifact_diff_shell, artifact_lineage_shell, artifact_status_shell,
+    factor_autoresearch_status_shell, factor_mutation_status_shell, pre_bayes_diff_shell,
+    pre_bayes_status_shell, provider_status_shell, workflow_status_shell, ArtifactDiffShellInput,
+    ArtifactLineageShellInput, ArtifactStatusShellInput, WorkflowStatusShellInput,
+};
+use training_command::train_command;
+use update_command::update_shell;
 use update_output::{
     apply_update_outcome_to_executor_scorecards, build_ensemble_vote_record, emit_update_output,
     feedback_record_from_artifact, latest_execution_candidate_for_source_run,
     load_canonical_executor_scorecards, persist_ensemble_vote_record,
 };
+use validate_market_state_command::{validate_market_state_shell, ValidateMarketStateInput};
+#[cfg(test)]
+use workflow_snapshot_runtime::{
+    build_workflow_snapshot, workflow_disagreements, workflow_field_diffs,
+    workflow_phase_snapshot_from_backtest_run, workflow_phase_snapshot_from_research_run,
+    workflow_phase_snapshot_from_update_run, BuildWorkflowSnapshotInput,
+};
+use workflow_snapshot_runtime::{
+    compact_canonical_structural_regime_summary, refresh_workflow_snapshot,
+    workflow_phase_snapshot_from_analyze_run,
+};
+#[cfg(test)]
+use workflow_snapshot_runtime::{factor_conflict_sources, family_conflict_sources};
 
 #[cfg(test)]
+use ict_engine::application::backtest::build_duration_surface_from_artifacts;
+#[cfg(test)]
 use ict_engine::application::backtest::recommended_command;
+#[cfg(test)]
+use ict_engine::application::belief::duration_sizing_scale;
 #[cfg(test)]
 use ict_engine::application::factor_lifecycle::forced_cluster_jump_template;
 #[cfg(test)]
 use ict_engine::application::output_foundation::{redact_local_paths, redact_local_paths_in_value};
+use ict_engine::bbn::trading::persistence::load_or_init_trading_network;
 #[cfg(test)]
 use ict_engine::state::FeedbackFactorUsage;
 #[cfg(test)]
@@ -199,9 +282,9 @@ use ict_engine::state::{
     append_trade_history, append_train_run, append_update_run, load_artifact_ledger,
     load_ensemble_executor_scorecards, load_ensemble_vote_history,
     load_execution_candidate_history, load_learning_state, load_pending_update_artifact,
-    load_pending_update_history, load_pre_bayes_policy_history, load_state, load_state_or_default,
-    mark_artifact_consumed, migrate_ensemble_executor_scorecards, recommended_next_command_meta,
-    save_ensemble_executor_scorecards, save_ensemble_vote_artifact,
+    load_pending_update_history, load_pre_bayes_policy_history, load_state_or_default,
+    load_workflow_snapshot, mark_artifact_consumed, migrate_ensemble_executor_scorecards,
+    recommended_next_command_meta, save_ensemble_executor_scorecards, save_ensemble_vote_artifact,
     save_execution_candidate_artifact, save_learning_state, save_pending_update_artifact,
     save_state, save_workflow_snapshot, state_exists, AgentActionItem, AgentActionPlan,
     AgentContextBundle, AgentContextBundleMinimal, AnalyzeRunRecord, ArtifactLedgerEntry,
@@ -217,8 +300,8 @@ use ict_engine::state::{
     RankingDiffItem, ResearchRunRecord, RollbackRecommendation, RunProvenance, TrainRunRecord,
     UpdateRunRecord, WorkflowBlockingTruth, WorkflowConflictSource, WorkflowDisagreement,
     WorkflowFieldDiff, WorkflowPhaseSnapshot, WorkflowSnapshot, WorkflowState, ANALYZE_RUNS_FILE,
-    BACKTEST_RUNS_FILE, ENSEMBLE_VOTE_FILE, EXECUTION_CANDIDATE_FILE, PENDING_UPDATE_ARTIFACT_FILE,
-    RESEARCH_RUNS_FILE, TRAIN_RUNS_FILE, UPDATE_RUNS_FILE,
+    BACKTEST_RUNS_FILE, BBN_STATE_FILE, ENSEMBLE_VOTE_FILE, EXECUTION_CANDIDATE_FILE,
+    PENDING_UPDATE_ARTIFACT_FILE, RESEARCH_RUNS_FILE, TRAIN_RUNS_FILE, UPDATE_RUNS_FILE,
 };
 #[cfg(test)]
 use ict_engine::types::Symbol;
@@ -254,8 +337,6 @@ impl OutputFormat {
 use std::collections::{BTreeMap, HashMap};
 use std::env;
 
-const HMM_STATE_FILE: &str = "hmm_params.json";
-const BBN_STATE_FILE: &str = "bbn_network.json";
 type AnalyzeReport = ict_engine::analyze_report_shell::AnalyzeReport;
 type AnalyzeMeta = ict_engine::analyze_report_shell::AnalyzeMeta;
 type AnalyzeSupporting = ict_engine::analyze_report_shell::AnalyzeSupporting;
@@ -290,6 +371,10 @@ struct UpdateReport {
     factor_alignment: String,
     factor_uncertainty: String,
     realized_outcome: String,
+    structural_learning_credit_class: Option<String>,
+    structural_learning_success_credit: Option<f64>,
+    structural_learning_observation_weight: Option<f64>,
+    structural_feedback: Option<ict_engine::state::StructuralFeedbackRefs>,
     feedback_records_applied: usize,
     duplicate_feedback_skipped: bool,
     consumed_pending_update_artifact_id: Option<String>,
@@ -298,6 +383,8 @@ struct UpdateReport {
     consumed_analyze_run_id: Option<String>,
     consumed_pre_bayes_evidence_filter: Option<PreBayesEvidenceFilter>,
     consumed_pre_bayes_entry_quality_bridge: Option<ict_engine::state::PreBayesEntryQualityBridge>,
+    consumed_canonical_structural_regime_posterior:
+        Option<ict_engine::state::CanonicalStructuralRegimePosterior>,
     consumed_multi_timeframe_summary: Vec<String>,
     updated_trade_outcome: BTreeMap<String, f64>,
     factor_ranking: Vec<PersistedFactorRanking>,
@@ -330,6 +417,14 @@ struct BaselineFactorMutationMetricsInput<'a> {
     baseline_learning_state: &'a LearningState,
     candles: &'a [Candle],
     paired_candles: Option<&'a [Candle]>,
+    m1_events: Option<&'a [PdaEvent]>,
+    m5_events: Option<&'a [PdaEvent]>,
+    m15_events: Option<&'a [PdaEvent]>,
+    m30_events: Option<&'a [PdaEvent]>,
+    h1_events: Option<&'a [PdaEvent]>,
+    h4_events: Option<&'a [PdaEvent]>,
+    d1_events: Option<&'a [PdaEvent]>,
+    w1_events: Option<&'a [PdaEvent]>,
     multi_timeframe_summary: &'a [String],
     evaluate_expansion_preview: bool,
 }
@@ -344,6 +439,10 @@ struct BuildAnalyzeReportInput<'a> {
     params: &'a HMMParams,
     network: &'a ict_engine::bbn::BayesianNetwork,
     build_context: AnalyzeBuildContext<'a>,
+    regime_bundle_adapter: Option<
+        &'a ict_engine::application::regime::consumer_bundle_adapter::RegimeConsumerBundleAdapter,
+    >,
+    apply_regime_bundle_bbn_soft_evidence: bool,
     execution_focus: bool,
 }
 
@@ -361,20 +460,6 @@ struct RunProbabilisticBacktestInput<'a> {
     learning_state: &'a mut LearningState,
 }
 
-struct BuildWorkflowSnapshotInput<'a> {
-    state_dir: &'a str,
-    symbol: &'a str,
-    latest_train: Option<&'a TrainRunRecord>,
-    latest_analyze: Option<&'a AnalyzeRunRecord>,
-    latest_research: Option<&'a ResearchRunRecord>,
-    latest_backtest: Option<&'a BacktestRunRecord>,
-    latest_update: Option<&'a UpdateRunRecord>,
-    pre_bayes_policy_history: &'a [PreBayesPolicyRecord],
-    pending_update_history: &'a [PendingUpdateArtifact],
-    execution_candidate_history: &'a [ExecutionCandidateArtifact],
-    artifact_ledger: &'a [ArtifactLedgerEntry],
-}
-
 struct UpdateCommandInput<'a> {
     symbol: &'a str,
     outcome: &'a str,
@@ -389,7 +474,18 @@ struct UpdateCommandInput<'a> {
 
 #[derive(Parser)]
 #[command(name = "ict-engine")]
-#[command(about = "ICT Expansion Trading Engine", long_about = None, version)]
+#[command(
+    about = "ICT Expansion Trading Engine",
+    long_about = None,
+    version,
+    after_help = "Start here:
+  ict-engine workflow-status --symbol DEMO --state-dir /tmp/ict-engine-first-run --human
+  ict-engine provider-status --compact
+  ict-engine analyze --symbol DEMO --demo --state-dir /tmp/ict-engine-first-run --human
+
+When you want managed factor iteration:
+  ict-engine auto-quant-status --state-dir /tmp/ict-engine-auto-quant"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -397,12 +493,17 @@ struct Cli {
 
 const DEFAULT_STATE_DIR: &str = "state";
 const STATE_DIR_ENV_VAR: &str = "ICT_ENGINE_STATE_DIR";
+const AUTO_QUANT_OUTPUT_DIR_ENV_VAR: &str = "ICT_ENGINE_AUTO_QUANT_OUTPUT_DIR";
+const DEFAULT_AUTO_QUANT_SUBDIR: &str = "auto-quant";
+const AUTO_QUANT_REPO_URL_ENV_VAR: &str = "ICT_ENGINE_AUTO_QUANT_REPO_URL";
+const AUTO_QUANT_BRANCH_ENV_VAR: &str = "ICT_ENGINE_AUTO_QUANT_BRANCH";
+const AUTO_QUANT_DIR_ENV_VAR: &str = "ICT_ENGINE_AUTO_QUANT_DIR";
 
 #[derive(Subcommand)]
 enum Commands {
     /// Analyze market data
     Analyze {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(long, help = "Higher-timeframe cleaned candle JSON path")]
         data_htf: Option<String>,
@@ -417,14 +518,14 @@ enum Commands {
         data_root: Option<String>,
         #[arg(
             long,
-            help = "Use bundled demo candles from examples/demo/demo-15m.json"
+            help = "Use bundled demo candles from examples/demo/demo-15m.json for first-run analyze checks; too short for backtest"
         )]
         demo: bool,
         #[arg(
             long,
             env = "ICT_ENGINE_STATE_DIR",
             default_value = "state",
-            help = "State directory for model and workflow artifacts"
+            help = "State directory for model and workflow artifacts; pass /tmp/... for no-pollution first runs"
         )]
         state_dir: String,
         #[arg(
@@ -451,43 +552,65 @@ enum Commands {
             help = "Disable the leading Execution Triage section / envelope field (default: on)"
         )]
         no_execution_focus: bool,
+        #[arg(
+            long,
+            help = "Optional regime_consumer_bundle.json path for read-only trace/report context"
+        )]
+        regime_consumer_bundle: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Fail analyze if --regime-consumer-bundle is missing or invalid"
+        )]
+        regime_consumer_bundle_strict: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Opt in to applying strong/moderate regime bundle BBN soft evidence to the pre-Bayes filter"
+        )]
+        apply_regime_bundle_bbn_soft_evidence: bool,
     },
     /// Analyze live futures with integrated backends and spot/options auxiliary evidence
     AnalyzeLive {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
-        #[arg(long, help = "Explicit futures symbol override for live data provider")]
+        #[arg(long, help = "Explicit futures symbol for the live data provider")]
         futures_symbol: Option<String>,
-        #[arg(long, help = "Explicit spot symbol override for auxiliary evidence")]
+        #[arg(long, help = "Explicit spot symbol for auxiliary evidence")]
         spot_symbol: Option<String>,
-        #[arg(long, help = "Explicit options symbol override for auxiliary evidence")]
+        #[arg(long, help = "Explicit options symbol for auxiliary evidence")]
         options_symbol: Option<String>,
+        #[arg(
+            long,
+            help = "Optional explicit volatility proxy symbol used only when options-chain fetch fails"
+        )]
+        options_volatility_proxy_symbol: Option<String>,
         #[arg(long, help = "Spot instrument kind override, e.g. spot, etf, index")]
         spot_kind: Option<String>,
         #[arg(
             long,
-            default_value = "openbb",
+            default_value = "yfinance",
             help = "Backend for live futures candles"
         )]
         futures_backend: String,
         #[arg(
             long,
-            default_value = "openbb",
+            default_value = "yfinance",
             help = "Backend for auxiliary spot/options evidence"
         )]
         aux_backend: String,
         #[arg(
             long,
             default_value = "http://127.0.0.1:6901/api/v1",
-            help = "Base URL for OpenAlice-compatible live backend"
+            help = "Base URL for the external HTTP live runtime when that backend is selected"
         )]
-        openalice_base_url: String,
+        external_http_base_url: String,
         #[arg(
             long,
             default_value = "http://127.0.0.1:8080",
-            help = "Base URL for NoFX-compatible live backend"
+            help = "Base URL for the optional crypto-public runtime when that backend is selected"
         )]
-        nofx_base_url: String,
+        crypto_public_base_url: String,
         #[arg(
             long,
             env = "ICT_ENGINE_STATE_DIR",
@@ -495,10 +618,75 @@ enum Commands {
             help = "State directory for model and workflow artifacts"
         )]
         state_dir: String,
+        #[arg(
+            long,
+            default_value = "",
+            help = "Output format: json (default), compact, agent, or human. `--compact`, `--agent`, `--human` are aliases; do not combine them with `--output-format`."
+        )]
+        output_format: String,
+        #[arg(long, help = "Alias for --output-format compact")]
+        compact: bool,
+        #[arg(long, help = "Alias for --output-format agent")]
+        agent: bool,
+        #[arg(long, help = "Alias for --output-format human")]
+        human: bool,
+        #[arg(
+            long,
+            help = "Optional regime_consumer_bundle.json path for read-only trace/report context"
+        )]
+        regime_consumer_bundle: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Fail analyze-live if --regime-consumer-bundle is missing or invalid"
+        )]
+        regime_consumer_bundle_strict: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Opt in to applying strong/moderate regime bundle BBN soft evidence to the pre-Bayes filter"
+        )]
+        apply_regime_bundle_bbn_soft_evidence: bool,
+    },
+    /// Validate market-state main/sub-regime confidence on OHLCV candles
+    ValidateMarketState {
+        #[arg(long, help = "Cleaned candle JSON or CSV path")]
+        data: String,
+        #[arg(
+            long,
+            default_value_t = 100,
+            help = "Sliding window size used for each market-state classification"
+        )]
+        window_size: usize,
+        #[arg(
+            long,
+            default_value_t = 1,
+            help = "Sliding window step size; increase for faster broad checks"
+        )]
+        step_size: usize,
+        #[arg(long, help = "Print periodic per-window classification samples")]
+        verbose: bool,
+        #[arg(long, help = "Print a compact human-readable summary")]
+        compact: bool,
+        #[arg(
+            long,
+            help = "Disable enhanced aggregation and use the basic aggregator fallback"
+        )]
+        no_enhanced: bool,
+        #[arg(
+            long,
+            help = "Optional market-state JSON config path for hot-pluggable tuning"
+        )]
+        config: Option<String>,
+        #[arg(
+            long,
+            help = "Optional profile name: default, trend_trading, volatility_trading, reversal_trading, risk_control, or high_confidence"
+        )]
+        profile: Option<String>,
     },
     /// Train HMM model
     Train {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(long, help = "Cleaned candle JSON path used for HMM training")]
         data: String,
@@ -519,7 +707,7 @@ enum Commands {
     },
     /// Run backtest
     Backtest {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(long, help = "Primary cleaned candle JSON path")]
         data: String,
@@ -573,7 +761,7 @@ enum Commands {
     },
     /// Update BBN from realized trade outcome
     Update {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(long, help = "Realized trade outcome label")]
         outcome: String,
@@ -610,7 +798,7 @@ enum Commands {
         #[arg(
             long,
             default_value = "RESEARCH",
-            help = "Market symbol, e.g. NQ, ES, GC"
+            help = "Instrument identifier supplied by the caller"
         )]
         symbol: String,
         #[arg(long, help = "Primary cleaned candle JSON path")]
@@ -627,6 +815,8 @@ enum Commands {
         data_5m: Option<String>,
         #[arg(long, help = "Optional 15m candle JSON path")]
         data_15m: Option<String>,
+        #[arg(long, help = "Optional 30m candle JSON path")]
+        data_30m: Option<String>,
         #[arg(long, help = "Optional 1h candle JSON path")]
         data_1h: Option<String>,
         #[arg(long, help = "Optional 4h candle JSON path")]
@@ -635,8 +825,31 @@ enum Commands {
         data_1d: Option<String>,
         #[arg(long, help = "Optional paired-market candle JSON path")]
         paired_data: Option<String>,
+        #[arg(long, help = "Optional opt-in provider profile id or JSON path")]
+        profile: Option<String>,
+        #[arg(
+            long,
+            help = "Optional managed Auto-Quant workspace profile. `synthetic_ohlcv` deploys the additive external runner against the provided primary candle JSON; `managed` clears any saved profile for this state dir."
+        )]
+        auto_quant_profile: Option<String>,
+        #[arg(
+            long,
+            help = "Optional path to AuxiliaryMarketEvidence JSON, or a full analyze-report JSON containing supporting.auxiliary"
+        )]
+        auxiliary_evidence: Option<String>,
         #[arg(long, help = "Optional mutation spec JSON path")]
         mutation_spec: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Attach the canonical PB(12) control-matrix plan to native output without changing the executed research run"
+        )]
+        control_matrix_pb12: bool,
+        #[arg(
+            long,
+            help = "Optional read-only external strategy material root (for example a Tomac py/csv workspace) used only to enrich auto-quant handoff seed guidance"
+        )]
+        strategy_material_root: Option<String>,
         #[arg(
             long,
             default_value_t = false,
@@ -653,7 +866,7 @@ enum Commands {
             long,
             env = "ICT_ENGINE_STATE_DIR",
             default_value = "state",
-            help = "State directory for model and workflow artifacts"
+            help = "State directory for model and workflow artifacts; pass /tmp/... for no-pollution first runs"
         )]
         state_dir: String,
         #[arg(
@@ -668,10 +881,51 @@ enum Commands {
         agent: bool,
         #[arg(long, help = "Alias for --output-format human")]
         human: bool,
+        #[arg(
+            long,
+            default_value = "auto-quant",
+            help = "Research backend: auto-quant (default) or native; pass --backend native for the Rust-only first-run path"
+        )]
+        backend: String,
+    },
+    /// [Experimental/Internal] Promote a PB12 discovery candidate into the repo-versioned canonical setup manifest
+    AutoQuantPromoteCanonicalSetup {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            help = "Versioned setup name to write into the promoted canonical manifest"
+        )]
+        setup_name: String,
+        #[arg(
+            long,
+            help = "Discovery sequence label, e.g. 'liquidity_sweep -> market_structure_shift'"
+        )]
+        sequence_label: String,
+        #[arg(long, help = "Optional direction filter: bull, bear, or neutral")]
+        direction: Option<String>,
+        #[arg(
+            long,
+            help = "Optional explicit PB12 sweep id; defaults to the latest artifact for the symbol"
+        )]
+        sweep_id: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 30,
+            help = "Maximum event span in bars for the promoted sequence matcher"
+        )]
+        horizon_bars: usize,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory containing PB12 discovery artifacts"
+        )]
+        state_dir: String,
     },
     /// Show factor mutation history and clustered failure tags
     FactorMutationStatus {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -704,7 +958,7 @@ enum Commands {
     },
     /// Run checkpointed keep/discard factor mutation autoresearch loop
     FactorAutoresearch {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(long, help = "Primary cleaned candle JSON path")]
         data: String,
@@ -728,6 +982,8 @@ enum Commands {
         data_5m: Option<String>,
         #[arg(long, help = "Optional 15m candle JSON path")]
         data_15m: Option<String>,
+        #[arg(long, help = "Optional 30m candle JSON path")]
+        data_30m: Option<String>,
         #[arg(long, help = "Optional 1h candle JSON path")]
         data_1h: Option<String>,
         #[arg(long, help = "Optional 4h candle JSON path")]
@@ -736,6 +992,23 @@ enum Commands {
         data_1d: Option<String>,
         #[arg(long, help = "Optional paired-market candle JSON path")]
         paired_data: Option<String>,
+        #[arg(long, help = "Optional opt-in provider profile id or JSON path")]
+        profile: Option<String>,
+        #[arg(
+            long,
+            help = "Optional managed Auto-Quant workspace profile. `synthetic_ohlcv` deploys the additive external runner against the provided primary candle JSON; `managed` clears any saved profile for this state dir."
+        )]
+        auto_quant_profile: Option<String>,
+        #[arg(
+            long,
+            help = "Optional path to AuxiliaryMarketEvidence JSON, or a full analyze-report JSON containing supporting.auxiliary"
+        )]
+        auxiliary_evidence: Option<String>,
+        #[arg(
+            long,
+            help = "Optional read-only external strategy material root (for example a Tomac py/csv workspace) used only to enrich auto-quant handoff seed guidance"
+        )]
+        strategy_material_root: Option<String>,
         #[arg(long, help = "Explicit autoresearch session id to resume or inspect")]
         session_id: Option<String>,
         #[arg(
@@ -763,12 +1036,132 @@ enum Commands {
             help = "State directory for model and workflow artifacts"
         )]
         state_dir: String,
+        #[arg(
+            long,
+            default_value = "auto-quant",
+            help = "Autoresearch backend: auto-quant (default) or native"
+        )]
+        backend: String,
     },
     /// Show the currently effective ICT-related environment settings
     Env,
+    /// Show managed Auto-Quant dependency status
+    AutoQuantStatus {
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant dependency metadata"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            default_value = "",
+            help = "Output format: json (default), compact, or human. `--compact` and `--human` are aliases; do not combine them with `--output-format`."
+        )]
+        output_format: String,
+        #[arg(long, help = "Alias for --output-format compact")]
+        compact: bool,
+        #[arg(long, help = "Alias for --output-format human")]
+        human: bool,
+    },
+    /// Bootstrap the managed Auto-Quant dependency checkout
+    AutoQuantBootstrap {
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant dependency metadata"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_AUTO_QUANT_REPO_URL",
+            help = "Override Auto-Quant upstream repository URL"
+        )]
+        repo_url: Option<String>,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_AUTO_QUANT_BRANCH",
+            help = "Override tracked Auto-Quant branch"
+        )]
+        tracked_branch: Option<String>,
+    },
+    /// Update the managed Auto-Quant dependency checkout
+    AutoQuantUpdate {
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant dependency metadata"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_AUTO_QUANT_REPO_URL",
+            help = "Override Auto-Quant upstream repository URL"
+        )]
+        repo_url: Option<String>,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_AUTO_QUANT_BRANCH",
+            help = "Override tracked Auto-Quant branch"
+        )]
+        tracked_branch: Option<String>,
+        #[arg(long, help = "Explicit Auto-Quant target ref to checkout")]
+        target_ref: Option<String>,
+    },
+    /// Prepare the managed Auto-Quant workspace data in-place through the repo CLI
+    AutoQuantPrepare {
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant dependency metadata"
+        )]
+        state_dir: String,
+    },
+    /// Review the latest Auto-Quant handoff candidate as an adoption surface
+    AutoQuantAdoptionReview {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant handoff artifacts"
+        )]
+        state_dir: String,
+        #[arg(long, help = "Optional specific handoff artifact id to review")]
+        artifact_id: Option<String>,
+    },
+    /// Record an explicit adoption decision for an Auto-Quant handoff candidate
+    AutoQuantAdoptionDecision {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant handoff artifacts"
+        )]
+        state_dir: String,
+        #[arg(long, help = "Optional specific handoff artifact id to decide on")]
+        artifact_id: Option<String>,
+        #[arg(long, help = "Decision label, e.g. adopt, discard, defer")]
+        decision: String,
+        #[arg(long, help = "Why this decision was made")]
+        rationale: String,
+        #[arg(
+            long,
+            default_value = "manual",
+            help = "Who or what recorded the decision"
+        )]
+        requested_by: String,
+    },
     /// Show factor-autoresearch sessions and attempts
     FactorAutoresearchStatus {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -789,7 +1182,7 @@ enum Commands {
     },
     /// Summarize research closure truth into one compact verdict
     ResearchVerdict {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -800,7 +1193,7 @@ enum Commands {
     },
     /// Explain the latest Pre-Bayes evidence quality score composition
     EvidenceQualityBreakdown {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -817,7 +1210,7 @@ enum Commands {
     },
     /// Run factor walk-forward backtest and learning updates
     FactorBacktest {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(long, help = "Primary cleaned candle JSON path")]
         data: String,
@@ -827,6 +1220,8 @@ enum Commands {
         data_5m: Option<String>,
         #[arg(long, help = "Optional 15m candle JSON path")]
         data_15m: Option<String>,
+        #[arg(long, help = "Optional 30m candle JSON path")]
+        data_30m: Option<String>,
         #[arg(long, help = "Optional 1h candle JSON path")]
         data_1h: Option<String>,
         #[arg(long, help = "Optional 4h candle JSON path")]
@@ -835,6 +1230,11 @@ enum Commands {
         data_1d: Option<String>,
         #[arg(long, help = "Optional paired-market candle JSON path")]
         paired_data: Option<String>,
+        #[arg(
+            long,
+            help = "Optional path to AuxiliaryMarketEvidence JSON, or a full analyze-report JSON containing supporting.auxiliary"
+        )]
+        auxiliary_evidence: Option<String>,
         #[arg(
             long,
             default_value_t = false,
@@ -915,9 +1315,54 @@ enum Commands {
         )]
         emit_mutation_evaluation: bool,
     },
+    /// Agent-operable market-data harness driven by explicit external request/provider config
+    MarketDataHarness {
+        #[arg(long, default_value = "plan", help = "Harness action: plan or fetch")]
+        action: String,
+        #[arg(
+            long,
+            help = "Optional opaque request label when not using --request-json or --request-stdin"
+        )]
+        market: Option<String>,
+        #[arg(
+            long,
+            help = "Optional primary candle JSON path to infer interval/range"
+        )]
+        primary_data: Option<String>,
+        #[arg(long, help = "Optional explicit interval override, e.g. 15m, 1h, 1d")]
+        interval: Option<String>,
+        #[arg(
+            long,
+            help = "Related role to resolve from explicit caller configuration; repeatable"
+        )]
+        role: Vec<String>,
+        #[arg(
+            long,
+            help = "Explicit per-role provider mapping, role=provider; repeatable"
+        )]
+        provider: Vec<String>,
+        #[arg(
+            long,
+            help = "Explicit role=symbol shorthand for simple providers; repeatable"
+        )]
+        symbol_spec: Vec<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Read the full harness request JSON from stdin"
+        )]
+        request_stdin: bool,
+        #[arg(
+            long,
+            help = "Optional explicit volatility proxy symbol for options.summary fallback"
+        )]
+        options_volatility_proxy_symbol: Option<String>,
+        #[arg(long, help = "Full request JSON path; preferred over individual flags")]
+        request_json: Option<String>,
+    },
     /// Structured latest-sample trace from factor signal through Pre-Bayes, bridge, and resonance
     FactorPipelineDebug {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(long, help = "Primary cleaned candle JSON path")]
         data: String,
@@ -935,6 +1380,8 @@ enum Commands {
         data_5m: Option<String>,
         #[arg(long, help = "Optional 15m candle JSON path")]
         data_15m: Option<String>,
+        #[arg(long, help = "Optional 30m candle JSON path")]
+        data_30m: Option<String>,
         #[arg(long, help = "Optional 1h candle JSON path")]
         data_1h: Option<String>,
         #[arg(long, help = "Optional 4h candle JSON path")]
@@ -944,7 +1391,7 @@ enum Commands {
     },
     /// Show the latest cross-phase workflow snapshot
     WorkflowStatus {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -958,6 +1405,8 @@ enum Commands {
             help = "Refresh snapshot from current artifacts before printing"
         )]
         refresh: bool,
+        #[arg(long, help = "Optional opt-in provider profile id or JSON path")]
+        profile: Option<String>,
         #[arg(
             long,
             help = "Print a named workflow phase surface instead of the full snapshot"
@@ -1014,7 +1463,7 @@ enum Commands {
     },
     /// Show the latest Pre-Bayes status directly
     PreBayesStatus {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -1033,10 +1482,176 @@ enum Commands {
             help = "Optional Pre-Bayes section to print, e.g. policy or bridge"
         )]
         section: Option<String>,
+        #[arg(
+            long,
+            default_value = "",
+            help = "Output format: json (default), compact, or human. `--compact` and `--human` are aliases; do not combine them with `--output-format`."
+        )]
+        output_format: String,
+        #[arg(long, help = "Alias for --output-format compact")]
+        compact: bool,
+        #[arg(long, help = "Alias for --output-format human")]
+        human: bool,
+    },
+    /// Show a read-only quality summary for internal policy training tables.
+    PolicyTrainingStatus {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            default_value = "state",
+            help = "State directory containing analyze/update histories and policy_training artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long = "entry-model",
+            alias = "provider",
+            help = "Optional entry-model id filter. Available ids are listed in the command output."
+        )]
+        entry_model: Option<String>,
+        #[arg(
+            long,
+            default_value = "",
+            help = "Output format: json (default), compact, agent, or human. `--compact` and `--human` are aliases; do not combine them with `--output-format`."
+        )]
+        output_format: String,
+        #[arg(long, help = "Alias for --output-format compact")]
+        compact: bool,
+        #[arg(long, help = "Alias for --output-format human")]
+        human: bool,
+    },
+    /// Register an explicit external structural path-ranker artifact into the policy_training contract.
+    RegisterStructuralPathRankingTrainerArtifact {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            default_value = "state",
+            help = "State directory containing policy_training artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Explicit external trainer artifact URI or path to register; runtime reuse remains disabled until explicitly enabled"
+        )]
+        artifact_uri: String,
+        #[arg(
+            long,
+            help = "External model family label, for example catboost or xgboost"
+        )]
+        model_family: String,
+        #[arg(
+            long,
+            default_value = "raw_path_score",
+            help = "Score column emitted by the external trainer artifact"
+        )]
+        score_column: String,
+        #[arg(
+            long,
+            help = "Optional override for the trained row count recorded in the artifact"
+        )]
+        trained_rows: Option<usize>,
+        #[arg(
+            long,
+            help = "Optional override for the calibration row count recorded in the artifact"
+        )]
+        calibration_rows: Option<usize>,
+    },
+    /// Remove a previously registered external structural path-ranker artifact from the policy_training contract.
+    ClearStructuralPathRankingTrainerArtifact {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            default_value = "state",
+            help = "State directory containing policy_training artifacts"
+        )]
+        state_dir: String,
+    },
+    /// Opt in to reusing external structural path-ranking scores for current consumer surfaces.
+    EnableStructuralPathRankingRuntime {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            default_value = "state",
+            help = "State directory containing workflow snapshot, learning state, and policy_training artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            default_value = "candidate_set_only",
+            help = "Reuse mode: candidate_set_only or prefer_history"
+        )]
+        reuse_mode: String,
+    },
+    /// Disable previously enabled structural path-ranking runtime reuse and return to zero-config defaults.
+    DisableStructuralPathRankingRuntime {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            default_value = "state",
+            help = "State directory containing workflow snapshot, learning state, and policy_training artifacts"
+        )]
+        state_dir: String,
+    },
+    /// Export the structural path-ranking target summary and row files on demand from persisted workflow state.
+    ExportStructuralPathRankingTarget {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            default_value = "state",
+            help = "State directory containing workflow snapshot, learning state, and policy_training artifacts"
+        )]
+        state_dir: String,
+    },
+    /// Apply explicit external raw path scores onto the latest and accumulated structural path-ranking target datasets.
+    ApplyStructuralPathRankingExternalScores {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            default_value = "state",
+            help = "State directory containing workflow snapshot, learning state, and policy_training artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Path to a CSV or JSONL file with candidate_set_id,path_id,raw_path_score rows"
+        )]
+        scores_file: String,
+    },
+    /// Show a global read-only catalog of providers grouped by domain.
+    ProviderStatus {
+        #[arg(
+            long,
+            help = "Optional domain filter: market_data, live_runtime, local_runtime, entry_model"
+        )]
+        domain: Option<String>,
+        #[arg(long, help = "Optional provider id filter")]
+        provider: Option<String>,
+        #[arg(long, help = "Optional opt-in provider profile id or JSON path")]
+        profile: Option<String>,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Print a compact human-readable summary"
+        )]
+        compact: bool,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Print a compact machine-readable agent summary"
+        )]
+        agent: bool,
+        #[arg(long, default_value_t = false, help = "Print one JSON record per line")]
+        jsonl: bool,
     },
     /// Show the latest Pre-Bayes diff package directly
     PreBayesDiff {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -1053,7 +1668,7 @@ enum Commands {
     },
     /// Show artifact lineage edges and related nodes
     ArtifactLineage {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -1090,7 +1705,7 @@ enum Commands {
     },
     /// Show artifact ledger status
     ArtifactStatus {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -1147,7 +1762,7 @@ enum Commands {
     },
     /// Diff two artifacts by id
     ArtifactDiff {
-        #[arg(long, help = "Market symbol, e.g. NQ, ES, GC")]
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
         symbol: String,
         #[arg(
             long,
@@ -1159,6 +1774,332 @@ enum Commands {
         left_artifact_id: String,
         #[arg(long, help = "Right artifact id for diff comparison")]
         right_artifact_id: String,
+    },
+    /// Persist external strategy materials as seed evidence nodes for Auto-Quant iteration
+    AutoQuantSeedEvidence {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant seed evidence artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Explicit read-only external strategy material root, for example a Tomac py/csv workspace"
+        )]
+        strategy_material_root: String,
+        #[arg(
+            long,
+            default_value_t = 5,
+            help = "Maximum number of top external materials to persist into the seed evidence artifact"
+        )]
+        limit: usize,
+    },
+    #[command(hide = true)]
+    /// [Experimental/Internal] Build ontology-driven Auto-Quant unit jobs for maintainer/research use.
+    AutoQuantPdaUnitBatch {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            default_value = "expansion_manipulation",
+            help = "Research objective label carried into every unit handoff"
+        )]
+        objective: String,
+        #[arg(
+            long,
+            help = "Comma-separated PDA primitive names, e.g. order_block,fair_value_gap,mss,cisd"
+        )]
+        factors: String,
+        #[arg(
+            long,
+            default_value_t = 1,
+            help = "Ordered primitive-sequence length; 1 for base units, 2+ for later sequence waves"
+        )]
+        combination_size: usize,
+        #[arg(
+            long,
+            default_value = "long,short",
+            help = "Comma-separated unit directions: long, short"
+        )]
+        directions: String,
+        #[arg(
+            long,
+            help = "Comma-separated requested timeframes, e.g. 15m or 15m,1h"
+        )]
+        timeframes: String,
+        #[arg(
+            long = "timeframe-data",
+            help = "Repeatable timeframe mapping in the form <timeframe>=<path>, e.g. 15m=/tmp/nq-15m.json"
+        )]
+        timeframe_data: Vec<String>,
+        #[arg(
+            long,
+            default_value = "",
+            help = "Comma-separated consumer evidence surfaces, e.g. indicators,volatility,greeks,open_interest,implied_volatility,cross_market"
+        )]
+        evidence_surfaces: String,
+        #[arg(
+            long,
+            default_value = "",
+            help = "Comma-separated indicator names the consumer explicitly requires, e.g. rsi14,ema20,atr14"
+        )]
+        indicator_list: String,
+        #[arg(
+            long = "evidence-note",
+            help = "Repeatable freeform consumer evidence requirement note"
+        )]
+        evidence_notes: Vec<String>,
+        #[arg(
+            long,
+            default_value_t = 4,
+            help = "Maximum number of independent unit jobs to dispatch in parallel"
+        )]
+        max_parallel: usize,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding the batch manifest plus isolated per-unit handoffs"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Optional Auto-Quant repo URL or local path override used when bootstrapping the shared workspace"
+        )]
+        repo_url: Option<String>,
+        #[arg(
+            long,
+            help = "Optional Auto-Quant branch override used when bootstrapping the shared workspace"
+        )]
+        tracked_branch: Option<String>,
+    },
+    #[command(hide = true)]
+    /// [Experimental/Internal] Dispatch an ontology-driven Auto-Quant unit batch into external execution and collect per-unit results.
+    AutoQuantPdaUnitDispatch {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding the PDA unit batch manifest and isolated unit state"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Optional explicit auto-quant-pda-unit-batch artifact id; defaults to the latest batch for the symbol"
+        )]
+        batch_artifact_id: Option<String>,
+        #[arg(
+            long,
+            help = "Optional comma-separated dispatch group indices, e.g. 0,1,3; defaults to every group in the batch"
+        )]
+        group_indices: Option<String>,
+    },
+    /// Build a generic agent-material batch from agent-produced strategy packages.
+    AutoQuantAgentMaterialBatch {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long = "material",
+            help = "Repeatable path to an agent-produced strategy material package (.json)"
+        )]
+        materials: Vec<String>,
+        #[arg(
+            long,
+            default_value_t = 4,
+            help = "Maximum number of independent jobs to dispatch in parallel"
+        )]
+        max_parallel: usize,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding the generic agent-material batch artifact"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Optional Auto-Quant repo URL or local path override used when bootstrapping the shared workspace"
+        )]
+        repo_url: Option<String>,
+        #[arg(
+            long,
+            help = "Optional Auto-Quant branch override used when bootstrapping the shared workspace"
+        )]
+        tracked_branch: Option<String>,
+    },
+    /// Dispatch the latest generic agent-material batch through external Auto-Quant execution.
+    AutoQuantAgentMaterialDispatch {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding generic agent-material artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Optional comma-separated dispatch group indices, e.g. 0,1,3; defaults to every group"
+        )]
+        group_indices: Option<String>,
+    },
+    /// Rank the latest generic agent-material dispatch results by win rate, Sharpe, then return.
+    AutoQuantAgentMaterialRank {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding generic agent-material artifacts"
+        )]
+        state_dir: String,
+    },
+    /// Import an Auto-Quant strategy_library.json manifest as a validated handoff artifact.
+    AutoQuantResultsImport {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Path to the strategy_library.json produced by Auto-Quant's export_strategy_library.py"
+        )]
+        library: String,
+        #[arg(
+            long,
+            help = "Optional path to run_ibkr.log for redundant cross-check against the manifest. Drift is reported in the summary but does not fail the import."
+        )]
+        log: Option<String>,
+    },
+    /// Consume Auto-Quant live factor-signal envelopes from a Redis stream and append them to the local JSONL log + ledger.
+    AutoQuantConsumeLiveSignals {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            default_value = "redis://localhost:6379",
+            help = "Redis connection URL. Must point to the same instance the Auto-Quant publisher writes to."
+        )]
+        redis_url: String,
+        #[arg(
+            long,
+            help = "Optional cap on XREAD iterations; useful for tests + first-runs. Default: run until shutdown."
+        )]
+        max_iter: Option<u32>,
+        #[arg(
+            long,
+            default_value_t = 2000,
+            help = "XREAD BLOCK timeout in milliseconds per iteration."
+        )]
+        block_ms: u64,
+        #[arg(
+            long,
+            default_value = "$",
+            help = "Initial cursor position when no cursor file exists. '$' = future entries only; '0' = full backlog."
+        )]
+        start_from: String,
+    },
+    /// Ingest a JSONL artifact of realised trade outcomes produced by Auto-Quant and apply them to the trade_outcome CPT.
+    AutoQuantIngestRealTrades {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Path to the JSONL realized-trades artifact emitted by auto_quant_export_real_trades.py"
+        )]
+        trades: String,
+        #[arg(
+            long,
+            default_value = "auto_quant_real_trades",
+            help = "Source label recorded on every FeedbackRecord. Surfaces in learning_state audits."
+        )]
+        source: String,
+        #[arg(
+            long,
+            help = "Parse + summarise but do not mutate the trading network or learning state"
+        )]
+        dry_run: bool,
+        #[arg(
+            long,
+            help = "Override the same-content-hash guard. Use only after rolling back the BBN snapshot."
+        )]
+        force: bool,
+    },
+    /// Apply tempered Beta-Binomial pseudo-counts from an imported Auto-Quant strategy library to the trade_outcome CPT prior.
+    AutoQuantPriorInit {
+        #[arg(long, help = "Instrument identifier supplied by the caller")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory holding Auto-Quant artifacts"
+        )]
+        state_dir: String,
+        #[arg(
+            long,
+            help = "Path to a strategy_library.json. If omitted, defaults to the canonical state copy persisted by auto-quant-results-import"
+        )]
+        library: Option<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Comma-separated strategy names; if omitted, every status=ok strategy in the manifest is applied"
+        )]
+        strategies: Option<Vec<String>>,
+        #[arg(
+            long,
+            help = "Temper factor in [0, 1]. Backtest counts are multiplied by this before being added to the Dirichlet prior. Defaults to 0.5"
+        )]
+        temper: Option<f64>,
+        #[arg(
+            long,
+            help = "Dirichlet concentration applied to the existing CPT row. Defaults to 4.0"
+        )]
+        prior_strength: Option<f64>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Three usize indices [entry_quality, factor_alignment, factor_uncertainty]. Defaults to 0,0,0"
+        )]
+        parent_config: Option<Vec<usize>>,
+        #[arg(
+            long,
+            help = "Compute the diff and emit the ledger entry but do not persist the mutated trading network"
+        )]
+        dry_run: bool,
+        #[arg(
+            long,
+            help = "Override the ledger-enforced single-apply guard. Use only after consciously rolling back the BBN snapshot."
+        )]
+        force: bool,
     },
 }
 
@@ -1181,6 +2122,9 @@ fn main() -> Result<()> {
             human,
             inline_ledger,
             no_execution_focus,
+            regime_consumer_bundle,
+            regime_consumer_bundle_strict,
+            apply_regime_bundle_bbn_soft_evidence,
         } => {
             ensure_state_dir_ready(&state_dir)?;
             let (data_htf, data_mtf, data_ltf) = resolve_analyze_cli_inputs(
@@ -1201,6 +2145,9 @@ fn main() -> Result<()> {
                 output_format,
                 inline_ledger,
                 !no_execution_focus,
+                regime_consumer_bundle.as_deref(),
+                regime_consumer_bundle_strict,
+                apply_regime_bundle_bbn_soft_evidence,
             )?
         }
         Commands::AnalyzeLive {
@@ -1208,34 +2155,61 @@ fn main() -> Result<()> {
             futures_symbol,
             spot_symbol,
             options_symbol,
+            options_volatility_proxy_symbol,
             spot_kind,
             futures_backend,
             aux_backend,
-            openalice_base_url,
-            nofx_base_url,
+            external_http_base_url,
+            crypto_public_base_url,
             state_dir,
-        } => {
-            ensure_state_dir_ready(&state_dir)?;
-            let futures_base_url = resolve_live_backend_base_url(
-                &futures_backend,
-                &openalice_base_url,
-                &nofx_base_url,
-            );
-            let aux_base_url =
-                resolve_live_backend_base_url(&aux_backend, &openalice_base_url, &nofx_base_url);
-            analyze_live_command(AnalyzeLiveCommandInput {
-                symbol: &symbol,
-                futures_symbol: futures_symbol.as_deref(),
-                spot_symbol: spot_symbol.as_deref(),
-                options_symbol: options_symbol.as_deref(),
-                spot_kind: spot_kind.as_deref(),
-                futures_backend: &futures_backend,
-                aux_backend: &aux_backend,
-                futures_base_url: &futures_base_url,
-                aux_base_url: &aux_base_url,
-                state_dir: &state_dir,
-            })?
-        }
+            output_format,
+            compact,
+            agent,
+            human,
+            regime_consumer_bundle,
+            regime_consumer_bundle_strict,
+            apply_regime_bundle_bbn_soft_evidence,
+        } => analyze_live_shell(AnalyzeLiveShellInput {
+            symbol: &symbol,
+            futures_symbol: futures_symbol.as_deref(),
+            spot_symbol: spot_symbol.as_deref(),
+            options_symbol: options_symbol.as_deref(),
+            options_volatility_proxy_symbol: options_volatility_proxy_symbol.as_deref(),
+            spot_kind: spot_kind.as_deref(),
+            futures_backend: &futures_backend,
+            aux_backend: &aux_backend,
+            external_http_base_url: &external_http_base_url,
+            crypto_public_base_url: &crypto_public_base_url,
+            state_dir: &state_dir,
+            output_format: match resolve_output_format(&output_format, compact, agent, human)? {
+                OutputFormat::Json => "json",
+                OutputFormat::Compact => "compact",
+                OutputFormat::Agent => "agent",
+                OutputFormat::Human => "human",
+            },
+            regime_consumer_bundle: regime_consumer_bundle.as_deref(),
+            regime_consumer_bundle_strict,
+            apply_regime_bundle_bbn_soft_evidence,
+        })?,
+        Commands::ValidateMarketState {
+            data,
+            window_size,
+            step_size,
+            verbose,
+            compact,
+            no_enhanced,
+            config,
+            profile,
+        } => validate_market_state_shell(ValidateMarketStateInput {
+            data_path: data,
+            window_size,
+            step_size,
+            verbose,
+            compact,
+            enhanced: !no_enhanced,
+            config_path: config,
+            profile,
+        })?,
         Commands::Train {
             symbol,
             data,
@@ -1296,11 +2270,16 @@ fn main() -> Result<()> {
                         data_1m: None,
                         data_5m: None,
                         data_15m: None,
+                        data_30m: None,
                         data_1h: None,
                         data_4h: None,
                         data_1d: None,
                         paired_data: paired_data.as_deref(),
+                        paired_candles_override: None,
+                        auxiliary_override: None,
+                        runtime_notes: Vec::new(),
                         mutation_spec: None,
+                        control_matrix_plan: None,
                         state_dir: &state_dir,
                     })
                     .map(|_| ())
@@ -1380,20 +2359,17 @@ fn main() -> Result<()> {
             direction,
             feedback_file,
             ensemble,
-        } => {
-            ensure_state_dir_ready(&state_dir)?;
-            update_command(UpdateCommandInput {
-                symbol: &symbol,
-                outcome: &outcome,
-                entry_signal: Some(&entry_signal),
-                feedback_file: feedback_file.as_deref(),
-                state_dir: &state_dir,
-                pnl,
-                regime: regime.as_deref(),
-                direction: direction.as_deref(),
-                ensemble,
-            })?
-        }
+        } => update_shell(UpdateCommandInput {
+            symbol: &symbol,
+            outcome: &outcome,
+            entry_signal: Some(&entry_signal),
+            feedback_file: feedback_file.as_deref(),
+            state_dir: &state_dir,
+            pnl,
+            regime: regime.as_deref(),
+            direction: direction.as_deref(),
+            ensemble,
+        })?,
         Commands::FactorResearch {
             symbol,
             data,
@@ -1401,11 +2377,17 @@ fn main() -> Result<()> {
             data_1m,
             data_5m,
             data_15m,
+            data_30m,
             data_1h,
             data_4h,
             data_1d,
             paired_data,
+            profile,
+            auto_quant_profile,
+            auxiliary_evidence,
             mutation_spec,
+            control_matrix_pb12,
+            strategy_material_root,
             emit_mutation_evaluation,
             ensemble,
             state_dir,
@@ -1413,48 +2395,53 @@ fn main() -> Result<()> {
             compact,
             agent,
             human,
-        } => {
-            ensure_state_dir_ready(&state_dir)?;
-            ict_engine::application::backtest::factor_research_command(
-                ict_engine::application::backtest::FactorResearchCommandInput {
-                    symbol: &symbol,
-                    data: &data,
-                    objective: &objective,
-                    mutation_spec_path: mutation_spec.as_deref(),
-                    emit_mutation_evaluation,
-                    ensemble,
-                    state_dir: &state_dir,
-                    output_format: match resolve_output_format(
-                        &output_format,
-                        compact,
-                        agent,
-                        human,
-                    )? {
-                        OutputFormat::Json => "json",
-                        OutputFormat::Compact => "compact",
-                        OutputFormat::Agent => "agent",
-                        OutputFormat::Human => "human",
-                    },
-                },
-                load_factor_mutation_spec,
-                |objective_mode, mutation_spec| {
-                    run_factor_research(RunFactorResearchInput {
-                        symbol: &symbol,
-                        data: &data,
-                        objective: objective_mode,
-                        data_1m: data_1m.as_deref(),
-                        data_5m: data_5m.as_deref(),
-                        data_15m: data_15m.as_deref(),
-                        data_1h: data_1h.as_deref(),
-                        data_4h: data_4h.as_deref(),
-                        data_1d: data_1d.as_deref(),
-                        paired_data: paired_data.as_deref(),
-                        mutation_spec,
-                        state_dir: &state_dir,
-                    })
-                },
-            )?
-        }
+            backend,
+        } => factor_research_shell(FactorResearchShellInput {
+            symbol: &symbol,
+            data: &data,
+            objective: &objective,
+            data_1m: data_1m.as_deref(),
+            data_5m: data_5m.as_deref(),
+            data_15m: data_15m.as_deref(),
+            data_30m: data_30m.as_deref(),
+            data_1h: data_1h.as_deref(),
+            data_4h: data_4h.as_deref(),
+            data_1d: data_1d.as_deref(),
+            paired_data: paired_data.as_deref(),
+            provider_profile: profile.as_deref(),
+            auto_quant_profile: auto_quant_profile.as_deref(),
+            auxiliary_evidence: auxiliary_evidence.as_deref(),
+            mutation_spec: mutation_spec.as_deref(),
+            control_matrix_pb12,
+            strategy_material_root: strategy_material_root.as_deref(),
+            emit_mutation_evaluation,
+            ensemble,
+            state_dir: &state_dir,
+            output_format: &output_format,
+            compact,
+            agent,
+            human,
+            backend: &backend,
+        })?,
+        Commands::AutoQuantPromoteCanonicalSetup {
+            symbol,
+            setup_name,
+            sequence_label,
+            direction,
+            sweep_id,
+            horizon_bars,
+            state_dir,
+        } => auto_quant_promote_canonical_setup_shell(
+            ict_engine::application::backtest::PromoteCanonicalSetupCommandInput {
+                symbol: &symbol,
+                state_dir: &state_dir,
+                setup_name: &setup_name,
+                sequence_label: &sequence_label,
+                direction: direction.as_deref(),
+                sweep_id: sweep_id.as_deref(),
+                horizon_bars,
+            },
+        )?,
         Commands::FactorMutationStatus {
             symbol,
             state_dir,
@@ -1463,7 +2450,7 @@ fn main() -> Result<()> {
             accepted_only,
             bucket_by_source,
             limit,
-        } => ict_engine::application::factor_lifecycle::factor_mutation_status_command(
+        } => factor_mutation_status_shell(
             &symbol,
             &state_dir,
             source_command.as_deref(),
@@ -1481,59 +2468,52 @@ fn main() -> Result<()> {
             data_1m,
             data_5m,
             data_15m,
+            data_30m,
             data_1h,
             data_4h,
             data_1d,
             paired_data,
+            profile,
+            auto_quant_profile,
+            auxiliary_evidence,
+            strategy_material_root,
             session_id,
             resume_latest,
             max_cluster_fail_streak,
             ensemble: _,
             state_dir,
-        } => ict_engine::application::factor_lifecycle::factor_autoresearch_command(
-            ict_engine::application::factor_lifecycle::FactorAutoresearchCommandInput {
-                symbol: &symbol,
-                data: &data,
-                objective: &objective,
-                mutation_spec_path: mutation_spec.as_deref(),
-                iterations,
-                data_1m: data_1m.as_deref(),
-                data_5m: data_5m.as_deref(),
-                data_15m: data_15m.as_deref(),
-                data_1h: data_1h.as_deref(),
-                data_4h: data_4h.as_deref(),
-                data_1d: data_1d.as_deref(),
-                paired_data: paired_data.as_deref(),
-                session_id: session_id.as_deref(),
-                resume_latest,
-                max_cluster_fail_streak,
-                state_dir: &state_dir,
-            },
-            load_factor_mutation_spec,
-            |objective_mode, mutation_spec| {
-                run_factor_research(RunFactorResearchInput {
-                    symbol: &symbol,
-                    data: &data,
-                    objective: objective_mode,
-                    data_1m: data_1m.as_deref(),
-                    data_5m: data_5m.as_deref(),
-                    data_15m: data_15m.as_deref(),
-                    data_1h: data_1h.as_deref(),
-                    data_4h: data_4h.as_deref(),
-                    data_1d: data_1d.as_deref(),
-                    paired_data: paired_data.as_deref(),
-                    mutation_spec: Some(mutation_spec),
-                    state_dir: &state_dir,
-                })
-            },
-        )?,
+            backend,
+        } => factor_autoresearch_shell(FactorAutoresearchShellInput {
+            symbol: &symbol,
+            data: &data,
+            objective: &objective,
+            mutation_spec: mutation_spec.as_deref(),
+            iterations,
+            data_1m: data_1m.as_deref(),
+            data_5m: data_5m.as_deref(),
+            data_15m: data_15m.as_deref(),
+            data_30m: data_30m.as_deref(),
+            data_1h: data_1h.as_deref(),
+            data_4h: data_4h.as_deref(),
+            data_1d: data_1d.as_deref(),
+            paired_data: paired_data.as_deref(),
+            provider_profile: profile.as_deref(),
+            auto_quant_profile: auto_quant_profile.as_deref(),
+            auxiliary_evidence: auxiliary_evidence.as_deref(),
+            strategy_material_root: strategy_material_root.as_deref(),
+            session_id: session_id.as_deref(),
+            resume_latest,
+            max_cluster_fail_streak,
+            state_dir: &state_dir,
+            backend: &backend,
+        })?,
         Commands::FactorAutoresearchStatus {
             symbol,
             state_dir,
             session_id,
             latest_only,
             limit,
-        } => ict_engine::application::factor_lifecycle::factor_autoresearch_status_command(
+        } => factor_autoresearch_status_shell(
             &symbol,
             &state_dir,
             session_id.as_deref(),
@@ -1541,67 +2521,256 @@ fn main() -> Result<()> {
             limit,
         )?,
         Commands::ResearchVerdict { symbol, state_dir } => {
-            ict_engine::application::release_closure::research_verdict_command(&symbol, &state_dir)?
+            research_verdict_shell(&symbol, &state_dir)?
         }
         Commands::EvidenceQualityBreakdown {
             symbol,
             state_dir,
             refresh,
-        } => ict_engine::application::release_closure::evidence_quality_breakdown_command(
-            &symbol, &state_dir, refresh,
-        )?,
+        } => evidence_quality_breakdown_shell(&symbol, &state_dir, refresh)?,
         Commands::FactorBacktest {
             symbol,
             data,
+            data_1m,
+            data_5m,
+            data_15m,
+            data_30m,
+            data_1h,
+            data_4h,
+            data_1d,
             paired_data,
+            auxiliary_evidence,
             ensemble,
             state_dir,
             output_format,
             compact,
             agent,
             human,
-            ..
-        } => {
-            ensure_state_dir_ready(&state_dir)?;
-            ict_engine::application::backtest::factor_backtest_command(
-                &symbol,
-                &data,
-                paired_data.as_deref(),
-                ensemble,
-                &state_dir,
-                match resolve_output_format(&output_format, compact, agent, human)? {
-                    OutputFormat::Json => "json",
-                    OutputFormat::Compact => "compact",
-                    OutputFormat::Agent => "agent",
-                    OutputFormat::Human => "human",
-                },
-                run_factor_backtest,
-            )?
-        }
+        } => factor_backtest_shell(FactorBacktestShellInput {
+            symbol: &symbol,
+            data: &data,
+            multi_timeframe_inputs: MultiTimeframeInputPaths {
+                data_1m: data_1m.as_deref(),
+                data_5m: data_5m.as_deref(),
+                data_15m: data_15m.as_deref(),
+                data_30m: data_30m.as_deref(),
+                data_1h: data_1h.as_deref(),
+                data_4h: data_4h.as_deref(),
+                data_1d: data_1d.as_deref(),
+            },
+            paired_data: paired_data.as_deref(),
+            auxiliary_evidence: auxiliary_evidence.as_deref(),
+            ensemble,
+            state_dir: &state_dir,
+            output_format: match resolve_output_format(&output_format, compact, agent, human)? {
+                OutputFormat::Json => "json",
+                OutputFormat::Compact => "compact",
+                OutputFormat::Agent => "agent",
+                OutputFormat::Human => "human",
+            },
+        })?,
         Commands::Env => env_command()?,
+        Commands::AutoQuantStatus {
+            state_dir,
+            output_format,
+            compact,
+            human,
+        } => auto_quant_status_shell(
+            &state_dir,
+            match resolve_output_format(&output_format, compact, false, human)? {
+                OutputFormat::Json => "json",
+                OutputFormat::Compact => "compact",
+                OutputFormat::Agent => "json",
+                OutputFormat::Human => "human",
+            },
+        )?,
+        Commands::AutoQuantBootstrap {
+            state_dir,
+            repo_url,
+            tracked_branch,
+        } => {
+            auto_quant_bootstrap_shell(&state_dir, repo_url.as_deref(), tracked_branch.as_deref())?
+        }
+        Commands::AutoQuantUpdate {
+            state_dir,
+            repo_url,
+            tracked_branch,
+            target_ref,
+        } => auto_quant_update_shell(
+            &state_dir,
+            repo_url.as_deref(),
+            tracked_branch.as_deref(),
+            target_ref.as_deref(),
+        )?,
+        Commands::AutoQuantPrepare { state_dir } => auto_quant_prepare_shell(&state_dir)?,
+        Commands::AutoQuantAdoptionReview {
+            symbol,
+            state_dir,
+            artifact_id,
+        } => auto_quant_adoption_review_shell(&symbol, &state_dir, artifact_id.as_deref())?,
+        Commands::AutoQuantAdoptionDecision {
+            symbol,
+            state_dir,
+            artifact_id,
+            decision,
+            rationale,
+            requested_by,
+        } => auto_quant_adoption_decision_shell(
+            &symbol,
+            &state_dir,
+            artifact_id.as_deref(),
+            &decision,
+            &rationale,
+            &requested_by,
+        )?,
+        Commands::AutoQuantSeedEvidence {
+            symbol,
+            state_dir,
+            strategy_material_root,
+            limit,
+        } => auto_quant_seed_evidence_shell(&symbol, &state_dir, &strategy_material_root, limit)?,
+        Commands::AutoQuantPdaUnitBatch {
+            symbol,
+            objective,
+            factors,
+            combination_size,
+            directions,
+            timeframes,
+            timeframe_data,
+            evidence_surfaces,
+            indicator_list,
+            evidence_notes,
+            max_parallel,
+            state_dir,
+            repo_url,
+            tracked_branch,
+        } => auto_quant_pda_unit_batch_shell(AutoQuantPdaUnitBatchCommandInput {
+            symbol: &symbol,
+            objective: &objective,
+            factors: &factors,
+            combination_size,
+            directions: &directions,
+            timeframes: &timeframes,
+            timeframe_data: &timeframe_data,
+            evidence_surfaces: &evidence_surfaces,
+            indicator_list: &indicator_list,
+            evidence_notes: &evidence_notes,
+            max_parallel,
+            state_dir: &state_dir,
+            repo_url: repo_url.as_deref(),
+            tracked_branch: tracked_branch.as_deref(),
+        })?,
+        Commands::AutoQuantPdaUnitDispatch {
+            symbol,
+            state_dir,
+            batch_artifact_id,
+            group_indices,
+        } => auto_quant_pda_unit_dispatch_shell(AutoQuantPdaUnitDispatchCommandInput {
+            symbol: &symbol,
+            state_dir: &state_dir,
+            batch_artifact_id: batch_artifact_id.as_deref(),
+            group_indices: group_indices.as_deref(),
+        })?,
+        Commands::AutoQuantAgentMaterialBatch {
+            symbol,
+            materials,
+            max_parallel,
+            state_dir,
+            repo_url,
+            tracked_branch,
+        } => auto_quant_agent_material_batch_shell(AutoQuantAgentMaterialBatchCommandInput {
+            symbol: &symbol,
+            material_paths: &materials,
+            max_parallel,
+            state_dir: &state_dir,
+            repo_url: repo_url.as_deref(),
+            tracked_branch: tracked_branch.as_deref(),
+        })?,
+        Commands::AutoQuantAgentMaterialDispatch {
+            symbol,
+            state_dir,
+            group_indices,
+        } => {
+            auto_quant_agent_material_dispatch_shell(AutoQuantAgentMaterialDispatchCommandInput {
+                symbol: &symbol,
+                state_dir: &state_dir,
+                group_indices: group_indices.as_deref(),
+            })?
+        }
+        Commands::AutoQuantAgentMaterialRank { symbol, state_dir } => {
+            auto_quant_agent_material_rank_shell(AutoQuantAgentMaterialRankCommandInput {
+                symbol: &symbol,
+                state_dir: &state_dir,
+            })?
+        }
+        Commands::AutoQuantResultsImport {
+            symbol,
+            state_dir,
+            library,
+            log,
+        } => auto_quant_results_import_shell(&symbol, &state_dir, &library, log.as_deref())?,
+        Commands::AutoQuantPriorInit {
+            symbol,
+            state_dir,
+            library,
+            strategies,
+            temper,
+            prior_strength,
+            parent_config,
+            dry_run,
+            force,
+        } => auto_quant_prior_init_shell(AutoQuantPriorInitCommandInput {
+            symbol: &symbol,
+            state_dir: &state_dir,
+            library_path: library.as_deref(),
+            strategy_filter: strategies.as_deref(),
+            temper,
+            prior_strength,
+            parent_config,
+            dry_run,
+            force,
+        })?,
+        Commands::AutoQuantConsumeLiveSignals {
+            symbol,
+            state_dir,
+            redis_url,
+            max_iter,
+            block_ms,
+            start_from,
+        } => auto_quant_consume_live_signals_shell(AutoQuantConsumeLiveSignalsInput {
+            symbol: &symbol,
+            state_dir: &state_dir,
+            redis_url: &redis_url,
+            max_iterations: max_iter,
+            block_ms,
+            initial_id: &start_from,
+        })?,
+        Commands::AutoQuantIngestRealTrades {
+            symbol,
+            state_dir,
+            trades,
+            source,
+            dry_run,
+            force,
+        } => auto_quant_ingest_real_trades_shell(AutoQuantIngestRealTradesInput {
+            symbol: &symbol,
+            state_dir: &state_dir,
+            trades_path: &trades,
+            source: &source,
+            dry_run,
+            force,
+        })?,
         Commands::CleanFutures {
             root,
             output_dir,
             interval,
             multi_timeframe,
-        } => ict_engine::application::data_sources::clean_futures_command(
-            root.as_deref(),
-            &output_dir,
-            &interval,
-            multi_timeframe,
-            run_clean_futures_multi_timeframe,
-            run_clean_futures,
-        )?,
+        } => clean_futures_shell(root.as_deref(), &output_dir, &interval, multi_timeframe)?,
         Commands::FuturesSop {
             root,
             output_dir,
             interval,
-        } => ict_engine::application::data_sources::futures_sop_command(
-            root.as_deref(),
-            &output_dir,
-            &interval,
-            run_futures_sop,
-        )?,
+        } => futures_sop_shell(root.as_deref(), &output_dir, &interval)?,
         Commands::ExpansionSop {
             root,
             output_dir,
@@ -1611,7 +2780,7 @@ fn main() -> Result<()> {
             objective,
             mutation_spec,
             emit_mutation_evaluation,
-        } => ict_engine::application::data_sources::expansion_sop_command(
+        } => expansion_sop_shell(
             ict_engine::application::data_sources::ExpansionSopCommandInput {
                 root: root.as_deref(),
                 output_dir: &output_dir,
@@ -1622,80 +2791,32 @@ fn main() -> Result<()> {
                 mutation_spec_path: mutation_spec.as_deref(),
                 emit_mutation_evaluation,
             },
-            parse_research_objective,
-            load_factor_mutation_spec,
-            run_expansion_sop,
-            |report, mutation_spec, emit_mutation_evaluation| {
-                if emit_mutation_evaluation {
-                    let next_mutation_spec_template = report
-                        .factor_mutation_evaluation
-                        .as_ref()
-                        .map(|evaluation| {
-                            next_mutation_spec_template(mutation_spec, evaluation, true)
-                        });
-                    Ok(serde_json::json!({
-                        "mutation_spec": mutation_spec,
-                        "factor_mutation_evaluation": report.factor_mutation_evaluation,
-                        "next_mutation_spec_template": next_mutation_spec_template,
-                        "recommended_global_factor": report.recommended_global_factor,
-                        "recommended_global_pre_bayes_summary": report.recommended_global_pre_bayes_summary,
-                        "recommended_commands": report.recommended_commands,
-                    }))
-                } else {
-                    let compact_report =
-                        build_backtest_result_artifact(BacktestResultArtifactInput {
-                            summary: format!("expansion_sop:{}", interval),
-                            scorecards: report
-                                .recommended_market_factors
-                                .iter()
-                                .map(|(market, factor)| format!("{}:{}", market, factor))
-                                .collect::<Vec<_>>(),
-                            shrink_comparison_summary: vec![],
-                            duration_sizing_delta_surface: vec![],
-                            oos_quality_delta_surface: vec![],
-                            market_breakdown: vec![format!(
-                                "recommended_global_factor={:?}",
-                                report.recommended_global_factor
-                            )],
-                            regime_breakdown: vec![],
-                            window_breakdown: vec![],
-                            comparable: true,
-                            artifacts: report.recommended_commands.clone(),
-                        });
-                    let factor_lifecycle = build_factor_lifecycle_view(
-                        report.mutation_spec.as_ref(),
-                        report.factor_mutation_evaluation.as_ref(),
-                        &PromotionDecision {
-                            approved: report.recommended_global_factor.is_some(),
-                            status: if report.recommended_global_factor.is_some() {
-                                "promote".to_string()
-                            } else {
-                                "hold".to_string()
-                            },
-                            reason: "expansion_sop_global_selection".to_string(),
-                            target_factors: report
-                                .recommended_global_factor
-                                .iter()
-                                .cloned()
-                                .collect(),
-                            target_families: vec![],
-                        },
-                        &RollbackRecommendation {
-                            should_rollback: false,
-                            scope: "none".to_string(),
-                            reason: "no_global_rollback".to_string(),
-                            target_factors: vec![],
-                            target_families: vec![],
-                        },
-                    );
-                    Ok(serde_json::json!({
-                        "report": report,
-                        "compact_backtest_report": compact_report,
-                        "factor_lifecycle": factor_lifecycle,
-                    }))
-                }
-            },
         )?,
+        Commands::MarketDataHarness {
+            action,
+            market,
+            primary_data,
+            interval,
+            role,
+            provider,
+            symbol_spec,
+            request_stdin,
+            options_volatility_proxy_symbol,
+            request_json,
+        } => {
+            let input = MarketDataHarnessCommandInput {
+                market: market.as_deref(),
+                primary_data: primary_data.as_deref(),
+                interval: interval.as_deref(),
+                related_roles: &role,
+                provider_preferences: &provider,
+                request_stdin,
+                symbol_specs: &symbol_spec,
+                options_volatility_proxy_symbol: options_volatility_proxy_symbol.as_deref(),
+                request_json: request_json.as_deref(),
+            };
+            market_data_harness_shell(&action, input)?
+        }
         Commands::FactorPipelineDebug {
             symbol,
             data,
@@ -1704,10 +2825,11 @@ fn main() -> Result<()> {
             data_1m,
             data_5m,
             data_15m,
+            data_30m,
             data_1h,
             data_4h,
             data_1d,
-        } => ict_engine::application::factor_pipeline_debug::factor_pipeline_debug_command(
+        } => factor_pipeline_debug_shell(
             ict_engine::application::factor_pipeline_debug::FactorPipelineDebugCommandInput {
                 symbol: &symbol,
                 data: &data,
@@ -1716,6 +2838,7 @@ fn main() -> Result<()> {
                 data_1m: data_1m.as_deref(),
                 data_5m: data_5m.as_deref(),
                 data_15m: data_15m.as_deref(),
+                data_30m: data_30m.as_deref(),
                 data_1h: data_1h.as_deref(),
                 data_4h: data_4h.as_deref(),
                 data_1d: data_1d.as_deref(),
@@ -1725,6 +2848,7 @@ fn main() -> Result<()> {
             symbol,
             state_dir,
             refresh,
+            profile,
             phase,
             actionable_only,
             conflicts_only,
@@ -1738,50 +2862,122 @@ fn main() -> Result<()> {
             human,
             stable,
             no_execution_focus: _no_execution_focus,
-        } => ict_engine::application::orchestration::workflow_status_command(
-            ict_engine::application::orchestration::WorkflowStatusCommandInput {
-                symbol: &symbol,
-                state_dir: &state_dir,
-                refresh,
-                phase: phase.as_deref(),
-                actionable_only,
-                conflicts_only,
-                latest_promotable,
-                hard_block_only,
-                hard_block_reason: hard_block_reason.as_deref(),
-                limit,
-                output_format: match resolve_output_format(&output_format, compact, agent, human)? {
-                    OutputFormat::Json => "json",
-                    OutputFormat::Compact => "compact",
-                    OutputFormat::Agent => "agent",
-                    OutputFormat::Human => "human",
-                },
-                stable,
+        } => workflow_status_shell(WorkflowStatusShellInput {
+            symbol: &symbol,
+            state_dir: &state_dir,
+            refresh,
+            provider_profile: profile.as_deref(),
+            phase: phase.as_deref(),
+            actionable_only,
+            conflicts_only,
+            latest_promotable,
+            hard_block_only,
+            hard_block_reason: hard_block_reason.as_deref(),
+            limit,
+            output_format: match resolve_output_format(&output_format, compact, agent, human)? {
+                OutputFormat::Json => "json",
+                OutputFormat::Compact => "compact",
+                OutputFormat::Agent => "agent",
+                OutputFormat::Human => "human",
             },
-            refresh_workflow_snapshot,
-        )?,
+            stable,
+        })?,
         Commands::PreBayesStatus {
             symbol,
             state_dir,
             refresh,
             section,
-        } => ict_engine::application::orchestration::pre_bayes_status_command(
+            output_format,
+            compact,
+            human,
+        } => pre_bayes_status_shell(
             &symbol,
             &state_dir,
             refresh,
             section.as_deref(),
-            refresh_workflow_snapshot,
+            match resolve_output_format(&output_format, compact, false, human)? {
+                OutputFormat::Json => "json",
+                OutputFormat::Compact => "compact",
+                OutputFormat::Agent => "json",
+                OutputFormat::Human => "human",
+            },
+        )?,
+        Commands::PolicyTrainingStatus {
+            symbol,
+            state_dir,
+            entry_model,
+            output_format,
+            compact,
+            human,
+        } => policy_training_status_shell(
+            &symbol,
+            &state_dir,
+            entry_model.as_deref(),
+            match resolve_output_format(&output_format, compact, false, human)? {
+                OutputFormat::Json => "json",
+                OutputFormat::Compact => "compact",
+                OutputFormat::Agent => "agent",
+                OutputFormat::Human => "human",
+            },
+        )?,
+        Commands::RegisterStructuralPathRankingTrainerArtifact {
+            symbol,
+            state_dir,
+            artifact_uri,
+            model_family,
+            score_column,
+            trained_rows,
+            calibration_rows,
+        } => register_structural_path_ranking_trainer_artifact_shell(
+            &symbol,
+            &state_dir,
+            &artifact_uri,
+            &model_family,
+            &score_column,
+            trained_rows,
+            calibration_rows,
+        )?,
+        Commands::ClearStructuralPathRankingTrainerArtifact { symbol, state_dir } => {
+            clear_structural_path_ranking_trainer_artifact_shell(&symbol, &state_dir)?
+        }
+        Commands::EnableStructuralPathRankingRuntime {
+            symbol,
+            state_dir,
+            reuse_mode,
+        } => enable_structural_path_ranking_runtime_shell(&symbol, &state_dir, &reuse_mode)?,
+        Commands::DisableStructuralPathRankingRuntime { symbol, state_dir } => {
+            disable_structural_path_ranking_runtime_shell(&symbol, &state_dir)?
+        }
+        Commands::ExportStructuralPathRankingTarget { symbol, state_dir } => {
+            export_structural_path_ranking_target_shell(&symbol, &state_dir)?
+        }
+        Commands::ApplyStructuralPathRankingExternalScores {
+            symbol,
+            state_dir,
+            scores_file,
+        } => {
+            apply_structural_path_ranking_external_scores_shell(&symbol, &state_dir, &scores_file)?
+        }
+        Commands::ProviderStatus {
+            domain,
+            provider,
+            profile,
+            compact,
+            agent,
+            jsonl,
+        } => provider_status_shell(
+            domain.as_deref(),
+            provider.as_deref(),
+            compact,
+            agent,
+            jsonl,
+            profile.as_deref(),
         )?,
         Commands::PreBayesDiff {
             symbol,
             state_dir,
             refresh,
-        } => ict_engine::application::orchestration::pre_bayes_diff_command(
-            &symbol,
-            &state_dir,
-            refresh,
-            refresh_workflow_snapshot,
-        )?,
+        } => pre_bayes_diff_shell(&symbol, &state_dir, refresh)?,
         Commands::ArtifactStatus {
             symbol,
             state_dir,
@@ -1798,7 +2994,7 @@ fn main() -> Result<()> {
             bucket_by_kind,
             bucket_order_by,
             bucket_limit,
-        } => artifact_status_command(ArtifactStatusCommandInput {
+        } => artifact_status_shell(ArtifactStatusShellInput {
             symbol: &symbol,
             state_dir: &state_dir,
             artifact_id: artifact_id.as_deref(),
@@ -1820,7 +3016,7 @@ fn main() -> Result<()> {
             state_dir,
             left_artifact_id,
             right_artifact_id,
-        } => artifact_diff_command(ArtifactDiffCommandInput {
+        } => artifact_diff_shell(ArtifactDiffShellInput {
             symbol: &symbol,
             state_dir: &state_dir,
             left_artifact_id: &left_artifact_id,
@@ -1834,20 +3030,15 @@ fn main() -> Result<()> {
             improving_only,
             regressing_only,
             rule_break_only,
-        } => {
-            let ledger = load_artifact_ledger(&state_dir, &symbol)?;
-            let snapshot = refresh_workflow_snapshot(&state_dir, &symbol)?;
-            artifact_lineage_command(ArtifactLineageCommandInput {
-                symbol: &symbol,
-                ledger: &ledger,
-                summaries: snapshot.artifact_lineage_summaries,
-                artifact_id: artifact_id.as_deref(),
-                latest_only,
-                improving_only,
-                regressing_only,
-                rule_break_only,
-            })?
-        }
+        } => artifact_lineage_shell(ArtifactLineageShellInput {
+            symbol: &symbol,
+            state_dir: &state_dir,
+            artifact_id: artifact_id.as_deref(),
+            latest_only,
+            improving_only,
+            regressing_only,
+            rule_break_only,
+        })?,
     }
 
     Ok(())
@@ -1951,6 +3142,18 @@ fn ensure_state_dir_ready(state_dir: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve Auto-Quant output directory.
+/// Priority: ICT_ENGINE_AUTO_QUANT_OUTPUT_DIR env var > <state_dir>/auto-quant/ subdir.
+/// This ensures Auto-Quant artifacts never pollute the repo root.
+fn resolve_auto_quant_output_dir(state_dir: &str) -> String {
+    if let Ok(custom) = std::env::var(AUTO_QUANT_OUTPUT_DIR_ENV_VAR) {
+        if !custom.trim().is_empty() {
+            return custom;
+        }
+    }
+    format!("{}/{}", state_dir, DEFAULT_AUTO_QUANT_SUBDIR)
+}
+
 fn build_env_report() -> Value {
     let variables = [
         (
@@ -1972,6 +3175,22 @@ fn build_env_report() -> Value {
         (
             "ICT_ENGINE_TOMAC_ROOT",
             "set the TOMAC root for futures cleaning commands",
+        ),
+        (
+            "ICT_ENGINE_AUTO_QUANT_OUTPUT_DIR",
+            "override auto-quant output dir (default: <state-dir>/auto-quant/)",
+        ),
+        (
+            AUTO_QUANT_REPO_URL_ENV_VAR,
+            "override the Auto-Quant upstream repository URL",
+        ),
+        (
+            AUTO_QUANT_BRANCH_ENV_VAR,
+            "override the tracked Auto-Quant branch",
+        ),
+        (
+            AUTO_QUANT_DIR_ENV_VAR,
+            "override the managed Auto-Quant checkout directory",
         ),
         (
             "ICT_EXECUTION_FOCUS",
@@ -2042,11 +3261,16 @@ fn run_futures_sop(root: &str, output_dir: &str, interval: &str) -> Result<Futur
                 data_1m: input.multi_timeframe_inputs.get("1m"),
                 data_5m: input.multi_timeframe_inputs.get("5m"),
                 data_15m: input.multi_timeframe_inputs.get("15m"),
+                data_30m: input.multi_timeframe_inputs.get("30m"),
                 data_1h: input.multi_timeframe_inputs.get("1h"),
                 data_4h: input.multi_timeframe_inputs.get("4h"),
                 data_1d: input.multi_timeframe_inputs.get("1d"),
                 paired_data: None,
+                paired_candles_override: None,
+                auxiliary_override: None,
+                runtime_notes: Vec::new(),
                 mutation_spec: None,
+                control_matrix_plan: None,
                 state_dir: &input.state_dir,
             })?;
             let candles = load_candles(&input.output_path)?;
@@ -2090,12 +3314,7 @@ fn run_expansion_sop(
             let candles = load_candles(&input.output_path)?;
             let resolved_multi_timeframe_inputs = resolve_multi_timeframe_inputs(
                 &input.output_path,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
+                MultiTimeframeInputPaths::default(),
             );
             let multi_timeframe_summary = build_multi_timeframe_summary(
                 &input.output_path,
@@ -2181,2017 +3400,6 @@ fn run_expansion_sop(
     Ok(report)
 }
 
-fn refresh_workflow_snapshot(state_dir: &str, symbol: &str) -> Result<WorkflowSnapshot> {
-    let analyze_runs: Vec<AnalyzeRunRecord> =
-        load_state_or_default(state_dir, symbol, ANALYZE_RUNS_FILE)?;
-    let train_runs: Vec<TrainRunRecord> =
-        load_state_or_default(state_dir, symbol, TRAIN_RUNS_FILE)?;
-    let research_runs: Vec<ResearchRunRecord> =
-        load_state_or_default(state_dir, symbol, RESEARCH_RUNS_FILE)?;
-    let backtest_runs: Vec<BacktestRunRecord> =
-        load_state_or_default(state_dir, symbol, BACKTEST_RUNS_FILE)?;
-    let update_runs: Vec<UpdateRunRecord> =
-        load_state_or_default(state_dir, symbol, UPDATE_RUNS_FILE)?;
-    let pre_bayes_policy_history = load_pre_bayes_policy_history(state_dir, symbol)?;
-    let pending_update_history = load_pending_update_history(state_dir, symbol)?;
-    let execution_candidate_history = load_execution_candidate_history(state_dir, symbol)?;
-    let artifact_ledger = load_artifact_ledger(state_dir, symbol)?;
-
-    let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
-        state_dir,
-        symbol,
-        latest_train: train_runs.last(),
-        latest_analyze: analyze_runs.last(),
-        latest_research: research_runs.last(),
-        latest_backtest: backtest_runs.last(),
-        latest_update: update_runs.last(),
-        pre_bayes_policy_history: &pre_bayes_policy_history,
-        pending_update_history: &pending_update_history,
-        execution_candidate_history: &execution_candidate_history,
-        artifact_ledger: &artifact_ledger,
-    });
-    save_workflow_snapshot(state_dir, symbol, &snapshot)?;
-    Ok(snapshot)
-}
-
-fn build_workflow_snapshot(input: BuildWorkflowSnapshotInput<'_>) -> WorkflowSnapshot {
-    let BuildWorkflowSnapshotInput {
-        state_dir,
-        symbol,
-        latest_train,
-        latest_analyze,
-        latest_research,
-        latest_backtest,
-        latest_update,
-        pre_bayes_policy_history,
-        pending_update_history,
-        execution_candidate_history,
-        artifact_ledger,
-    } = input;
-
-    let train = latest_train.map(workflow_phase_snapshot_from_train_run);
-    let analyze = latest_analyze.map(workflow_phase_snapshot_from_analyze_run);
-    let research = latest_research.map(workflow_phase_snapshot_from_research_run);
-    let backtest = latest_backtest.map(workflow_phase_snapshot_from_backtest_run);
-    let update = latest_update.map(workflow_phase_snapshot_from_update_run);
-    let field_diffs = workflow_field_diffs(&analyze, &research, &backtest, &update);
-    let disagreements = workflow_disagreements(&analyze, &research, &backtest, &update);
-    let recent_pending_updates = pending_update_history
-        .iter()
-        .rev()
-        .take(5)
-        .map(|artifact| pending_update_summary(state_dir, symbol, artifact))
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>();
-    let recent_execution_candidates = execution_candidate_history
-        .iter()
-        .rev()
-        .take(5)
-        .map(|artifact| execution_candidate_summary(state_dir, symbol, artifact))
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>();
-    let recent_ensemble_votes = load_ensemble_vote_history(state_dir, symbol)
-        .unwrap_or_default()
-        .into_iter()
-        .rev()
-        .take(5)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>();
-    let recent_artifacts = artifact_ledger
-        .iter()
-        .rev()
-        .take(10)
-        .cloned()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>();
-    let actionable_artifacts = artifact_ledger
-        .iter()
-        .filter(|entry| entry.actionable && entry.consumed_by_update_run_id.is_none())
-        .cloned()
-        .collect::<Vec<_>>();
-    let latest_promotable_artifact = artifact_ledger
-        .iter()
-        .filter(|entry| entry.promote_candidate && entry.consumed_by_update_run_id.is_none())
-        .max_by_key(|entry| artifact_generated_recency_key(entry))
-        .cloned();
-    let artifact_history_summary = build_artifact_history_summary(artifact_ledger);
-    let artifact_factor_trends =
-        build_artifact_factor_trends(artifact_ledger, &research, &backtest, &update);
-    let artifact_family_trends =
-        build_artifact_family_trends(artifact_ledger, &research, &backtest, &update);
-    let review_rules = artifact_review_rules();
-    let review_rule_sources = artifact_review_rule_sources();
-    let artifact_lineage_summaries = build_artifact_lineage_summaries_with_embedded_snapshots(
-        artifact_ledger,
-        pending_update_history,
-        execution_candidate_history,
-    );
-    let artifact_consumed_impact_summary = build_artifact_consumed_impact_summary(artifact_ledger);
-    let artifact_decision_summary = artifact_decision_summary_from_trends(
-        &actionable_artifacts,
-        latest_promotable_artifact.as_ref(),
-        &artifact_lineage_summaries,
-        &artifact_factor_trends,
-        &artifact_family_trends,
-        &artifact_consumed_impact_summary,
-    );
-    let latest_pre_bayes_policy =
-        latest_analyze.map(|run| run.pre_bayes_evidence_filter.policy.clone());
-    let latest_pre_bayes_entry_quality_bridge =
-        latest_analyze.map(|run| run.pre_bayes_entry_quality_bridge.clone());
-    let latest_pre_bayes_entry_quality_bridge_diff = latest_analyze
-        .map(|run| pre_bayes_entry_quality_bridge_diff(&run.pre_bayes_entry_quality_bridge));
-    let recent_pre_bayes_policies = pre_bayes_policy_history
-        .iter()
-        .rev()
-        .take(5)
-        .cloned()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>();
-    let latest_pre_bayes_policy_diff = recent_pre_bayes_policies
-        .last()
-        .map(|record| record.diff_from_previous.clone());
-    let latest_pre_bayes_policy_lineage = Some(pre_bayes_policy_lineage_summary(
-        &recent_pre_bayes_policies,
-        latest_analyze
-            .map(|run| run.pre_bayes_evidence_filter.gating_status.as_str())
-            .unwrap_or(""),
-    ));
-    let latest_pre_bayes_soft_evidence_diff = latest_analyze
-        .map(|run| pre_bayes_soft_evidence_diff(&run.pre_bayes_evidence_filter))
-        .unwrap_or_default();
-    let artifact_rule_break_effects = build_artifact_rule_break_effects(artifact_ledger);
-    let artifact_factor_rule_break_impacts =
-        build_artifact_factor_rule_break_impacts(artifact_ledger, &artifact_rule_break_effects);
-    let artifact_family_rule_break_impacts =
-        build_artifact_family_rule_break_impacts(artifact_ledger, &artifact_rule_break_effects);
-    let mut phases = [
-        train.clone(),
-        analyze.clone(),
-        research.clone(),
-        backtest.clone(),
-        update.clone(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    phases.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-    let current = phases.last().cloned();
-    let blocking_truth = workflow_blocking_truth(
-        symbol,
-        state_dir,
-        current.as_ref(),
-        latest_analyze,
-        &artifact_decision_summary,
-    );
-
-    let mut risk_flags = std::collections::BTreeSet::new();
-    for phase in [
-        train.as_ref(),
-        analyze.as_ref(),
-        research.as_ref(),
-        backtest.as_ref(),
-        update.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        for flag in &phase.risk_flags {
-            risk_flags.insert(format!("{}:{}", phase.phase, flag));
-        }
-    }
-
-    let current_recommended_next_command = current
-        .as_ref()
-        .map(|phase| phase.recommended_next_command.clone())
-        .unwrap_or_default();
-    let current_recommended_next_command_meta = current
-        .as_ref()
-        .map(|phase| {
-            if phase.recommended_next_command_meta.kind
-                == ict_engine::state::RecommendedNextCommandKind::Unknown
-                && !phase.recommended_next_command.is_empty()
-            {
-                recommended_next_command_meta(&phase.recommended_next_command)
-            } else {
-                phase.recommended_next_command_meta.clone()
-            }
-        })
-        .unwrap_or_else(|| recommended_next_command_meta(&current_recommended_next_command));
-
-    WorkflowSnapshot {
-        symbol: symbol.to_string(),
-        generated_at: Utc::now(),
-        current_focus_phase: current
-            .as_ref()
-            .map(|phase| phase.phase.clone())
-            .unwrap_or_default(),
-        current_focus_reason: current
-            .as_ref()
-            .map(|phase| phase.workflow_reason.clone())
-            .unwrap_or_default(),
-        blocking_truth,
-        recommended_next_command: current_recommended_next_command,
-        recommended_next_command_meta: current_recommended_next_command_meta,
-        pending_actions: current.map(|phase| phase.top_actions).unwrap_or_default(),
-        risk_flags: risk_flags
-            .into_iter()
-            .chain(
-                disagreements
-                    .iter()
-                    .map(|item| format!("{}:{}", item.severity, item.id)),
-            )
-            .collect(),
-        latest_train: train,
-        latest_analyze: analyze,
-        latest_research: research,
-        latest_backtest: backtest,
-        latest_update: update,
-        latest_pre_bayes_policy,
-        latest_pre_bayes_entry_quality_bridge,
-        latest_pre_bayes_entry_quality_bridge_diff,
-        latest_pre_bayes_policy_diff,
-        latest_pre_bayes_policy_lineage,
-        latest_pre_bayes_soft_evidence_diff,
-        recent_pre_bayes_policies,
-        latest_pending_update: recent_pending_updates.last().cloned(),
-        recent_pending_updates,
-        latest_execution_candidate: recent_execution_candidates.last().cloned(),
-        recent_execution_candidates,
-        latest_ensemble_vote: recent_ensemble_votes.last().cloned(),
-        recent_ensemble_votes,
-        recent_artifacts,
-        actionable_artifacts,
-        latest_promotable_artifact,
-        artifact_history_summary,
-        artifact_factor_trends,
-        artifact_family_trends,
-        artifact_decision_summary,
-        artifact_review_rules: review_rules,
-        artifact_review_rule_sources: review_rule_sources,
-        artifact_lineage_summaries,
-        artifact_rule_break_effects,
-        artifact_factor_rule_break_impacts,
-        artifact_family_rule_break_impacts,
-        artifact_consumed_impact_summary,
-        field_diffs,
-        disagreements,
-    }
-}
-
-fn gate_aware_recommended_next_command(stored: &str, commands: &CommandRecommendations) -> String {
-    for command in [&commands.research, &commands.backtest] {
-        if command.user_data_selection_required {
-            return render_recommended_command(command);
-        }
-    }
-    stored.to_string()
-}
-
-fn workflow_phase_snapshot_from_analyze_run(run: &AnalyzeRunRecord) -> WorkflowPhaseSnapshot {
-    let bridge_diff = pre_bayes_entry_quality_bridge_diff(&run.pre_bayes_entry_quality_bridge);
-    let duration_fragment = if let (Some(model), Some(remaining)) = (
-        run.hybrid_duration_model.as_deref(),
-        run.hybrid_remaining_expected_bars,
-    ) {
-        format!(
-            " hybrid_duration_model={} hybrid_remaining_expected_bars={:.3}",
-            model, remaining
-        )
-    } else {
-        String::new()
-    };
-    let mut phase = WorkflowPhaseSnapshot {
-        phase: "analyze".to_string(),
-        source_command: run.source_command.clone(),
-        run_id: run.run_id.clone(),
-        timestamp: run.timestamp,
-        workflow_phase: run.workflow_state.phase.clone(),
-        workflow_reason: run.workflow_state.reason.clone(),
-        promotion_status: run.promotion_decision.status.clone(),
-        rollback_scope: run.rollback_recommendation.scope.clone(),
-        comparable_to_previous: run.dataset_comparability.comparable,
-        comparison_class: run.dataset_comparability.comparison_class.clone(),
-        recommended_next_command: gate_aware_recommended_next_command(
-            &run.recommended_next_command,
-            &run.recommended_commands,
-        ),
-        recommended_next_command_meta: recommended_next_command_meta(
-            &gate_aware_recommended_next_command(
-                &run.recommended_next_command,
-                &run.recommended_commands,
-            ),
-        ),
-        phase_summary: format!(
-            "selected_direction={:?} selected_entry_quality={} pre_bayes_status={} pre_bayes_quality={:.3} decision_hint={}{} {}",
-            run.selected_direction,
-            run.selected_entry_quality,
-            run.pre_bayes_evidence_filter.gating_status,
-            run.pre_bayes_evidence_filter.evidence_quality_score,
-            run.decision_hint,
-            duration_fragment,
-            multi_timeframe_phase_hint(&run.multi_timeframe_summary)
-        ),
-        top_actions: workflow_top_actions(&run.agent_action_plan),
-        risk_flags: workflow_phase_risk_flags(
-            &run.dataset_comparability,
-            &run.promotion_decision,
-            &run.rollback_recommendation,
-        )
-        .into_iter()
-        .chain(
-            run.pre_bayes_evidence_filter
-                .conflict_flags
-                .iter()
-                .map(|flag| format!("pre_bayes:{}", flag)),
-        )
-        .collect(),
-        selected_direction: Some(format!("{:?}", run.selected_direction)),
-        selected_entry_quality: Some(run.selected_entry_quality.clone()),
-        pre_bayes_gate_status: run.pre_bayes_evidence_filter.gating_status.clone(),
-        pre_bayes_uses_soft_evidence: run.pre_bayes_evidence_filter.uses_soft_evidence,
-        pre_bayes_policy_version: run.pre_bayes_evidence_filter.policy.version.clone(),
-        pre_bayes_evidence_quality_score: run.pre_bayes_evidence_filter.evidence_quality_score,
-        pre_bayes_conflict_flags: run.pre_bayes_evidence_filter.conflict_flags.clone(),
-        pre_bayes_filtered_assignments: {
-            let mut assignments = run.pre_bayes_evidence_filter.evidence_assignments.clone();
-            assignments.insert(
-                "__policy_version".to_string(),
-                run.pre_bayes_evidence_filter.policy.version.clone(),
-            );
-            assignments
-        },
-        pre_bayes_soft_evidence: BTreeMap::from([
-            (
-                "market_regime".to_string(),
-                run.pre_bayes_evidence_filter
-                    .soft_market_regime_distribution
-                    .clone(),
-            ),
-            (
-                "liquidity_context".to_string(),
-                run.pre_bayes_evidence_filter
-                    .soft_liquidity_context_distribution
-                    .clone(),
-            ),
-            (
-                "factor_alignment".to_string(),
-                run.pre_bayes_evidence_filter
-                    .soft_factor_alignment_distribution
-                    .clone(),
-            ),
-            (
-                "factor_uncertainty".to_string(),
-                run.pre_bayes_evidence_filter
-                    .soft_factor_uncertainty_distribution
-                    .clone(),
-            ),
-            (
-                "multi_timeframe_resonance".to_string(),
-                run.pre_bayes_evidence_filter
-                    .soft_multi_timeframe_resonance_distribution
-                    .clone(),
-            ),
-        ]),
-        pre_bayes_long_signal_probability: Some(
-            run.pre_bayes_entry_quality_bridge.long_signal_probability,
-        ),
-        pre_bayes_short_signal_probability: Some(
-            run.pre_bayes_entry_quality_bridge.short_signal_probability,
-        ),
-        pre_bayes_selected_entry_quality_probability: run
-            .pre_bayes_entry_quality_bridge
-            .selected_entry_quality
-            .values()
-            .copied()
-            .fold(None, |acc, value| {
-                Some(acc.map(|current| current.max(value)).unwrap_or(value))
-            }),
-        pre_bayes_bridge_selected_entry_quality: bridge_diff.selected_entry_quality.clone(),
-        pre_bayes_bridge_probability_gap: Some(bridge_diff.long_short_signal_probability_gap),
-        pre_bayes_bridge_rationale_summary: bridge_diff.rationale_summary,
-        pre_bayes_multi_timeframe_direction_bias: run
-            .pre_bayes_evidence_filter
-            .filtered_multi_timeframe_direction_bias
-            .clone(),
-        pre_bayes_multi_timeframe_alignment_score: run
-            .pre_bayes_evidence_filter
-            .filtered_multi_timeframe_alignment_score,
-        pre_bayes_multi_timeframe_entry_alignment_score: run
-            .pre_bayes_evidence_filter
-            .filtered_multi_timeframe_entry_alignment_score,
-        pda_cluster_label: run.agent_context_bundle_minimal.pda_cluster_label.clone(),
-        hybrid_duration_model: run.hybrid_duration_model.clone(),
-        hybrid_remaining_expected_bars: run.hybrid_remaining_expected_bars,
-        spectral_entropy: None,
-        sparsity_ratio: None,
-        segments_gate: None,
-        realized_outcome: None,
-        family_states: run
-            .factor_family_outcomes
-            .iter()
-            .map(|item| {
-                format!(
-                    "{}:{}:{}",
-                    item.family, item.promotion_decision.status, item.rollback_recommendation.scope
-                )
-            })
-            .collect(),
-        factor_actions: run.agent_context_bundle.top_factor_actions.clone(),
-        multi_timeframe_summary: run.multi_timeframe_summary.clone(),
-        family_score_map: run
-            .factor_family_decisions
-            .iter()
-            .map(|family| (family.family.clone(), family.avg_score))
-            .collect(),
-        factor_score_map: BTreeMap::new(),
-        objective_market_credibility_shrink: None,
-        execution_edge_share: None,
-        prediction_edge_share: None,
-        execution_readiness: None,
-        execution_gate_status: None,
-    };
-    apply_analyze_run_execution_fields(&mut phase, run);
-    phase.phase_summary = format!(
-        "{}{}",
-        phase.phase_summary,
-        execution_phase_summary_suffix(&phase)
-    );
-    phase
-}
-
-fn workflow_phase_snapshot_from_train_run(run: &TrainRunRecord) -> WorkflowPhaseSnapshot {
-    WorkflowPhaseSnapshot {
-        phase: "train".to_string(),
-        source_command: run.source_command.clone(),
-        run_id: run.run_id.clone(),
-        timestamp: run.timestamp,
-        workflow_phase: run.workflow_state.phase.clone(),
-        workflow_reason: run.workflow_state.reason.clone(),
-        promotion_status: "promotion_status_unavailable".to_string(),
-        rollback_scope: "rollback_scope_unavailable".to_string(),
-        comparable_to_previous: run.dataset_comparability.comparable,
-        comparison_class: run.dataset_comparability.comparison_class.clone(),
-        recommended_next_command: gate_aware_recommended_next_command(
-            &run.recommended_next_command,
-            &run.recommended_commands,
-        ),
-        recommended_next_command_meta: recommended_next_command_meta(
-            &gate_aware_recommended_next_command(
-                &run.recommended_next_command,
-                &run.recommended_commands,
-            ),
-        ),
-        phase_summary: format!(
-            "final_state={} observations={} epochs={} log_likelihood={:.4} {}",
-            run.final_state,
-            run.observations,
-            run.epochs,
-            run.log_likelihood,
-            multi_timeframe_phase_hint(&run.multi_timeframe_summary)
-        ),
-        top_actions: workflow_top_actions(&run.agent_action_plan),
-        risk_flags: if run.dataset_comparability.comparable {
-            Vec::new()
-        } else {
-            vec![format!(
-                "not_comparable:{}",
-                run.dataset_comparability.comparison_class
-            )]
-        },
-        selected_direction: None,
-        selected_entry_quality: None,
-        pre_bayes_gate_status: "pre_bayes_gate_unavailable".to_string(),
-        pre_bayes_uses_soft_evidence: false,
-        pre_bayes_policy_version: "policy_version_unavailable".to_string(),
-        pre_bayes_evidence_quality_score: 0.0,
-        pre_bayes_conflict_flags: Vec::new(),
-        pre_bayes_filtered_assignments: BTreeMap::new(),
-        pre_bayes_soft_evidence: BTreeMap::new(),
-        pre_bayes_long_signal_probability: None,
-        pre_bayes_short_signal_probability: None,
-        pre_bayes_selected_entry_quality_probability: None,
-        pre_bayes_bridge_selected_entry_quality: None,
-        pre_bayes_bridge_probability_gap: None,
-        pre_bayes_bridge_rationale_summary: Vec::new(),
-        pre_bayes_multi_timeframe_direction_bias: "direction_bias_unavailable".to_string(),
-        pre_bayes_multi_timeframe_alignment_score: None,
-        pre_bayes_multi_timeframe_entry_alignment_score: None,
-        pda_cluster_label: run.agent_context_bundle_minimal.pda_cluster_label.clone(),
-        hybrid_duration_model: None,
-        hybrid_remaining_expected_bars: None,
-        spectral_entropy: None,
-        sparsity_ratio: None,
-        segments_gate: None,
-        realized_outcome: None,
-        family_states: Vec::new(),
-        factor_actions: Vec::new(),
-        multi_timeframe_summary: run.multi_timeframe_summary.clone(),
-        family_score_map: BTreeMap::new(),
-        factor_score_map: BTreeMap::new(),
-        objective_market_credibility_shrink: None,
-        execution_edge_share: None,
-        prediction_edge_share: None,
-        execution_readiness: None,
-        execution_gate_status: None,
-    }
-}
-
-fn workflow_phase_snapshot_from_research_run(run: &ResearchRunRecord) -> WorkflowPhaseSnapshot {
-    let mut phase = WorkflowPhaseSnapshot {
-        phase: "research".to_string(),
-        source_command: run.source_command.clone(),
-        run_id: run.run_id.clone(),
-        timestamp: run.timestamp,
-        workflow_phase: run.workflow_state.phase.clone(),
-        workflow_reason: run.workflow_state.reason.clone(),
-        promotion_status: run.promotion_decision.status.clone(),
-        rollback_scope: run.rollback_recommendation.scope.clone(),
-        comparable_to_previous: run.dataset_comparability.comparable,
-        comparison_class: run.dataset_comparability.comparison_class.clone(),
-        recommended_next_command: gate_aware_recommended_next_command(
-            &run.recommended_next_command,
-            &run.recommended_commands,
-        ),
-        recommended_next_command_meta: recommended_next_command_meta(
-            &gate_aware_recommended_next_command(
-                &run.recommended_next_command,
-                &run.recommended_commands,
-            ),
-        ),
-        phase_summary: format!(
-            "objective={} best_factor={:?} aggregate_return={:.4} feedback_applied={} credibility={} {}",
-            if run.research_objective.is_empty() {
-                "generic"
-            } else {
-                run.research_objective.as_str()
-            },
-            run.best_factor,
-            run.aggregate_return,
-            run.feedback_records_applied,
-            run.artifact_action_summary
-                .iter()
-                .find(|item| item.starts_with("conformal_credibility:"))
-                .cloned()
-                .unwrap_or_else(|| "conformal_credibility:unavailable".to_string()),
-            multi_timeframe_phase_hint(&run.multi_timeframe_summary)
-        ),
-        top_actions: workflow_top_actions(&run.agent_action_plan),
-        risk_flags: workflow_phase_risk_flags(
-            &run.dataset_comparability,
-            &run.promotion_decision,
-            &run.rollback_recommendation,
-        ),
-        selected_direction: None,
-        selected_entry_quality: None,
-        pre_bayes_gate_status: "pre_bayes_gate_unavailable".to_string(),
-        pre_bayes_uses_soft_evidence: false,
-        pre_bayes_policy_version: "policy_version_unavailable".to_string(),
-        pre_bayes_evidence_quality_score: 0.0,
-        pre_bayes_conflict_flags: Vec::new(),
-        pre_bayes_filtered_assignments: BTreeMap::new(),
-        pre_bayes_soft_evidence: BTreeMap::new(),
-        pre_bayes_long_signal_probability: None,
-        pre_bayes_short_signal_probability: None,
-        pre_bayes_selected_entry_quality_probability: None,
-        pre_bayes_bridge_selected_entry_quality: None,
-        pre_bayes_bridge_probability_gap: None,
-        pre_bayes_bridge_rationale_summary: Vec::new(),
-        pre_bayes_multi_timeframe_direction_bias: "direction_bias_unavailable".to_string(),
-        pre_bayes_multi_timeframe_alignment_score: None,
-        pre_bayes_multi_timeframe_entry_alignment_score: None,
-        hybrid_duration_model: None,
-        hybrid_remaining_expected_bars: None,
-        spectral_entropy: None,
-        sparsity_ratio: None,
-        segments_gate: None,
-        realized_outcome: None,
-        family_states: run
-            .factor_family_outcomes
-            .iter()
-            .map(|item| {
-                format!(
-                    "{}:{}:{}",
-                    item.family, item.promotion_decision.status, item.rollback_recommendation.scope
-                )
-            })
-            .collect(),
-        factor_actions: run.agent_context_bundle.top_factor_actions.clone(),
-        multi_timeframe_summary: run.multi_timeframe_summary.clone(),
-        family_score_map: run
-            .factor_family_decisions
-            .iter()
-            .map(|family| (family.family.clone(), family.avg_score))
-            .collect(),
-        factor_score_map: run
-            .factor_score_deltas
-            .iter()
-            .map(|item| (item.factor_name.clone(), item.new_score))
-            .collect(),
-        objective_market_credibility_shrink: None,
-        execution_edge_share: None,
-        prediction_edge_share: None,
-        execution_readiness: None,
-        execution_gate_status: None,
-        pda_cluster_label: run.agent_context_bundle_minimal.pda_cluster_label.clone(),
-    };
-    ict_engine::application::execution::apply_research_run_execution_fields(&mut phase, run);
-    phase.phase_summary = format!(
-        "{}{}",
-        phase.phase_summary,
-        execution_phase_summary_suffix(&phase)
-    );
-    phase
-}
-
-fn workflow_phase_snapshot_from_backtest_run(run: &BacktestRunRecord) -> WorkflowPhaseSnapshot {
-    let objective_market_shrink_summary = run
-        .objective_market_credibility_shrink
-        .as_ref()
-        .map(|item| {
-            format!(
-                " objective_market_shrink={:.3} objective_market_credibility={:.3} objective_market_shrink_triggered={}",
-                item.shrink_weight, item.credibility_score, item.shrink_triggered
-            )
-        })
-        .unwrap_or_default();
-    let mut phase = WorkflowPhaseSnapshot {
-        phase: "backtest".to_string(),
-        source_command: run.source_command.clone(),
-        run_id: run.run_id.clone(),
-        timestamp: run.timestamp,
-        workflow_phase: run.workflow_state.phase.clone(),
-        workflow_reason: run.workflow_state.reason.clone(),
-        promotion_status: run.promotion_decision.status.clone(),
-        rollback_scope: run.rollback_recommendation.scope.clone(),
-        comparable_to_previous: run.dataset_comparability.comparable,
-        comparison_class: run.dataset_comparability.comparison_class.clone(),
-        recommended_next_command: gate_aware_recommended_next_command(
-            &run.recommended_next_command,
-            &run.recommended_commands,
-        ),
-        recommended_next_command_meta: recommended_next_command_meta(
-            &gate_aware_recommended_next_command(
-                &run.recommended_next_command,
-                &run.recommended_commands,
-            ),
-        ),
-        phase_summary: format!(
-            "total_return={:.4} trade_count={} source={} coverage_1sigma={:.3} break_penalty={:.3} structural_break_detected={} structural_break_score={:.3} structural_break_index={:?}{} {}",
-            run.total_return,
-            run.trade_count,
-            run.source_command,
-            run.conformal_coverage_1sigma,
-            run.regime_break_penalty,
-            run.structural_break_detected,
-            run.structural_break_score,
-            run.structural_break_index,
-            objective_market_shrink_summary,
-            multi_timeframe_phase_hint(&run.multi_timeframe_summary)
-        ),
-        top_actions: workflow_top_actions(&run.agent_action_plan),
-        risk_flags: workflow_phase_risk_flags(
-            &run.dataset_comparability,
-            &run.promotion_decision,
-            &run.rollback_recommendation,
-        ),
-        selected_direction: None,
-        selected_entry_quality: None,
-        pre_bayes_gate_status: "pre_bayes_gate_unavailable".to_string(),
-        pre_bayes_uses_soft_evidence: false,
-        pre_bayes_policy_version: "policy_version_unavailable".to_string(),
-        pre_bayes_evidence_quality_score: 0.0,
-        pre_bayes_conflict_flags: Vec::new(),
-        pre_bayes_filtered_assignments: BTreeMap::new(),
-        pre_bayes_soft_evidence: BTreeMap::new(),
-        pre_bayes_long_signal_probability: None,
-        pre_bayes_short_signal_probability: None,
-        pre_bayes_selected_entry_quality_probability: None,
-        pre_bayes_bridge_selected_entry_quality: None,
-        pre_bayes_bridge_probability_gap: None,
-        pre_bayes_bridge_rationale_summary: Vec::new(),
-        pre_bayes_multi_timeframe_direction_bias: "direction_bias_unavailable".to_string(),
-        pre_bayes_multi_timeframe_alignment_score: None,
-        pre_bayes_multi_timeframe_entry_alignment_score: None,
-        hybrid_duration_model: None,
-        hybrid_remaining_expected_bars: None,
-        spectral_entropy: None,
-        sparsity_ratio: None,
-        segments_gate: None,
-        realized_outcome: None,
-        family_states: run
-            .factor_family_outcomes
-            .iter()
-            .map(|item| {
-                format!(
-                    "{}:{}:{}",
-                    item.family, item.promotion_decision.status, item.rollback_recommendation.scope
-                )
-            })
-            .collect(),
-        factor_actions: run.agent_context_bundle.top_factor_actions.clone(),
-        multi_timeframe_summary: run.multi_timeframe_summary.clone(),
-        family_score_map: run
-            .factor_family_decisions
-            .iter()
-            .map(|family| (family.family.clone(), family.avg_score))
-            .collect(),
-        factor_score_map: run
-            .factor_score_deltas
-            .iter()
-            .map(|item| (item.factor_name.clone(), item.new_score))
-            .collect(),
-        objective_market_credibility_shrink: run.objective_market_credibility_shrink.clone(),
-        execution_edge_share: None,
-        prediction_edge_share: None,
-        execution_readiness: None,
-        execution_gate_status: None,
-        pda_cluster_label: run.agent_context_bundle_minimal.pda_cluster_label.clone(),
-    };
-    ict_engine::application::execution::apply_backtest_run_execution_fields(&mut phase, run);
-    phase.phase_summary = format!(
-        "{}{}",
-        phase.phase_summary,
-        execution_phase_summary_suffix(&phase)
-    );
-    phase
-}
-
-fn workflow_phase_snapshot_from_update_run(run: &UpdateRunRecord) -> WorkflowPhaseSnapshot {
-    let consumed_bridge_diff = run
-        .consumed_pre_bayes_entry_quality_bridge
-        .as_ref()
-        .map(pre_bayes_entry_quality_bridge_diff);
-    let mut phase = WorkflowPhaseSnapshot {
-        phase: "update".to_string(),
-        source_command: run.source_command.clone(),
-        run_id: run.run_id.clone(),
-        timestamp: run.timestamp,
-        workflow_phase: run.workflow_state.phase.clone(),
-        workflow_reason: run.workflow_state.reason.clone(),
-        promotion_status: run.promotion_decision.status.clone(),
-        rollback_scope: run.rollback_recommendation.scope.clone(),
-        comparable_to_previous: run.dataset_comparability.comparable,
-        comparison_class: run.dataset_comparability.comparison_class.clone(),
-        recommended_next_command: gate_aware_recommended_next_command(
-            &run.recommended_next_command,
-            &run.recommended_commands,
-        ),
-        recommended_next_command_meta: recommended_next_command_meta(
-            &gate_aware_recommended_next_command(
-                &run.recommended_next_command,
-                &run.recommended_commands,
-            ),
-        ),
-        phase_summary: format!(
-            "realized_outcome={} feedback_applied={} duplicate_feedback_skipped={} consumed_pre_bayes_gate_status={} {}",
-            run.realized_outcome,
-            run.feedback_records_applied,
-            run.duplicate_feedback_skipped,
-            run.consumed_pre_bayes_evidence_filter
-                .as_ref()
-                .map(|filter| filter.gating_status.clone())
-                .unwrap_or_default(),
-            multi_timeframe_phase_hint(&run.consumed_multi_timeframe_summary)
-        ),
-        top_actions: workflow_top_actions(&run.agent_action_plan),
-        risk_flags: workflow_phase_risk_flags(
-            &run.dataset_comparability,
-            &run.promotion_decision,
-            &run.rollback_recommendation,
-        ),
-        selected_direction: None,
-        selected_entry_quality: Some(run.normalized_entry_quality.clone()),
-        pre_bayes_gate_status: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .map(|filter| filter.gating_status.clone())
-            .unwrap_or_default(),
-        pre_bayes_uses_soft_evidence: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .map(|filter| filter.uses_soft_evidence)
-            .unwrap_or(false),
-        pre_bayes_policy_version: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .map(|filter| filter.policy.version.clone())
-            .unwrap_or_default(),
-        pre_bayes_evidence_quality_score: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .map(|filter| filter.evidence_quality_score)
-            .unwrap_or_default(),
-        pre_bayes_conflict_flags: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .map(|filter| filter.conflict_flags.clone())
-            .unwrap_or_default(),
-        pre_bayes_filtered_assignments: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .map(|filter| filter.evidence_assignments.clone())
-            .unwrap_or_default(),
-        pre_bayes_soft_evidence: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .map(|filter| {
-                BTreeMap::from([
-                    (
-                        "market_regime".to_string(),
-                        filter.soft_market_regime_distribution.clone(),
-                    ),
-                    (
-                        "liquidity_context".to_string(),
-                        filter.soft_liquidity_context_distribution.clone(),
-                    ),
-                    (
-                        "factor_alignment".to_string(),
-                        filter.soft_factor_alignment_distribution.clone(),
-                    ),
-                    (
-                        "factor_uncertainty".to_string(),
-                        filter.soft_factor_uncertainty_distribution.clone(),
-                    ),
-                    (
-                        "multi_timeframe_resonance".to_string(),
-                        filter.soft_multi_timeframe_resonance_distribution.clone(),
-                    ),
-                ])
-            })
-            .unwrap_or_default(),
-        pre_bayes_long_signal_probability: None,
-        pre_bayes_short_signal_probability: None,
-        pre_bayes_selected_entry_quality_probability: None,
-        pre_bayes_bridge_selected_entry_quality: consumed_bridge_diff
-            .as_ref()
-            .and_then(|diff| diff.selected_entry_quality.clone()),
-        pre_bayes_bridge_probability_gap: consumed_bridge_diff
-            .as_ref()
-            .map(|diff| diff.long_short_signal_probability_gap),
-        pre_bayes_bridge_rationale_summary: consumed_bridge_diff
-            .as_ref()
-            .map(|diff| diff.rationale_summary.clone())
-            .unwrap_or_default(),
-        pre_bayes_multi_timeframe_direction_bias: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .map(|filter| filter.filtered_multi_timeframe_direction_bias.clone())
-            .unwrap_or_default(),
-        pre_bayes_multi_timeframe_alignment_score: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .and_then(|filter| filter.filtered_multi_timeframe_alignment_score),
-        pre_bayes_multi_timeframe_entry_alignment_score: run
-            .consumed_pre_bayes_evidence_filter
-            .as_ref()
-            .and_then(|filter| filter.filtered_multi_timeframe_entry_alignment_score),
-        pda_cluster_label: run.agent_context_bundle_minimal.pda_cluster_label.clone(),
-        hybrid_duration_model: None,
-        hybrid_remaining_expected_bars: None,
-        spectral_entropy: None,
-        sparsity_ratio: None,
-        segments_gate: None,
-        realized_outcome: Some(run.realized_outcome.clone()),
-        family_states: run
-            .factor_family_outcomes
-            .iter()
-            .map(|item| {
-                format!(
-                    "{}:{}:{}",
-                    item.family, item.promotion_decision.status, item.rollback_recommendation.scope
-                )
-            })
-            .collect(),
-        factor_actions: run.agent_context_bundle.top_factor_actions.clone(),
-        multi_timeframe_summary: run.consumed_multi_timeframe_summary.clone(),
-        family_score_map: run
-            .factor_family_decisions
-            .iter()
-            .map(|family| (family.family.clone(), family.avg_score))
-            .collect(),
-        factor_score_map: run
-            .factor_score_deltas
-            .iter()
-            .map(|item| (item.factor_name.clone(), item.new_score))
-            .collect(),
-        objective_market_credibility_shrink: None,
-        execution_edge_share: None,
-        prediction_edge_share: None,
-        execution_readiness: None,
-        execution_gate_status: None,
-    };
-    ict_engine::application::execution::apply_update_run_execution_fields(&mut phase, run);
-    phase.phase_summary = format!(
-        "{}{}",
-        phase.phase_summary,
-        execution_phase_summary_suffix(&phase)
-    );
-    phase
-}
-
-fn workflow_top_actions(plan: &AgentActionPlan) -> Vec<String> {
-    plan.items
-        .iter()
-        .take(3)
-        .map(|item| format!("{}:{}", item.stage, item.title))
-        .collect()
-}
-
-fn workflow_blocking_truth(
-    symbol: &str,
-    state_dir: &str,
-    current_phase: Option<&WorkflowPhaseSnapshot>,
-    pre_bayes_filter: Option<&AnalyzeRunRecord>,
-    artifact_decision_summary: &ict_engine::state::ArtifactDecisionSummary,
-) -> WorkflowBlockingTruth {
-    let current_recommended_command = current_phase
-        .map(|phase| phase.recommended_next_command.clone())
-        .unwrap_or_default();
-    if current_recommended_command.contains("user_selected_historical_data") {
-        return WorkflowBlockingTruth {
-            stage: current_phase
-                .map(|phase| phase.phase.clone())
-                .unwrap_or_else(|| "data_selection".to_string()),
-            status: "blocked".to_string(),
-            reason: "user_selected_historical_data_missing".to_string(),
-            evidence: vec![
-                "historical data reuse requires explicit user path selection".to_string(),
-                current_recommended_command.clone(),
-            ],
-            next_command: current_recommended_command,
-        };
-    }
-    if let Some(analyze) = pre_bayes_filter {
-        let gate_status = analyze.pre_bayes_evidence_filter.gating_status.clone();
-        let bridge_diff =
-            pre_bayes_entry_quality_bridge_diff(&analyze.pre_bayes_entry_quality_bridge);
-        let bridge_gap = bridge_diff.long_short_signal_probability_gap;
-        let hard_pass = pre_bayes_gate_is_hard_pass(&gate_status);
-        let bridge_gap_clear_threshold = env_f64("ICT_ENGINE_BRIDGE_GAP_CLEAR_THRESHOLD", 0.12);
-        if !hard_pass || bridge_gap < bridge_gap_clear_threshold {
-            let mut evidence = vec![
-                format!("pre_bayes_gate_status={gate_status}"),
-                format!("bridge_probability_gap={bridge_gap:.3}"),
-                format!(
-                    "selected_entry_quality={}",
-                    bridge_diff
-                        .selected_entry_quality
-                        .unwrap_or_else(|| "entry_quality_unavailable".to_string())
-                ),
-            ];
-            evidence.extend(
-                analyze
-                    .pre_bayes_evidence_filter
-                    .rationale
-                    .iter()
-                    .take(3)
-                    .cloned(),
-            );
-            return WorkflowBlockingTruth {
-                stage: "analyze".to_string(),
-                status: if hard_pass {
-                    "bridge_needs_confirmation".to_string()
-                } else {
-                    gate_status.clone()
-                },
-                reason: if hard_pass {
-                    format!(
-                        "pre_bayes passed but bridge gap {:.3} is below confirmation threshold",
-                        bridge_gap
-                    )
-                } else {
-                    analyze
-                        .pre_bayes_evidence_filter
-                        .rationale
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            "pre-bayes gate still blocks downstream chain".to_string()
-                        })
-                },
-                evidence,
-                next_command: if current_recommended_command.is_empty() {
-                    format!(
-                        "ict-engine pre-bayes-status --symbol {} --state-dir {}",
-                        shell_quote(symbol),
-                        shell_quote(state_dir)
-                    )
-                } else {
-                    current_recommended_command
-                },
-            };
-        }
-    }
-    if artifact_decision_summary.consumed_trend_status == "validated_regressing" {
-        return WorkflowBlockingTruth {
-            stage: "artifact_consumption".to_string(),
-            status: artifact_decision_summary.consumed_trend_status.clone(),
-            reason: artifact_decision_summary.consumed_trend_reason.clone(),
-            evidence: artifact_decision_summary.consumed_target_kinds.clone(),
-            next_command: format!(
-                "ict-engine workflow-status --symbol {} --state-dir {} --phase artifact-consumed-gate",
-                shell_quote(symbol),
-                shell_quote(state_dir)
-            ),
-        };
-    }
-    if let Some(phase) = current_phase {
-        if let Some(credibility_block) = phase.risk_flags.iter().find(|flag| {
-            flag.contains("conformal_coverage_low")
-                || flag.contains("regime_break_penalty_high")
-                || flag.contains("structural_break_detected")
-        }) {
-            return WorkflowBlockingTruth {
-                stage: phase.phase.clone(),
-                status: "credibility_gate_blocked".to_string(),
-                reason: format!(
-                    "workflow credibility gate blocked next step because {}",
-                    credibility_block
-                ),
-                evidence: phase.risk_flags.clone(),
-                next_command: format!(
-                    "ict-engine workflow-status --symbol {} --state-dir {} --phase human-next",
-                    shell_quote(symbol),
-                    shell_quote(state_dir)
-                ),
-            };
-        }
-    }
-    if let Some(phase) = current_phase {
-        return WorkflowBlockingTruth {
-            stage: phase.phase.clone(),
-            status: "follow_current_focus".to_string(),
-            reason: phase.workflow_reason.clone(),
-            evidence: phase.top_actions.clone(),
-            next_command: phase.recommended_next_command.clone(),
-        };
-    }
-    WorkflowBlockingTruth {
-        stage: "stage_unavailable".to_string(),
-        status: "insufficient_state".to_string(),
-        reason: "no workflow phase snapshots available".to_string(),
-        evidence: Vec::new(),
-        next_command: "next_command_unavailable".to_string(),
-    }
-}
-
-fn workflow_phase_risk_flags(
-    comparability: &DatasetComparability,
-    promotion: &PromotionDecision,
-    rollback: &RollbackRecommendation,
-) -> Vec<String> {
-    let mut flags = Vec::new();
-    if !comparability.comparable {
-        flags.push(format!("not_comparable:{}", comparability.comparison_class));
-    }
-    if rollback.should_rollback {
-        flags.push(format!("rollback:{}", rollback.reason));
-    }
-    if !promotion.approved && !promotion.status.is_empty() && promotion.status != "observe" {
-        flags.push(format!("promotion_blocked:{}", promotion.reason));
-    }
-    flags
-}
-
-fn workflow_field_diffs(
-    analyze: &Option<WorkflowPhaseSnapshot>,
-    research: &Option<WorkflowPhaseSnapshot>,
-    backtest: &Option<WorkflowPhaseSnapshot>,
-    update: &Option<WorkflowPhaseSnapshot>,
-) -> Vec<WorkflowFieldDiff> {
-    let mut diffs = Vec::new();
-    for (left, right) in [
-        (research.as_ref(), backtest.as_ref()),
-        (analyze.as_ref(), update.as_ref()),
-        (research.as_ref(), update.as_ref()),
-    ] {
-        if let (Some(left), Some(right)) = (left, right) {
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "promotion_status",
-                &left.promotion_status,
-                &right.promotion_status,
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "rollback_scope",
-                &left.rollback_scope,
-                &right.rollback_scope,
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "workflow_phase",
-                &left.workflow_phase,
-                &right.workflow_phase,
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "comparison_class",
-                &left.comparison_class,
-                &right.comparison_class,
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "pre_bayes_gate_status",
-                &left.pre_bayes_gate_status,
-                &right.pre_bayes_gate_status,
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "pre_bayes_policy_version",
-                &left.pre_bayes_policy_version,
-                &right.pre_bayes_policy_version,
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "pre_bayes_uses_soft_evidence",
-                if left.pre_bayes_uses_soft_evidence {
-                    "true"
-                } else {
-                    "false"
-                },
-                if right.pre_bayes_uses_soft_evidence {
-                    "true"
-                } else {
-                    "false"
-                },
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "pre_bayes_soft_market_regime",
-                &format!("{:?}", left.pre_bayes_soft_evidence.get("market_regime")),
-                &format!("{:?}", right.pre_bayes_soft_evidence.get("market_regime")),
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "pre_bayes_bridge_selected_entry_quality",
-                &left
-                    .pre_bayes_bridge_selected_entry_quality
-                    .clone()
-                    .unwrap_or_default(),
-                &right
-                    .pre_bayes_bridge_selected_entry_quality
-                    .clone()
-                    .unwrap_or_default(),
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "pre_bayes_bridge_probability_gap",
-                &left
-                    .pre_bayes_bridge_probability_gap
-                    .map(|value| format!("{value:.4}"))
-                    .unwrap_or_default(),
-                &right
-                    .pre_bayes_bridge_probability_gap
-                    .map(|value| format!("{value:.4}"))
-                    .unwrap_or_default(),
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "pre_bayes_multi_timeframe_direction_bias",
-                &left.pre_bayes_multi_timeframe_direction_bias,
-                &right.pre_bayes_multi_timeframe_direction_bias,
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "pre_bayes_multi_timeframe_alignment_score",
-                &left
-                    .pre_bayes_multi_timeframe_alignment_score
-                    .map(|value| format!("{value:.4}"))
-                    .unwrap_or_default(),
-                &right
-                    .pre_bayes_multi_timeframe_alignment_score
-                    .map(|value| format!("{value:.4}"))
-                    .unwrap_or_default(),
-            );
-            push_workflow_field_diff(
-                &mut diffs,
-                left,
-                right,
-                "pre_bayes_multi_timeframe_entry_alignment_score",
-                &left
-                    .pre_bayes_multi_timeframe_entry_alignment_score
-                    .map(|value| format!("{value:.4}"))
-                    .unwrap_or_default(),
-                &right
-                    .pre_bayes_multi_timeframe_entry_alignment_score
-                    .map(|value| format!("{value:.4}"))
-                    .unwrap_or_default(),
-            );
-        }
-    }
-    diffs
-}
-
-fn push_workflow_field_diff(
-    diffs: &mut Vec<WorkflowFieldDiff>,
-    left: &WorkflowPhaseSnapshot,
-    right: &WorkflowPhaseSnapshot,
-    field: &str,
-    left_value: &str,
-    right_value: &str,
-) {
-    if left_value != right_value {
-        diffs.push(WorkflowFieldDiff {
-            left_phase: left.phase.clone(),
-            right_phase: right.phase.clone(),
-            field: field.to_string(),
-            left_value: left_value.to_string(),
-            right_value: right_value.to_string(),
-            severity: if field == "promotion_status" || field == "rollback_scope" {
-                "high".to_string()
-            } else {
-                "medium".to_string()
-            },
-        });
-    }
-}
-
-fn workflow_disagreements(
-    analyze: &Option<WorkflowPhaseSnapshot>,
-    research: &Option<WorkflowPhaseSnapshot>,
-    backtest: &Option<WorkflowPhaseSnapshot>,
-    update: &Option<WorkflowPhaseSnapshot>,
-) -> Vec<WorkflowDisagreement> {
-    let mut disagreements = Vec::new();
-
-    if let (Some(analyze), Some(update)) = (analyze, update) {
-        if analyze
-            .selected_direction
-            .as_deref()
-            .map(|direction| direction == "Bull" || direction == "Bear")
-            .unwrap_or(false)
-            && update.rollback_scope != "none"
-        {
-            disagreements.push(WorkflowDisagreement {
-                id: "analyze_direction_vs_update_rollback".to_string(),
-                severity: "high".to_string(),
-                summary: "analyze directional bias conflicts with the latest update rollback state"
-                    .to_string(),
-                phases: vec![analyze.phase.clone(), update.phase.clone()],
-                recommended_action: "review realized feedback against the current directional evidence before trusting deployment decisions".to_string(),
-                evidence: vec![
-                    format!(
-                        "analyze.selected_direction={}",
-                        analyze.selected_direction.clone().unwrap_or_default()
-                    ),
-                    format!("update.rollback_scope={}", update.rollback_scope),
-                    format!(
-                        "update.realized_outcome={}",
-                        update.realized_outcome.clone().unwrap_or_default()
-                    ),
-                ],
-                sources: Vec::new(),
-            });
-        }
-    }
-
-    if let (Some(research), Some(backtest)) = (research, backtest) {
-        if research.promotion_status != backtest.promotion_status {
-            disagreements.push(WorkflowDisagreement {
-                id: "research_vs_backtest_promotion_status".to_string(),
-                severity: "high".to_string(),
-                summary: "research and backtest disagree on promotion status".to_string(),
-                phases: vec![research.phase.clone(), backtest.phase.clone()],
-                recommended_action:
-                    "compare score deltas with backtest returns before promoting factor changes"
-                        .to_string(),
-                evidence: vec![
-                    format!("research.promotion_status={}", research.promotion_status),
-                    format!("backtest.promotion_status={}", backtest.promotion_status),
-                ],
-                sources: family_conflict_sources(research, backtest)
-                    .into_iter()
-                    .chain(factor_conflict_sources(research, backtest))
-                    .collect(),
-            });
-        }
-    }
-
-    if let Some(analyze) = analyze {
-        for downstream in [research.as_ref(), backtest.as_ref(), update.as_ref()]
-            .into_iter()
-            .flatten()
-        {
-            if analyze.pre_bayes_gate_status == "observe_only"
-                && downstream.promotion_status == "promote"
-            {
-                let soft_divergences = pre_bayes_soft_divergence_evidence(analyze);
-                disagreements.push(WorkflowDisagreement {
-                    id: format!("analyze_pre_bayes_observe_only_vs_{}_promote", downstream.phase),
-                    severity: "high".to_string(),
-                    summary:
-                        "analyze pre-bayes gate is observe-only but a downstream phase still promotes"
-                            .to_string(),
-                    phases: vec![analyze.phase.clone(), downstream.phase.clone()],
-                    recommended_action:
-                        "resolve pre-bayes evidence quality before trusting downstream promotion"
-                            .to_string(),
-                    evidence: vec![
-                        format!(
-                            "analyze.pre_bayes_gate_status={}",
-                            analyze.pre_bayes_gate_status
-                        ),
-                        format!(
-                            "analyze.pre_bayes_quality={:.3}",
-                            analyze.pre_bayes_evidence_quality_score
-                        ),
-                        format!(
-                            "analyze.pre_bayes_policy_version={}",
-                            analyze.pre_bayes_policy_version
-                        ),
-                        format!(
-                            "analyze.pre_bayes_uses_soft_evidence={}",
-                            analyze.pre_bayes_uses_soft_evidence
-                        ),
-                        format!(
-                            "analyze.pre_bayes_long_signal_probability={:.3}",
-                            analyze.pre_bayes_long_signal_probability.unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_short_signal_probability={:.3}",
-                            analyze.pre_bayes_short_signal_probability.unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_selected_entry_quality_probability={:.3}",
-                            analyze
-                                .pre_bayes_selected_entry_quality_probability
-                                .unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_bridge_selected_entry_quality={}",
-                            analyze
-                                .pre_bayes_bridge_selected_entry_quality
-                                .clone()
-                                .unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_bridge_probability_gap={:.3}",
-                            analyze.pre_bayes_bridge_probability_gap.unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_multi_timeframe_direction_bias={}",
-                            analyze.pre_bayes_multi_timeframe_direction_bias
-                        ),
-                        format!(
-                            "analyze.pre_bayes_multi_timeframe_alignment_score={:.3}",
-                            analyze
-                                .pre_bayes_multi_timeframe_alignment_score
-                                .unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_multi_timeframe_entry_alignment_score={:.3}",
-                            analyze
-                                .pre_bayes_multi_timeframe_entry_alignment_score
-                                .unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_soft_divergences={}",
-                            if soft_divergences.is_empty() {
-                                "none".to_string()
-                            } else {
-                                soft_divergences.join("|")
-                            }
-                        ),
-                        format!(
-                            "{}.promotion_status={}",
-                            downstream.phase, downstream.promotion_status
-                        ),
-                    ],
-                    sources: vec![WorkflowConflictSource {
-                        scope: "pre_bayes_bridge".to_string(),
-                        subject: "policy_version_and_selected_entry_quality".to_string(),
-                        left_phase: analyze.phase.clone(),
-                        left_value: format!(
-                            "{}:{}",
-                            analyze.pre_bayes_policy_version,
-                            analyze
-                                .pre_bayes_bridge_selected_entry_quality
-                                .clone()
-                                .unwrap_or_default()
-                        ),
-                        right_phase: downstream.phase.clone(),
-                        right_value: downstream.promotion_status.clone(),
-                        evidence: vec![
-                            "observe_only gate conflicts with downstream promote".to_string(),
-                            format!(
-                                "uses_soft_evidence={}",
-                                analyze.pre_bayes_uses_soft_evidence
-                            ),
-                            format!(
-                                "long_short_signal_probability_gap={:.3}",
-                                analyze.pre_bayes_bridge_probability_gap.unwrap_or_default()
-                            ),
-                            format!(
-                                "multi_timeframe_direction_bias={}",
-                                analyze.pre_bayes_multi_timeframe_direction_bias
-                            ),
-                            format!(
-                                "soft_divergences={}",
-                                if soft_divergences.is_empty() {
-                                    "none".to_string()
-                                } else {
-                                    soft_divergences.join("|")
-                                }
-                            ),
-                        ],
-                    }],
-                });
-            }
-            if analyze.pre_bayes_gate_status == "pass_neutralized"
-                && downstream.promotion_status == "promote"
-            {
-                let soft_divergences = pre_bayes_soft_divergence_evidence(analyze);
-                disagreements.push(WorkflowDisagreement {
-                    id: format!(
-                        "analyze_pre_bayes_neutralized_vs_{}_promote",
-                        downstream.phase
-                    ),
-                    severity: "medium".to_string(),
-                    summary:
-                        "analyze pre-bayes gate is neutralized while a downstream phase still promotes"
-                            .to_string(),
-                    phases: vec![analyze.phase.clone(), downstream.phase.clone()],
-                    recommended_action:
-                        "review whether neutralized evidence is strong enough to justify promotion"
-                            .to_string(),
-                    evidence: vec![
-                        format!(
-                            "analyze.pre_bayes_gate_status={}",
-                            analyze.pre_bayes_gate_status
-                        ),
-                        format!(
-                            "analyze.pre_bayes_quality={:.3}",
-                            analyze.pre_bayes_evidence_quality_score
-                        ),
-                        format!(
-                            "analyze.pre_bayes_policy_version={}",
-                            analyze.pre_bayes_policy_version
-                        ),
-                        format!(
-                            "analyze.pre_bayes_uses_soft_evidence={}",
-                            analyze.pre_bayes_uses_soft_evidence
-                        ),
-                        format!(
-                            "analyze.pre_bayes_long_signal_probability={:.3}",
-                            analyze.pre_bayes_long_signal_probability.unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_short_signal_probability={:.3}",
-                            analyze.pre_bayes_short_signal_probability.unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_selected_entry_quality_probability={:.3}",
-                            analyze
-                                .pre_bayes_selected_entry_quality_probability
-                                .unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_bridge_selected_entry_quality={}",
-                            analyze
-                                .pre_bayes_bridge_selected_entry_quality
-                                .clone()
-                                .unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_bridge_probability_gap={:.3}",
-                            analyze.pre_bayes_bridge_probability_gap.unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_multi_timeframe_direction_bias={}",
-                            analyze.pre_bayes_multi_timeframe_direction_bias
-                        ),
-                        format!(
-                            "analyze.pre_bayes_multi_timeframe_alignment_score={:.3}",
-                            analyze
-                                .pre_bayes_multi_timeframe_alignment_score
-                                .unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_multi_timeframe_entry_alignment_score={:.3}",
-                            analyze
-                                .pre_bayes_multi_timeframe_entry_alignment_score
-                                .unwrap_or_default()
-                        ),
-                        format!(
-                            "analyze.pre_bayes_soft_divergences={}",
-                            if soft_divergences.is_empty() {
-                                "none".to_string()
-                            } else {
-                                soft_divergences.join("|")
-                            }
-                        ),
-                        format!(
-                            "{}.promotion_status={}",
-                            downstream.phase, downstream.promotion_status
-                        ),
-                    ],
-                    sources: vec![WorkflowConflictSource {
-                        scope: "pre_bayes_bridge".to_string(),
-                        subject: "policy_version_and_selected_entry_quality".to_string(),
-                        left_phase: analyze.phase.clone(),
-                        left_value: format!(
-                            "{}:{}",
-                            analyze.pre_bayes_policy_version,
-                            analyze
-                                .pre_bayes_bridge_selected_entry_quality
-                                .clone()
-                                .unwrap_or_default()
-                        ),
-                        right_phase: downstream.phase.clone(),
-                        right_value: downstream.promotion_status.clone(),
-                        evidence: vec![
-                            "neutralized gate conflicts with downstream promote".to_string(),
-                            format!(
-                                "long_short_signal_probability_gap={:.3}",
-                                analyze.pre_bayes_bridge_probability_gap.unwrap_or_default()
-                            ),
-                            format!(
-                                "multi_timeframe_direction_bias={}",
-                                analyze.pre_bayes_multi_timeframe_direction_bias
-                            ),
-                            format!(
-                                "soft_divergences={}",
-                                if soft_divergences.is_empty() {
-                                    "none".to_string()
-                                } else {
-                                    soft_divergences.join("|")
-                                }
-                            ),
-                        ],
-                    }],
-                });
-            }
-        }
-    }
-
-    for (left, right) in [
-        (research.as_ref(), update.as_ref()),
-        (backtest.as_ref(), update.as_ref()),
-        (research.as_ref(), backtest.as_ref()),
-    ] {
-        if let (Some(left), Some(right)) = (left, right) {
-            let score_promotes = left.promotion_status == "promote"
-                && right.workflow_phase == "artifact_rollback_review";
-            let reverse_score_promotes = right.promotion_status == "promote"
-                && left.workflow_phase == "artifact_rollback_review";
-            if score_promotes || reverse_score_promotes {
-                let (promote_phase, artifact_phase) = if score_promotes {
-                    (left, right)
-                } else {
-                    (right, left)
-                };
-                disagreements.push(WorkflowDisagreement {
-                    id: format!(
-                        "{}_vs_{}_artifact_consumption_gate",
-                        promote_phase.phase, artifact_phase.phase
-                    ),
-                    severity: "high".to_string(),
-                    summary:
-                        "score-based promotion conflicts with an artifact consumption rollback gate"
-                            .to_string(),
-                    phases: vec![promote_phase.phase.clone(), artifact_phase.phase.clone()],
-                    recommended_action:
-                        "resolve artifact consumption regression before trusting score-based promotion"
-                            .to_string(),
-                    evidence: vec![
-                        format!(
-                            "{}.promotion_status={}",
-                            promote_phase.phase, promote_phase.promotion_status
-                        ),
-                        format!(
-                            "{}.workflow_phase={}",
-                            artifact_phase.phase, artifact_phase.workflow_phase
-                        ),
-                        format!(
-                            "{}.rollback_scope={}",
-                            artifact_phase.phase, artifact_phase.rollback_scope
-                        ),
-                    ],
-                    sources: family_conflict_sources(promote_phase, artifact_phase)
-                        .into_iter()
-                        .chain(factor_conflict_sources(promote_phase, artifact_phase))
-                        .collect(),
-                });
-            }
-        }
-    }
-
-    if let (Some(backtest), Some(update)) = (backtest, update) {
-        if backtest.rollback_scope == "none" && update.rollback_scope != "none" {
-            disagreements.push(WorkflowDisagreement {
-                id: "backtest_stable_vs_update_rollback".to_string(),
-                severity: "medium".to_string(),
-                summary: "backtest stayed stable but the latest realized update recommends rollback".to_string(),
-                phases: vec![backtest.phase.clone(), update.phase.clone()],
-                recommended_action: "inspect live execution drift and feedback provenance before keeping or rolling back changes".to_string(),
-                evidence: vec![
-                    format!("backtest.rollback_scope={}", backtest.rollback_scope),
-                    format!("update.rollback_scope={}", update.rollback_scope),
-                ],
-                sources: family_conflict_sources(backtest, update)
-                    .into_iter()
-                    .chain(factor_conflict_sources(backtest, update))
-                    .collect(),
-            });
-        }
-    }
-
-    if let (Some(research), Some(backtest)) = (research, backtest) {
-        let sources = family_conflict_sources(research, backtest);
-        if !sources.is_empty() {
-            disagreements.push(WorkflowDisagreement {
-                id: "research_backtest_family_conflicts".to_string(),
-                severity: "medium".to_string(),
-                summary: "research and backtest disagree on family-level decisions".to_string(),
-                phases: vec![research.phase.clone(), backtest.phase.clone()],
-                recommended_action: "inspect family score deltas and rollback scopes before acting on a single phase".to_string(),
-                evidence: sources
-                    .iter()
-                    .map(|source| {
-                        format!(
-                            "family:{} {}={} {}={}",
-                            source.subject,
-                            source.left_phase,
-                            source.left_value,
-                            source.right_phase,
-                            source.right_value
-                        )
-                    })
-                    .collect(),
-                sources,
-            });
-        }
-        let sources = factor_conflict_sources(research, backtest);
-        if !sources.is_empty() {
-            disagreements.push(WorkflowDisagreement {
-                id: "research_backtest_factor_conflicts".to_string(),
-                severity: "medium".to_string(),
-                summary: "research and backtest disagree on factor-level actions".to_string(),
-                phases: vec![research.phase.clone(), backtest.phase.clone()],
-                recommended_action: "check factor scorecards and iteration queue ordering before selecting the next factor edit".to_string(),
-                evidence: sources
-                    .iter()
-                    .map(|source| {
-                        format!(
-                            "factor:{} {}={} {}={}",
-                            source.subject,
-                            source.left_phase,
-                            source.left_value,
-                            source.right_phase,
-                            source.right_value
-                        )
-                    })
-                    .collect(),
-                sources,
-            });
-        }
-    }
-
-    disagreements
-}
-
-fn pre_bayes_soft_divergence_evidence(snapshot: &WorkflowPhaseSnapshot) -> Vec<String> {
-    snapshot
-        .pre_bayes_soft_evidence
-        .iter()
-        .filter_map(|(node, distribution)| {
-            let dominant = distribution
-                .iter()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))?;
-            let filtered = snapshot.pre_bayes_filtered_assignments.get(node)?;
-            (dominant.0 != filtered).then(|| {
-                format!(
-                    "{}:{}->{:.3}:filtered={}",
-                    node, dominant.0, dominant.1, filtered
-                )
-            })
-        })
-        .collect()
-}
-
-fn family_conflict_sources(
-    left: &WorkflowPhaseSnapshot,
-    right: &WorkflowPhaseSnapshot,
-) -> Vec<WorkflowConflictSource> {
-    let left_map = left
-        .family_states
-        .iter()
-        .filter_map(|item| {
-            let mut parts = item.splitn(3, ':');
-            Some((
-                parts.next()?.to_string(),
-                format!("{}:{}", parts.next()?, parts.next()?),
-            ))
-        })
-        .collect::<BTreeMap<_, _>>();
-    let right_map = right
-        .family_states
-        .iter()
-        .filter_map(|item| {
-            let mut parts = item.splitn(3, ':');
-            Some((
-                parts.next()?.to_string(),
-                format!("{}:{}", parts.next()?, parts.next()?),
-            ))
-        })
-        .collect::<BTreeMap<_, _>>();
-    left_map
-        .iter()
-        .filter_map(|(family, left_value)| {
-            let right_value = right_map.get(family)?;
-            (left_value != right_value).then(|| WorkflowConflictSource {
-                scope: "family".to_string(),
-                subject: family.clone(),
-                left_phase: left.phase.clone(),
-                left_value: left_value.clone(),
-                right_phase: right.phase.clone(),
-                right_value: right_value.clone(),
-                evidence: workflow_numeric_family_evidence(left, right, family),
-            })
-        })
-        .collect()
-}
-
-fn factor_conflict_sources(
-    left: &WorkflowPhaseSnapshot,
-    right: &WorkflowPhaseSnapshot,
-) -> Vec<WorkflowConflictSource> {
-    let left_map = left
-        .factor_actions
-        .iter()
-        .filter_map(|item| {
-            let mut parts = item.splitn(3, ':');
-            Some((parts.next()?.to_string(), parts.next()?.to_string()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    let right_map = right
-        .factor_actions
-        .iter()
-        .filter_map(|item| {
-            let mut parts = item.splitn(3, ':');
-            Some((parts.next()?.to_string(), parts.next()?.to_string()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    left_map
-        .iter()
-        .filter_map(|(factor, left_value)| {
-            let right_value = right_map.get(factor)?;
-            (left_value != right_value).then(|| WorkflowConflictSource {
-                scope: "factor".to_string(),
-                subject: factor.clone(),
-                left_phase: left.phase.clone(),
-                left_value: left_value.clone(),
-                right_phase: right.phase.clone(),
-                right_value: right_value.clone(),
-                evidence: workflow_numeric_factor_evidence(left, right, factor),
-            })
-        })
-        .collect()
-}
-
-fn workflow_numeric_family_evidence(
-    left: &WorkflowPhaseSnapshot,
-    right: &WorkflowPhaseSnapshot,
-    family: &str,
-) -> Vec<String> {
-    let left_score = left.family_score_map.get(family).copied();
-    let right_score = right.family_score_map.get(family).copied();
-    match (left_score, right_score) {
-        (Some(left_score), Some(right_score)) => vec![
-            format!("left_avg_score={:.4}", left_score),
-            format!("right_avg_score={:.4}", right_score),
-            format!("avg_score_delta={:.4}", right_score - left_score),
-        ],
-        _ => Vec::new(),
-    }
-}
-
-fn workflow_numeric_factor_evidence(
-    left: &WorkflowPhaseSnapshot,
-    right: &WorkflowPhaseSnapshot,
-    factor: &str,
-) -> Vec<String> {
-    let left_score = left.factor_score_map.get(factor).copied();
-    let right_score = right.factor_score_map.get(factor).copied();
-    match (left_score, right_score) {
-        (Some(left_score), Some(right_score)) => vec![
-            format!("left_composite_score={:.4}", left_score),
-            format!("right_composite_score={:.4}", right_score),
-            format!("composite_score_delta={:.4}", right_score - left_score),
-        ],
-        _ => Vec::new(),
-    }
-}
-
-fn train_command(symbol: &str, data: &str, epochs: usize, state_dir: &str) -> Result<()> {
-    let (observations, multi_timeframe_summary, candles_total) =
-        build_multi_timeframe_training_observations(data)?;
-    let initial_params = load_or_init_hmm_params(symbol, state_dir);
-    let trained_params = BaumWelch::fit(&observations, &initial_params, epochs, 1e-4);
-    let (_, log_likelihood) = ForwardBackward::forward(&observations, &trained_params);
-    let (states, viterbi_log_likelihood) = Viterbi::decode(&observations, &trained_params);
-    let learning_state = load_learning_state(state_dir, symbol)?;
-    let previous_runs: Vec<TrainRunRecord> =
-        load_state_or_default(state_dir, symbol, TRAIN_RUNS_FILE)?;
-    let provenance = run_provenance(
-        &learning_state,
-        &["train", data, &epochs.to_string()],
-        compute_hash(&["train", symbol, data, &epochs.to_string()]),
-    );
-    let dataset_comparability = dataset_comparability(
-        previous_runs.last().map(|run| run.run_id.clone()),
-        previous_runs.last().map(|run| &run.provenance),
-        &provenance,
-    );
-    let workflow_state = WorkflowState {
-        phase: "train_review_ready".to_string(),
-        reason: "multi_timeframe_hmm_training_completed".to_string(),
-    };
-    let mut agent_action_plan = AgentActionPlan {
-        summary: "review multi-timeframe HMM training outcome".to_string(),
-        items: vec![AgentActionItem {
-            stage: "train".to_string(),
-            blocking: false,
-            priority: "medium".to_string(),
-            title: "Review Train Run".to_string(),
-            rationale: format!(
-                "epochs={} observations={} final_state={}",
-                epochs,
-                observations.len(),
-                states.last().copied().map(state_name).unwrap_or("Unknown")
-            ),
-            expected_output: "A training review confirming whether the latest HMM state should feed the next analyze/research cycle".to_string(),
-            expected_state_changes: vec![ExpectedStateChange {
-                target: "hmm_params".to_string(),
-                direction: "trained_multi_timeframe".to_string(),
-                rationale: "multi_timeframe_hmm_training_completed".to_string(),
-            }],
-            suggested_files: vec!["src/main.rs".to_string(), "src/hmm/baum_welch.rs".to_string()],
-            suggested_commands: vec!["ict-engine analyze --data-htf <file> --data-mtf <file> --data-ltf <file>".to_string()],
-        }],
-    };
-    let recommended_commands = command_recommendations(&CommandContext {
-        symbol: symbol.to_string(),
-        state_dir: state_dir.to_string(),
-        analyze: Some(AnalyzeCommandSource::Files {
-            data_htf: data.to_string(),
-            data_mtf: data.to_string(),
-            data_ltf: data.to_string(),
-        }),
-        research_data: Some(data.to_string()),
-        paired_data: None,
-        update_outcome: None,
-        update_entry_signal: None,
-        update_feedback_file: pending_update_artifact_path(state_dir, symbol),
-        user_data_selection_required: true,
-    });
-    concretize_action_plan_commands(&mut agent_action_plan, &recommended_commands);
-    let recommended_next_command =
-        recommended_next_command(&agent_action_plan, &recommended_commands);
-    let mut agent_context_bundle = build_agent_context_bundle(BuildAgentContextBundleInput {
-        symbol,
-        state_dir,
-        workflow_state: &workflow_state,
-        decision_hint: "train_review_ready",
-        recommended_next_command: &recommended_next_command,
-        recommended_commands: &recommended_commands,
-        dataset_comparability: &dataset_comparability,
-        factor_iteration_queue: &[],
-        family_outcomes: &[],
-        pre_bayes_evidence_filter: None,
-        pre_bayes_entry_quality_bridge: None,
-        pda_sequence_summary: None,
-        factor_mutation_evaluation: None,
-        artifact_decision_summary: None,
-    });
-    agent_context_bundle.multi_timeframe_summary = multi_timeframe_summary.clone();
-    let agent_context_bundle_minimal = build_agent_context_bundle_minimal(&agent_context_bundle);
-    let mut agent_prompts = AgentPromptPack {
-        version: PROMPT_PACK_VERSION.to_string(),
-        workflow: format!(
-            "Review the latest multi-timeframe HMM training result for {} before the next analyze/research cycle.",
-            symbol
-        ),
-        prompts: vec![dataset_audit_prompt(symbol, data, None, candles_total, None, "train")],
-    };
-    agent_prompts.prompts.push(AgentPrompt::new(AgentPromptInput {
-        id: "train_review".to_string(),
-        stage: "train".to_string(),
-        priority: "high".to_string(),
-        objective: "Review whether the latest multi-timeframe HMM training result is usable.".to_string(),
-        system_prompt: "You are the train-review agent. Use the training observations, likelihoods, and multi-timeframe summary to decide whether the latest HMM training result should feed the next analysis cycle or be treated cautiously.".to_string(),
-        user_prompt: format!(
-            "Symbol={} epochs={} observations={} final_state={} log_likelihood={:.4} viterbi_log_likelihood={:.4} multi_timeframe_summary={:?}",
-            symbol,
-            epochs,
-            observations.len(),
-            states.last().copied().map(state_name).unwrap_or("Unknown"),
-            log_likelihood,
-            viterbi_log_likelihood,
-            multi_timeframe_summary
-        ),
-        success_criteria: vec![
-            "Prefer using the trained HMM only when likelihoods are finite and multi-timeframe coverage is present".to_string(),
-            "If multi-timeframe coverage is missing, downgrade confidence in the next analyze cycle".to_string(),
-        ],
-        suggested_files: vec!["src/main.rs".to_string(), "src/hmm/baum_welch.rs".to_string()],
-    }));
-
-    save_state(state_dir, symbol, HMM_STATE_FILE, &trained_params)?;
-    append_train_run(
-        state_dir,
-        symbol,
-        TrainRunRecord {
-            run_id: format!(
-                "train:{}:{}",
-                symbol,
-                Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
-            ),
-            timestamp: Utc::now(),
-            symbol: symbol.to_string(),
-            provenance,
-            dataset_comparability,
-            source_command: "train".to_string(),
-            data_path: data.to_string(),
-            epochs,
-            candles: candles_total,
-            observations: observations.len(),
-            final_state: states
-                .last()
-                .copied()
-                .map(state_name)
-                .unwrap_or("Unknown")
-                .to_string(),
-            log_likelihood,
-            viterbi_log_likelihood,
-            workflow_state,
-            agent_action_plan,
-            recommended_commands,
-            recommended_next_command_meta: recommended_next_command_meta(&recommended_next_command),
-            recommended_next_command,
-            agent_context_bundle,
-            agent_context_bundle_minimal,
-            agent_prompts: agent_prompts.clone(),
-            prompt_workflow: agent_prompts.workflow.clone(),
-            multi_timeframe_summary: multi_timeframe_summary.clone(),
-        },
-    )?;
-    let workflow_snapshot = refresh_workflow_snapshot(state_dir, symbol)?;
-
-    println!(
-        "train symbol={} state_dir={} epochs={} candles={} observations={} final_state={} log_likelihood={:.4} viterbi_log_likelihood={:.4} multi_timeframe_summary={:?} workflow_phase={} saved={}/{}",
-        symbol,
-        state_dir,
-        epochs,
-        candles_total,
-        observations.len(),
-        states.last().copied().map(state_name).unwrap_or("Unknown"),
-        log_likelihood,
-        viterbi_log_likelihood,
-        multi_timeframe_summary,
-        workflow_snapshot.current_focus_phase,
-        symbol,
-        HMM_STATE_FILE,
-    );
-    Ok(())
-}
-
 struct RunFactorResearchInput<'a> {
     symbol: &'a str,
     data: &'a str,
@@ -4199,12 +3407,171 @@ struct RunFactorResearchInput<'a> {
     data_1m: Option<&'a str>,
     data_5m: Option<&'a str>,
     data_15m: Option<&'a str>,
+    data_30m: Option<&'a str>,
     data_1h: Option<&'a str>,
     data_4h: Option<&'a str>,
     data_1d: Option<&'a str>,
     paired_data: Option<&'a str>,
+    paired_candles_override: Option<Vec<Candle>>,
+    auxiliary_override: Option<AuxiliaryMarketEvidence>,
+    runtime_notes: Vec<String>,
     mutation_spec: Option<&'a FactorMutationSpec>,
+    control_matrix_plan: Option<ict_engine::application::backtest::ControlMatrixPlan>,
     state_dir: &'a str,
+}
+
+#[derive(Default)]
+struct StructureIctContextEvents {
+    m1_events: Option<Vec<PdaEvent>>,
+    m5_events: Option<Vec<PdaEvent>>,
+    m15_events: Option<Vec<PdaEvent>>,
+    m30_events: Option<Vec<PdaEvent>>,
+    h1_events: Option<Vec<PdaEvent>>,
+    h4_events: Option<Vec<PdaEvent>>,
+    d1_events: Option<Vec<PdaEvent>>,
+    w1_events: Option<Vec<PdaEvent>>,
+}
+
+fn build_pda_events_from_candles(candles: &[Candle]) -> Vec<PdaEvent> {
+    build_pda_timeline(candles, &compute_atr(candles, 14))
+}
+
+fn load_resolved_pda_events(
+    resolved: &ict_engine::application::multi_timeframe_inputs::ResolvedMultiTimeframeInputs,
+    interval: &str,
+) -> Result<Option<Vec<PdaEvent>>> {
+    resolved
+        .get(interval)
+        .map(load_candles)
+        .transpose()
+        .map(|candles| candles.map(|candles| build_pda_events_from_candles(&candles)))
+}
+
+fn build_structure_ict_context_events(
+    resolved: &ict_engine::application::multi_timeframe_inputs::ResolvedMultiTimeframeInputs,
+) -> Result<StructureIctContextEvents> {
+    let m1_events = load_resolved_pda_events(resolved, "1m")?;
+    let m5_events = load_resolved_pda_events(resolved, "5m")?;
+    let m15_events = load_resolved_pda_events(resolved, "15m")?;
+    let m30_events = load_resolved_pda_events(resolved, "30m")?;
+    let h1_events = load_resolved_pda_events(resolved, "1h")?;
+    let h4_events = load_resolved_pda_events(resolved, "4h")?;
+    let d1_candles = resolved.get("1d").map(load_candles).transpose()?;
+    let d1_events = d1_candles
+        .as_ref()
+        .map(|candles| build_pda_events_from_candles(candles));
+    let w1_events = d1_candles.as_ref().map(|candles| {
+        let weekly = aggregate_daily_candles_to_weekly(candles);
+        build_pda_timeline(&weekly, &compute_atr(&weekly, 14))
+    });
+    Ok(StructureIctContextEvents {
+        m1_events,
+        m5_events,
+        m15_events,
+        m30_events,
+        h1_events,
+        h4_events,
+        d1_events,
+        w1_events,
+    })
+}
+
+fn structure_ict_pda_context_summary(context: &StructureIctContextEvents) -> String {
+    format!(
+        "structure_ict_pda_context_events=m1:{}|m5:{}|m15:{}|m30:{}|h1:{}|h4:{}|d1:{}|w1:{}",
+        context.m1_events.as_ref().map_or(0, Vec::len),
+        context.m5_events.as_ref().map_or(0, Vec::len),
+        context.m15_events.as_ref().map_or(0, Vec::len),
+        context.m30_events.as_ref().map_or(0, Vec::len),
+        context.h1_events.as_ref().map_or(0, Vec::len),
+        context.h4_events.as_ref().map_or(0, Vec::len),
+        context.d1_events.as_ref().map_or(0, Vec::len),
+        context.w1_events.as_ref().map_or(0, Vec::len),
+    )
+}
+
+fn build_market_state_summary_for_candles(candles: &[Candle]) -> Vec<String> {
+    let snapshot = ict_engine::market_state::MarketStateClassifier::new().classify(candles);
+    let mut summary = vec![
+        format!("market_state_primary_regime={:?}", snapshot.primary_regime),
+        format!(
+            "market_state_secondary_regime={:?}",
+            snapshot.secondary_regime
+        ),
+        format!(
+            "market_state_overall_confidence={:.3}",
+            snapshot.overall_confidence
+        ),
+    ];
+    summary.push(format!(
+        "market_state_bbn_market_regime={}",
+        market_state_to_bbn_regime_label(&snapshot).unwrap_or("passthrough")
+    ));
+    summary.push(format!(
+        "market_state_bbn_liquidity_context={}",
+        market_state_to_bbn_liquidity_label(&snapshot).unwrap_or("passthrough")
+    ));
+    summary.extend(
+        market_state_evidence_lines(&snapshot)
+            .into_iter()
+            .map(|line| format!("market_state_evidence={line}")),
+    );
+    summary
+}
+
+fn build_structure_ict_context_events_from_native_frames(
+    native_frames: AnalyzeNativeFrames<'_>,
+) -> StructureIctContextEvents {
+    let m1_events = native_frames.m1.map(build_pda_events_from_candles);
+    let m5_events = native_frames.m5.map(build_pda_events_from_candles);
+    let m15_events = native_frames.m15.map(build_pda_events_from_candles);
+    let m30_events = native_frames.m30.map(build_pda_events_from_candles);
+    let h1_events = native_frames.h1.map(build_pda_events_from_candles);
+    let h4_events = native_frames.h4.map(build_pda_events_from_candles);
+    let d1_events = native_frames.d1.map(build_pda_events_from_candles);
+    let w1_events = native_frames.d1.map(|candles| {
+        let weekly = aggregate_daily_candles_to_weekly(candles);
+        build_pda_timeline(&weekly, &compute_atr(&weekly, 14))
+    });
+    StructureIctContextEvents {
+        m1_events,
+        m5_events,
+        m15_events,
+        m30_events,
+        h1_events,
+        h4_events,
+        d1_events,
+        w1_events,
+    }
+}
+
+fn aggregate_daily_candles_to_weekly(candles: &[Candle]) -> Vec<Candle> {
+    use chrono::Datelike;
+
+    let mut out = Vec::new();
+    let mut iter = candles.iter().cloned();
+    let Some(mut current) = iter.next() else {
+        return out;
+    };
+    let mut current_year = current.timestamp.iso_week().year();
+    let mut current_week = current.timestamp.iso_week().week();
+    for candle in iter {
+        let iso = candle.timestamp.iso_week();
+        if iso.year() != current_year || iso.week() != current_week {
+            out.push(current.clone());
+            current = candle;
+            current_year = iso.year();
+            current_week = iso.week();
+            continue;
+        }
+        current.high = current.high.max(candle.high);
+        current.low = current.low.min(candle.low);
+        current.close = candle.close;
+        current.volume += candle.volume;
+        current.timestamp = candle.timestamp;
+    }
+    out.push(current);
+    out
 }
 
 fn load_factor_mutation_spec(path: &str) -> Result<FactorMutationSpec> {
@@ -4306,6 +3673,14 @@ fn baseline_factor_mutation_metrics(
         baseline_learning_state,
         candles,
         paired_candles,
+        m1_events,
+        m5_events,
+        m15_events,
+        m30_events,
+        h1_events,
+        h4_events,
+        d1_events,
+        w1_events,
         multi_timeframe_summary,
         evaluate_expansion_preview,
     } = input;
@@ -4316,8 +3691,16 @@ fn baseline_factor_mutation_metrics(
         candles,
         &FactorContext {
             paired_candles,
-            auxiliary: None,
+            m1_events,
+            m5_events,
+            m15_events,
+            m30_events,
+            h1_events,
+            h4_events,
+            d1_events,
+            w1_events,
             regime: None,
+            ..FactorContext::default()
         },
         Some(&mut learning_state),
         &FactorBacktestConfig::default(),
@@ -4633,6 +4016,41 @@ fn augment_action_plan_with_factor_mutation_evaluation(
     );
 }
 
+fn hybrid_regime_duration_context(
+    previous_runs: &[AnalyzeRunRecord],
+    current_hybrid_label: &str,
+) -> (usize, Vec<usize>) {
+    let current_hybrid_age_bars = previous_runs
+        .last()
+        .map(|run| {
+            if run.hybrid_regime_label.as_deref() == Some(current_hybrid_label) {
+                run.hybrid_regime_age_bars.unwrap_or(1) + 1
+            } else {
+                1
+            }
+        })
+        .unwrap_or(1);
+    let mut completed_ages = Vec::new();
+    let mut active_label: Option<&str> = None;
+    let mut active_age: Option<usize> = None;
+    for run in previous_runs {
+        let label = run.hybrid_regime_label.as_deref();
+        if label != active_label {
+            if active_label == Some(current_hybrid_label) {
+                if let Some(age) = active_age {
+                    completed_ages.push(age);
+                }
+            }
+            active_label = label;
+            active_age = run.hybrid_regime_age_bars;
+        } else if let Some(age) = run.hybrid_regime_age_bars {
+            active_age = Some(age);
+        }
+    }
+    let historical_hybrid_regime_ages = completed_ages.into_iter().rev().take(20).collect();
+    (current_hybrid_age_bars, historical_hybrid_regime_ages)
+}
+
 fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeReport> {
     let BuildAnalyzeReportInput {
         symbol,
@@ -4643,6 +4061,8 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
         params,
         network,
         build_context,
+        regime_bundle_adapter,
+        apply_regime_bundle_bbn_soft_evidence,
         execution_focus,
     } = input;
     let htf_features = build_frame_features(htf)?;
@@ -4775,6 +4195,17 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
     let pre_bayes_policy = pre_bayes_evidence_policy();
     let multi_timeframe_evidence =
         parse_multi_timeframe_evidence(build_context.multi_timeframe_summary);
+    let market_state_snapshot =
+        ict_engine::market_state::MarketStateClassifier::new().classify(native_ltf);
+    let market_state_evidence = market_state_evidence_lines(&market_state_snapshot);
+    let structure_ict_context =
+        build_structure_ict_context_events_from_native_frames(build_context.native_frames);
+    let pre_bayes_regime_label = market_state_to_bbn_regime_label(&market_state_snapshot)
+        .unwrap_or(regime_label.as_str())
+        .to_string();
+    let pre_bayes_liquidity_label = market_state_to_bbn_liquidity_label(&market_state_snapshot)
+        .unwrap_or(liquidity_label.as_str())
+        .to_string();
     let market = infer_market_from_symbol(build_context.symbol);
     let pda_sequence_artifact =
         ict_engine::pda_sequence::load_pda_sequence_analysis(state_dir, symbol).ok();
@@ -4797,23 +4228,8 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
         .as_deref()
         .unwrap_or_default()
         .to_string();
-    let historical_hybrid_regime_ages = previous_runs
-        .iter()
-        .rev()
-        .take(20)
-        .filter(|run| run.hybrid_regime_label.as_deref() == Some(current_hybrid_label.as_str()))
-        .filter_map(|run| run.hybrid_regime_age_bars)
-        .collect::<Vec<_>>();
-    let current_hybrid_age_bars = previous_runs
-        .last()
-        .map(|run| {
-            if run.hybrid_regime_label.as_deref() == Some(current_hybrid_label.as_str()) {
-                run.hybrid_regime_age_bars.unwrap_or(1) + 1
-            } else {
-                1
-            }
-        })
-        .unwrap_or(1);
+    let (current_hybrid_age_bars, historical_hybrid_regime_ages) =
+        hybrid_regime_duration_context(&previous_runs, &current_hybrid_label);
     let hybrid_regime_packet = build_hybrid_regime_packet(
         Some(&htf_features),
         &ltf_features,
@@ -4824,6 +4240,10 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
         pda_sequence_summary.as_ref(),
     )?;
     let mut factor_registry = FactorRegistry::default();
+    ict_engine::factors::hotplug::FactorHotplugConfig::apply_to_registry_if_present(
+        state_dir,
+        &mut factor_registry,
+    );
     factor_registry.apply_learning_state(build_context.learning_state);
     let factor_engine = FactorEngine::new(factor_registry);
     let factor_output = factor_engine.run(
@@ -4831,19 +4251,51 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
         &FactorContext {
             paired_candles: build_context.paired_candles,
             auxiliary: build_context.auxiliary,
+            m1_events: structure_ict_context.m1_events.as_deref(),
+            m5_events: structure_ict_context.m5_events.as_deref(),
+            m15_events: structure_ict_context.m15_events.as_deref(),
+            m30_events: structure_ict_context.m30_events.as_deref(),
+            h1_events: structure_ict_context.h1_events.as_deref(),
+            h4_events: structure_ict_context.h4_events.as_deref(),
+            d1_events: structure_ict_context.d1_events.as_deref(),
+            w1_events: structure_ict_context.w1_events.as_deref(),
             regime: Some(regime_probs.dominant()),
+            ..FactorContext::default()
         },
         Some(build_context.learning_state),
     )?;
-    let pre_bayes_evidence_filter = build_pre_bayes_evidence_filter(
+    let mut pre_bayes_evidence_filter = build_pre_bayes_evidence_filter(
         &pre_bayes_policy,
-        &regime_label,
-        &liquidity_label,
+        &pre_bayes_regime_label,
+        &pre_bayes_liquidity_label,
         &factor_output.diagnostics,
         &multi_timeframe_evidence,
         Some(&market),
         pda_sequence_summary.as_ref(),
     );
+    for line in &market_state_evidence {
+        pre_bayes_evidence_filter
+            .rationale
+            .push(format!("market_state_source={line}"));
+    }
+    pre_bayes_evidence_filter.evidence_assignments.insert(
+        "market_state_primary_regime".to_string(),
+        format!("{:?}", market_state_snapshot.primary_regime),
+    );
+    pre_bayes_evidence_filter.evidence_assignments.insert(
+        "market_state_secondary_regime".to_string(),
+        format!("{:?}", market_state_snapshot.secondary_regime),
+    );
+    if let Some(adapter) = regime_bundle_adapter {
+        let status = adapter.apply_bbn_soft_evidence_to_pre_bayes_filter(
+            &mut pre_bayes_evidence_filter,
+            apply_regime_bundle_bbn_soft_evidence,
+        );
+        pre_bayes_evidence_filter.evidence_assignments.insert(
+            "regime_bundle_bbn_application_status".to_string(),
+            format!("{:?}", status).to_ascii_lowercase(),
+        );
+    }
 
     let evidence = trade_evidence_from_pre_bayes_filter(network, &pre_bayes_evidence_filter)?;
     let base_entry_quality = infer_entry_quality(network, &evidence)?;
@@ -4982,7 +4434,7 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
             native_ltf,
             paired,
             auxiliary,
-        )
+        )?
     } else {
         empty_smt_correlation_section()
     };
@@ -5157,11 +4609,65 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
         artifact_decision_summary: None,
     });
     agent_context_bundle.multi_timeframe_summary = build_context.multi_timeframe_summary.to_vec();
+    let entry_model_timeframe = if build_context
+        .native_frames
+        .m5
+        .map(|frame| std::ptr::eq(frame.as_ptr(), native_ltf.as_ptr()))
+        .unwrap_or(false)
+    {
+        "5m"
+    } else if build_context
+        .native_frames
+        .m15
+        .map(|frame| std::ptr::eq(frame.as_ptr(), native_ltf.as_ptr()))
+        .unwrap_or(false)
+    {
+        "15m"
+    } else if build_context
+        .native_frames
+        .m1
+        .map(|frame| std::ptr::eq(frame.as_ptr(), native_ltf.as_ptr()))
+        .unwrap_or(false)
+    {
+        "1m"
+    } else {
+        "ltf"
+    };
+    let entry_model_packets = build_entry_model_packet_store_for_analyze(
+        symbol,
+        entry_model_timeframe,
+        native_ltf,
+        &pre_bayes_evidence_filter,
+    );
+    let canonical_belief_report =
+        build_canonical_belief_snapshot_with_pda_and_structural_prior_state(
+            symbol,
+            Some(infer_market_from_symbol(symbol).as_str()),
+            &pre_bayes_evidence_filter,
+            pda_sequence_artifact.as_ref(),
+            Some(&hybrid_regime_packet),
+            None,
+            Some(&build_context.learning_state.structural_prior_state),
+        )?;
+    let canonical_structural_regime_posterior =
+        ict_engine::state::CanonicalStructuralRegimePosterior {
+            active_regime: canonical_belief_report
+                .regime_posterior
+                .active_regime
+                .clone(),
+            confidence: canonical_belief_report.regime_posterior.confidence,
+            probabilities: canonical_belief_report
+                .regime_posterior
+                .probabilities
+                .clone(),
+            evidence: canonical_belief_report.regime_posterior.evidence.clone(),
+        };
     let agent_prompts = build_analyze_agent_prompts(BuildAnalyzeAgentPromptsInput {
         symbol,
         decision: &decision,
         factor_diagnostics: &factor_output.diagnostics,
         pre_bayes_evidence_filter: &pre_bayes_evidence_filter,
+        canonical_structural_regime_posterior: Some(&canonical_structural_regime_posterior),
         factor_ranking: &factor_ranking,
         factor_iteration_queue: &factor_iteration_queue,
         feedback_history_summary: &feedback_history_summary,
@@ -5170,13 +4676,6 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
         decision_hint: &decision_hint,
         multi_timeframe_summary: build_context.multi_timeframe_summary,
     });
-    let canonical_belief_report = build_canonical_belief_snapshot_with_pda(
-        symbol,
-        Some(infer_market_from_symbol(symbol).as_str()),
-        &pre_bayes_evidence_filter,
-        pda_sequence_artifact.as_ref(),
-        Some(&hybrid_regime_packet),
-    )?;
     let execution_inputs = derive_execution_inputs(&ExecutionInputSources {
         pre_bayes_evidence_filter: &pre_bayes_evidence_filter,
         pre_bayes_entry_quality_bridge: &pre_bayes_entry_quality_bridge,
@@ -5231,17 +4730,215 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
         persist_mece_recovery_artifact(state_dir, &mece_artifact, "analyze", None, &decision_hint)?;
     }
 
+    let path_ranker_lineage =
+        ict_engine::application::entry_models::policy_training_status(state_dir, symbol, None)
+            .ok()
+            .map(|surface| {
+                let provider_status_agent =
+                    ict_engine::application::provider_catalog::provider_status_agent_surface(
+                        None,
+                        None,
+                        None,
+                    )
+                    .unwrap_or_default();
+                let ranker_timestamp = Utc::now();
+                let mut ranker_pre_bayes_filtered_assignments =
+                    pre_bayes_evidence_filter.evidence_assignments.clone();
+                ranker_pre_bayes_filtered_assignments.insert(
+                    "__policy_version".to_string(),
+                    pre_bayes_evidence_filter.policy.version.clone(),
+                );
+                if let Some(active_regime) = canonical_structural_regime_posterior
+                    .active_regime
+                    .as_ref()
+                    .filter(|value| !value.trim().is_empty())
+                    .cloned()
+                    .or_else(|| {
+                        canonical_structural_regime_posterior
+                            .probabilities
+                            .iter()
+                            .max_by(|a, b| {
+                                a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                            .map(|(label, _)| label.clone())
+                    })
+                {
+                    ranker_pre_bayes_filtered_assignments
+                        .insert("market_regime".to_string(), active_regime);
+                }
+                let ranker_pre_bayes_soft_evidence =
+                    if canonical_structural_regime_posterior.probabilities.is_empty() {
+                        pre_bayes_soft_evidence_map(&pre_bayes_evidence_filter)
+                    } else {
+                        let mut soft = pre_bayes_soft_evidence_map(&pre_bayes_evidence_filter);
+                        soft.insert(
+                            "market_regime".to_string(),
+                            canonical_structural_regime_posterior.probabilities.clone(),
+                        );
+                        soft
+                    };
+                let ranker_phase = WorkflowPhaseSnapshot {
+                    phase: "analyze".to_string(),
+                    run_id: format!(
+                        "analyze:{}:{}",
+                        symbol,
+                        ranker_timestamp.format("%Y%m%dT%H%M%S%.3fZ")
+                    ),
+                    timestamp: ranker_timestamp,
+                    source_command: "analyze".to_string(),
+                    workflow_phase: workflow_state.phase.clone(),
+                    workflow_reason: workflow_state.reason.clone(),
+                    promotion_status: observe_promotion.status.clone(),
+                    rollback_scope: observe_rollback.scope.clone(),
+                    comparable_to_previous: dataset_comparability.comparable,
+                    comparison_class: dataset_comparability.comparison_class.clone(),
+                    recommended_next_command: recommended_next_command.clone(),
+                    recommended_next_command_meta: recommended_next_command_meta(
+                        &recommended_next_command,
+                    ),
+                    phase_summary: decision_hint.clone(),
+                    selected_direction: Some(format!("{:?}", decision.selected_direction)),
+                    selected_entry_quality: Some(selected_entry_quality_state.clone()),
+                    pre_bayes_gate_status: pre_bayes_evidence_filter.gating_status.clone(),
+                    pre_bayes_uses_soft_evidence: pre_bayes_evidence_filter.uses_soft_evidence,
+                    pre_bayes_policy_version: pre_bayes_evidence_filter.policy.version.clone(),
+                    pre_bayes_evidence_quality_score: pre_bayes_evidence_filter
+                        .evidence_quality_score,
+                    pre_bayes_conflict_flags: pre_bayes_evidence_filter.conflict_flags.clone(),
+                    pre_bayes_filtered_assignments: ranker_pre_bayes_filtered_assignments,
+                    pre_bayes_soft_evidence: ranker_pre_bayes_soft_evidence,
+                    market_state_evidence: market_state_evidence.clone(),
+                    canonical_structural_active_regime: canonical_structural_regime_posterior
+                        .active_regime
+                        .clone(),
+                    canonical_structural_confidence: canonical_structural_regime_posterior
+                        .confidence,
+                    canonical_structural_probabilities: canonical_structural_regime_posterior
+                        .probabilities
+                        .clone(),
+                    execution_readiness: Some(execution_artifact.features.execution_readiness),
+                    execution_gate_status: Some(execution_artifact.hard_gate_status.clone()),
+                    prediction_edge_share: Some(execution_artifact.features.prediction_edge_share),
+                    execution_edge_share: Some(execution_artifact.features.execution_edge_share),
+                    ..WorkflowPhaseSnapshot::default()
+                };
+                let mut ranker_snapshot =
+                    load_workflow_snapshot(state_dir, symbol).unwrap_or_default();
+                ranker_snapshot.symbol = symbol.to_string();
+                ranker_snapshot.current_focus_phase = "analyze".to_string();
+                ranker_snapshot.current_focus_reason = workflow_state.reason.clone();
+                ranker_snapshot.recommended_next_command = recommended_next_command.clone();
+                ranker_snapshot.recommended_next_command_meta =
+                    recommended_next_command_meta(&recommended_next_command);
+                if let Some(vote) = ranker_snapshot.latest_ensemble_vote.as_mut() {
+                    vote.source_phase = "analyze".to_string();
+                    vote.source_run_id = Some(ranker_phase.run_id.clone());
+                    vote.posterior_active_regime = canonical_structural_regime_posterior
+                        .active_regime
+                        .clone()
+                        .unwrap_or_else(|| vote.posterior_active_regime.clone());
+                    if !canonical_structural_regime_posterior.probabilities.is_empty() {
+                        vote.posterior_probabilities =
+                            canonical_structural_regime_posterior.probabilities.clone();
+                    }
+                    if let Some(confidence) = canonical_structural_regime_posterior.confidence {
+                        vote.posterior_confidence = Some(confidence);
+                        vote.confidence = confidence;
+                        vote.consensus_strength = confidence;
+                    }
+                    vote.posterior_normalization_status =
+                        "canonical_structural_regime_posterior".to_string();
+                }
+                ranker_snapshot.latest_analyze = Some(ranker_phase);
+                let recommended_bundle =
+                    ict_engine::application::orchestration::build_structural_recommended_path_bundle_artifact_with_state_dir_and_prior_state(
+                        &ranker_snapshot,
+                        &provider_status_agent,
+                        build_context.learning_state.feedback_history.as_slice(),
+                        &build_context.learning_state.structural_prior_state,
+                        Some(state_dir),
+                    );
+                let score_line = recommended_bundle
+                    .as_ref()
+                    .map(|bundle| {
+                        format!(
+                            "ranker_score=path_id={} runtime_source={} raw_path_score={} calibrated_path_prob={} path_prob_lower_bound={} execution_gate_status={}",
+                            bundle.path_id,
+                            bundle
+                                .path_ranker_runtime_source
+                                .as_deref()
+                                .unwrap_or("none"),
+                            bundle
+                                .path_ranker_raw_score
+                                .map(|value| format!("{value:.6}"))
+                                .unwrap_or_else(|| "none".to_string()),
+                            bundle
+                                .path_ranker_calibrated_path_prob
+                                .map(|value| format!("{value:.6}"))
+                                .unwrap_or_else(|| "none".to_string()),
+                            bundle
+                                .path_ranker_path_prob_lower_bound
+                                .map(|value| format!("{value:.6}"))
+                                .unwrap_or_else(|| "none".to_string()),
+                            bundle
+                                .path_ranker_execution_gate_status
+                                .as_deref()
+                                .unwrap_or("none")
+                        )
+                    });
+                let mut lineage = vec![
+                    surface.structural_path_ranking_runtime_summary,
+                    surface.structural_path_ranking_validation_summary,
+                    format!(
+                        "ranker_machine=runtime_source={} score_model_family={} score_source={} validation_ready={} active_match_count={}",
+                        surface
+                            .structural_path_ranking_runtime
+                            .source_kind
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                        surface
+                            .structural_path_ranking_runtime
+                            .score_model_family
+                            .as_deref()
+                            .or(surface.structural_path_ranking_runtime.model_family.as_deref())
+                            .unwrap_or("unknown"),
+                        surface
+                            .structural_path_ranking_runtime
+                            .score_source_kind
+                            .as_deref()
+                            .unwrap_or("unknown"),
+                        surface
+                            .structural_path_ranking_validation
+                            .production_validation_ready
+                            || surface
+                                .structural_path_ranking_validation
+                                .observation_validation_ready,
+                        surface.structural_path_ranking_runtime.active_match_count
+                    ),
+                    format!("factor_hotplug_summary={}", surface.factor_hotplug_summary),
+                ];
+                if let Some(score_line) = score_line {
+                    lineage.push(score_line);
+                }
+                lineage
+            })
+            .unwrap_or_else(|| vec!["policy_training_status=unavailable".to_string()]);
+
     let execution_tree_input = ExecutionTreeInput {
         execution_features: &execution_artifact.features,
         physics_overlay: &physics_overlay,
         hmm_posterior: &regime_probs,
         mece_recovery_confidence,
         prediction_vote_score: decision.selected_win_probability,
+        market_state_lineage: Some(&market_state_evidence),
+        path_ranker_lineage: Some(&path_ranker_lineage),
         axial_trace: None,
     };
     let execution_tree_output = DefaultExecutionTreeScorer.score(&execution_tree_input)?;
-    let execution_tree_output =
-        apply_regime_execution_guardrail(execution_tree_output, &hybrid_regime_packet);
+    let execution_tree_output = refresh_consumer_reason(apply_regime_execution_guardrail(
+        execution_tree_output,
+        &hybrid_regime_packet,
+    ));
     if hybrid_regime_packet.transition_hazard.unwrap_or_default() >= 0.60 {
         trade_plan.uncertainties.push(format!(
             "hybrid_transition_hazard={:.3}",
@@ -5374,6 +5071,7 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
             },
             auxiliary: build_context.auxiliary.cloned(),
             decision,
+            entry_model_packets,
             trade_outcome: AnalyzeTradeOutcomeSummary {
                 base: probability_map(&trade_outcome.states, &posterior),
                 long: probability_map(&trade_outcome.states, &bull_trade_outcome),
@@ -5381,6 +5079,7 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
             },
             factor_diagnostics: factor_output.diagnostics,
             pre_bayes_evidence_filter: pre_bayes_evidence_filter.clone(),
+            market_state_evidence,
             pre_bayes_entry_quality_bridge: pre_bayes_entry_quality_bridge.clone(),
             objective_jump_weight: canonical_belief_report.gate_decision.jump_weight,
             canonical_belief_report: canonical_belief_report.clone(),
@@ -5569,183 +5268,6 @@ fn build_trade_plan_section(
     }
 }
 
-fn apply_duration_sizing_adjustment(
-    mut trade_plan: TradePlan,
-    market: &str,
-    hybrid_regime: &RegimeSegmentationPacket,
-) -> TradePlan {
-    let Some(remaining) = hybrid_regime.duration_remaining_expected_bars else {
-        return trade_plan;
-    };
-    let family = hybrid_regime
-        .active_regime_cluster
-        .as_deref()
-        .map(|label| {
-            if label.contains("trend") {
-                "trend"
-            } else if label.contains("range") {
-                "range"
-            } else {
-                "transition"
-            }
-        })
-        .unwrap_or("transition");
-    let scale = duration_sizing_scale(market, family, remaining);
-    if scale < 1.0 {
-        trade_plan.kelly_fraction *= scale;
-        trade_plan.position_size *= scale;
-        trade_plan.uncertainties.push(format!(
-            "duration_sizing_scale={scale:.2} remaining_expected_bars={remaining:.3} market={} family={}",
-            market,
-            family
-        ));
-        if scale == 0.0 {
-            trade_plan
-                .uncertainties
-                .push("duration_window_too_short_for_execution_size_zeroed".to_string());
-        }
-    }
-    trade_plan
-}
-
-fn duration_sizing_scale(market: &str, family: &str, remaining_expected_bars: f64) -> f64 {
-    match (market.to_ascii_uppercase().as_str(), family) {
-        ("NQ", "trend") | ("CL", "trend") => {
-            if remaining_expected_bars <= 1.5 {
-                0.0
-            } else if remaining_expected_bars <= 2.5 {
-                0.25
-            } else if remaining_expected_bars <= 4.0 {
-                0.50
-            } else {
-                1.0
-            }
-        }
-        ("GC", "range") => {
-            if remaining_expected_bars <= 1.0 {
-                0.0
-            } else if remaining_expected_bars <= 2.0 {
-                0.35
-            } else if remaining_expected_bars <= 3.5 {
-                0.60
-            } else {
-                1.0
-            }
-        }
-        _ => {
-            if remaining_expected_bars <= 1.5 {
-                0.0
-            } else if remaining_expected_bars <= 3.0 {
-                0.40
-            } else if remaining_expected_bars <= 5.0 {
-                0.70
-            } else {
-                1.0
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-fn latest_duration_phase(
-    snapshot: &WorkflowSnapshot,
-) -> Option<&ict_engine::state::WorkflowPhaseSnapshot> {
-    snapshot
-        .latest_backtest
-        .as_ref()
-        .or(snapshot.latest_research.as_ref())
-        .or(snapshot.latest_update.as_ref())
-        .or(snapshot.latest_analyze.as_ref())
-}
-
-fn parse_duration_sizing_scale(summary: &[String]) -> Option<f64> {
-    summary.iter().find_map(|line| {
-        line.split_whitespace().find_map(|fragment| {
-            fragment
-                .strip_prefix("duration_sizing_scale=")
-                .and_then(|value| value.parse::<f64>().ok())
-        })
-    })
-}
-
-#[cfg(test)]
-fn build_duration_surface_from_artifacts(
-    snapshot: &WorkflowSnapshot,
-    artifact_action_summary: &[String],
-) -> Vec<String> {
-    let phase = latest_duration_phase(snapshot);
-    let duration_model = phase.and_then(|phase| phase.hybrid_duration_model.as_deref());
-    let remaining_expected_bars = phase.and_then(|phase| phase.hybrid_remaining_expected_bars);
-    let scale = parse_duration_sizing_scale(artifact_action_summary).unwrap_or(1.0);
-    ict_engine::application::backtest::build_duration_sizing_delta_surface(
-        1.0,
-        scale,
-        1.0,
-        scale,
-        duration_model,
-        remaining_expected_bars,
-    )
-}
-
-fn apply_regime_execution_guardrail(
-    mut output: ict_engine::application::orchestration::ExecutionTreeOutput,
-    hybrid_regime: &RegimeSegmentationPacket,
-) -> ict_engine::application::orchestration::ExecutionTreeOutput {
-    let high_transition_hazard = hybrid_regime.transition_hazard.unwrap_or_default() >= 0.60;
-    let pda_disagreement = hybrid_regime
-        .evidence
-        .iter()
-        .any(|line| line == "pda_hybrid_alignment=false");
-    let low_remaining_duration = hybrid_regime
-        .duration_remaining_expected_bars
-        .unwrap_or(f64::INFINITY)
-        <= 1.5;
-    let short_remaining_duration = hybrid_regime
-        .duration_remaining_expected_bars
-        .unwrap_or(f64::INFINITY)
-        <= 2.5;
-    if high_transition_hazard || pda_disagreement || low_remaining_duration {
-        output.gate_status = "observe".to_string();
-        output.branch = "transition_guardrail".to_string();
-        output.execution_bias = "guarded".to_string();
-        output.branch_probability = output.branch_probability.min(0.50);
-        output.posterior_uncertainty = output.posterior_uncertainty.max(0.60);
-        output.decision_hint = if low_remaining_duration {
-            "execution_guarded_due_to_low_remaining_regime_duration".to_string()
-        } else if pda_disagreement {
-            "execution_guarded_due_to_pda_hybrid_disagreement".to_string()
-        } else {
-            "execution_guarded_due_to_high_transition_hazard".to_string()
-        };
-        output.split_reason_lineage.push(format!(
-            "hybrid_transition_hazard={:.3}",
-            hybrid_regime.transition_hazard.unwrap_or_default()
-        ));
-        if pda_disagreement {
-            output
-                .split_reason_lineage
-                .push("pda_hybrid_alignment=false".to_string());
-        }
-        if low_remaining_duration {
-            output.split_reason_lineage.push(format!(
-                "duration_remaining_expected_bars={:.3}",
-                hybrid_regime
-                    .duration_remaining_expected_bars
-                    .unwrap_or_default()
-            ));
-        }
-    } else if short_remaining_duration && output.execution_bias == "aggressive" {
-        output.execution_bias = "passive".to_string();
-        output.split_reason_lineage.push(format!(
-            "duration_remaining_expected_bars={:.3} → execution_bias=passive",
-            hybrid_regime
-                .duration_remaining_expected_bars
-                .unwrap_or_default()
-        ));
-    }
-    output
-}
-
 fn pre_bayes_policy_diff(
     previous: Option<&ict_engine::state::PreBayesEvidencePolicy>,
     current: &ict_engine::state::PreBayesEvidencePolicy,
@@ -5816,19 +5338,6 @@ fn pre_bayes_policy_diff(
             format!("changed_fields={:?}", changed_fields)
         },
         changed_fields,
-    }
-}
-
-fn resolve_live_backend_base_url(
-    backend: &str,
-    openalice_base_url: &str,
-    nofx_base_url: &str,
-) -> String {
-    match backend.trim().to_ascii_lowercase().as_str() {
-        "openbb" => "native://openbb".to_string(),
-        "openalice" => openalice_base_url.to_string(),
-        "nofx" => nofx_base_url.to_string(),
-        _ => "native://openbb".to_string(),
     }
 }
 
@@ -5903,54 +5412,9 @@ fn select_state_name(distribution: &[f64], node: &ict_engine::bbn::Node) -> Resu
 }
 
 fn load_or_init_hmm_params(symbol: &str, state_dir: &str) -> HMMParams {
-    if !state_exists(state_dir, symbol, HMM_STATE_FILE) {
-        return init_hmm_params(OBS_DIM);
-    }
-
-    match load_state::<HMMParams, _>(state_dir, symbol, HMM_STATE_FILE) {
-        Ok(params) if hmm_params_compatible(&params) => params,
-        Ok(_) => init_hmm_params(OBS_DIM),
-        Err(err) => {
-            eprintln!(
-                "warning: failed to load HMM state for '{}' from '{}': {}",
-                symbol, state_dir, err
-            );
-            init_hmm_params(OBS_DIM)
-        }
-    }
-}
-
-fn load_or_init_trading_network(
-    symbol: &str,
-    state_dir: &str,
-) -> Result<ict_engine::bbn::BayesianNetwork> {
-    if !state_exists(state_dir, symbol, BBN_STATE_FILE) {
-        return build_trading_network();
-    }
-
-    match load_state::<ict_engine::bbn::BayesianNetwork, _>(state_dir, symbol, BBN_STATE_FILE) {
-        Ok(mut network) => {
-            upgrade_trading_network(&mut network)?;
-            Ok(network)
-        }
-        Err(err) => {
-            eprintln!(
-                "warning: failed to load BBN state for '{}' from '{}': {}",
-                symbol, state_dir, err
-            );
-            build_trading_network()
-        }
-    }
-}
-
-fn hmm_params_compatible(params: &HMMParams) -> bool {
-    params.n_states == 3
-        && params.transition.len() == params.n_states
-        && params.initial_probs.len() == params.n_states
-        && params.emission_means.len() == params.n_states
-        && params.emission_stds.len() == params.n_states
-        && params.emission_means.iter().all(|row| row.len() == OBS_DIM)
-        && params.emission_stds.iter().all(|row| row.len() == OBS_DIM)
+    ict_engine::application::regime::load_or_init_hmm_params_with_numeric_artifact(
+        symbol, state_dir, OBS_DIM,
+    )
 }
 
 fn regime_probs_from_log_gamma(log_gamma: Option<&Vec<f64>>) -> Result<RegimeProbs> {
@@ -5981,11 +5445,92 @@ fn distribution_from_map(states: &[String], probabilities: &BTreeMap<String, f64
         .collect()
 }
 
+fn market_state_to_bbn_regime_label(
+    snapshot: &ict_engine::market_state::MarketStateSnapshot,
+) -> Option<&'static str> {
+    match snapshot.primary_regime {
+        ict_engine::market_state::PrimaryMarketRegime::TrendExpansion => None,
+        ict_engine::market_state::PrimaryMarketRegime::RangeConsolidation => Some("range"),
+        ict_engine::market_state::PrimaryMarketRegime::ExtremeStress => Some("range"),
+        ict_engine::market_state::PrimaryMarketRegime::ReversalBrewing => Some("range"),
+        ict_engine::market_state::PrimaryMarketRegime::Unknown => None,
+    }
+}
+
+fn market_state_to_bbn_liquidity_label(
+    snapshot: &ict_engine::market_state::MarketStateSnapshot,
+) -> Option<&'static str> {
+    match snapshot.liquidity {
+        ict_engine::market_state::LiquidityRegime::HighLiquidity => Some("favorable"),
+        ict_engine::market_state::LiquidityRegime::NormalLiquidity => Some("neutral"),
+        ict_engine::market_state::LiquidityRegime::ThinLiquidity => Some("hostile"),
+        ict_engine::market_state::LiquidityRegime::Unknown => None,
+    }
+}
+
+fn market_state_evidence_lines(
+    snapshot: &ict_engine::market_state::MarketStateSnapshot,
+) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "primary_regime={:?} secondary_regime={:?} overall_confidence={:.3}",
+            snapshot.primary_regime, snapshot.secondary_regime, snapshot.overall_confidence
+        ),
+        format!(
+            "volatility={:?}:{:.3} liquidity={:?}:{:.3} structure={:?}:{:.3} behavior={:?}:{:.3}",
+            snapshot.volatility,
+            snapshot.volatility_confidence,
+            snapshot.liquidity,
+            snapshot.liquidity_confidence,
+            snapshot.structure,
+            snapshot.structure_confidence,
+            snapshot.behavior,
+            snapshot.behavior_confidence
+        ),
+    ];
+    lines.extend(
+        snapshot
+            .rationale
+            .iter()
+            .map(|line| format!("rationale={line}")),
+    );
+    lines
+}
+
+fn pre_bayes_soft_evidence_map(
+    filter: &PreBayesEvidenceFilter,
+) -> BTreeMap<String, BTreeMap<String, f64>> {
+    BTreeMap::from([
+        (
+            "market_regime".to_string(),
+            filter.soft_market_regime_distribution.clone(),
+        ),
+        (
+            "liquidity_context".to_string(),
+            filter.soft_liquidity_context_distribution.clone(),
+        ),
+        (
+            "factor_alignment".to_string(),
+            filter.soft_factor_alignment_distribution.clone(),
+        ),
+        (
+            "factor_uncertainty".to_string(),
+            filter.soft_factor_uncertainty_distribution.clone(),
+        ),
+        (
+            "multi_timeframe_resonance".to_string(),
+            filter.soft_multi_timeframe_resonance_distribution.clone(),
+        ),
+    ])
+}
+
 struct BuildAnalyzeAgentPromptsInput<'a> {
     symbol: &'a str,
     decision: &'a ProbabilisticDecisionSnapshot,
     factor_diagnostics: &'a FactorDiagnostics,
     pre_bayes_evidence_filter: &'a PreBayesEvidenceFilter,
+    canonical_structural_regime_posterior:
+        Option<&'a ict_engine::state::CanonicalStructuralRegimePosterior>,
     factor_ranking: &'a [PersistedFactorRanking],
     factor_iteration_queue: &'a [FactorIterationPrompt],
     feedback_history_summary: &'a FeedbackHistorySummary,
@@ -6001,6 +5546,7 @@ fn build_analyze_agent_prompts(input: BuildAnalyzeAgentPromptsInput<'_>) -> Agen
         decision,
         factor_diagnostics,
         pre_bayes_evidence_filter,
+        canonical_structural_regime_posterior,
         factor_ranking,
         factor_iteration_queue,
         feedback_history_summary,
@@ -6009,6 +5555,8 @@ fn build_analyze_agent_prompts(input: BuildAnalyzeAgentPromptsInput<'_>) -> Agen
         decision_hint,
         multi_timeframe_summary,
     } = input;
+    let canonical_structural_regime_summary =
+        compact_canonical_structural_regime_summary(canonical_structural_regime_posterior);
     let mut pack = factor_iteration_prompt_pack(
         symbol,
         factor_ranking,
@@ -6120,11 +5668,12 @@ fn build_analyze_agent_prompts(input: BuildAnalyzeAgentPromptsInput<'_>) -> Agen
             objective: "Review the current market conclusion and identify whether factor evidence supports the selected direction.".to_string(),
             system_prompt: "You are the market-review agent. Challenge the current trade direction using price-action evidence, factor diagnostics, and uncertainty. Do not change factor definitions here; decide whether the current conclusion is supported or should be downgraded.".to_string(),
             user_prompt: format!(
-                "Symbol={} decision_hint={} dataset_comparability={{comparable:{}, reason:{}}} multi_timeframe_summary={:?} selected_direction={:?} selected_score={:.3} selected_win_probability={:.3} trade_direction={:?} posterior={:.3} factor_alignment={} factor_uncertainty={} long_support={:.3} short_support={:.3} uncertainty={:.3} bullish_factors={:?} bearish_factors={:?}",
+                "Symbol={} decision_hint={} dataset_comparability={{comparable:{}, reason:{}}} canonical_structural_regime={} multi_timeframe_summary={:?} selected_direction={:?} selected_score={:.3} selected_win_probability={:.3} trade_direction={:?} posterior={:.3} factor_alignment={} factor_uncertainty={} long_support={:.3} short_support={:.3} uncertainty={:.3} bullish_factors={:?} bearish_factors={:?}",
                 symbol,
                 decision_hint,
                 dataset_comparability.comparable,
                 dataset_comparability.reason,
+                canonical_structural_regime_summary,
                 multi_timeframe_summary,
                 decision.selected_direction,
                 decision.selected_score,
@@ -6283,10 +5832,15 @@ struct BuildUpdateAgentPromptsInput<'a> {
     factor_alignment: &'a str,
     factor_uncertainty: &'a str,
     realized_outcome: &'a str,
+    structural_learning_credit_class: Option<&'a str>,
+    structural_learning_success_credit: Option<f64>,
+    structural_learning_observation_weight: Option<f64>,
     feedback_records_applied: usize,
     consumed_pre_bayes_evidence_filter: Option<&'a PreBayesEvidenceFilter>,
     consumed_pre_bayes_entry_quality_bridge:
         Option<&'a ict_engine::state::PreBayesEntryQualityBridge>,
+    consumed_canonical_structural_regime_posterior:
+        Option<&'a ict_engine::state::CanonicalStructuralRegimePosterior>,
     consumed_multi_timeframe_summary: &'a [String],
 }
 
@@ -6301,11 +5855,23 @@ fn build_update_agent_prompts(input: BuildUpdateAgentPromptsInput<'_>) -> AgentP
         factor_alignment,
         factor_uncertainty,
         realized_outcome,
+        structural_learning_credit_class,
+        structural_learning_success_credit,
+        structural_learning_observation_weight,
         feedback_records_applied,
         consumed_pre_bayes_evidence_filter,
         consumed_pre_bayes_entry_quality_bridge,
+        consumed_canonical_structural_regime_posterior,
         consumed_multi_timeframe_summary,
     } = input;
+    let consumed_canonical_structural_regime_summary =
+        compact_canonical_structural_regime_summary(consumed_canonical_structural_regime_posterior);
+    let structural_learning_semantics_summary =
+        ict_engine::state::structural_learning_semantics_summary(
+            structural_learning_credit_class,
+            structural_learning_success_credit,
+            structural_learning_observation_weight,
+        );
     let mut pack = factor_iteration_prompt_pack(
         symbol,
         factor_ranking,
@@ -6325,12 +5891,13 @@ fn build_update_agent_prompts(input: BuildUpdateAgentPromptsInput<'_>) -> AgentP
             objective: "Review the newly realized outcome and decide what the next agent iteration should target.".to_string(),
             system_prompt: "You are the realized-feedback agent. Use the updated trade_outcome distribution plus factor scorecards to decide whether the latest result strengthens confidence, exposes a factor weakness, or suggests a problem in evidence mapping.".to_string(),
             user_prompt: format!(
-                "Symbol={} entry_quality={} factor_alignment={} factor_uncertainty={} realized_outcome={} feedback_records_applied={} updated_trade_outcome={:?} iteration_queue={:?}",
+                "Symbol={} entry_quality={} factor_alignment={} factor_uncertainty={} realized_outcome={} structural_learning_semantics={} feedback_records_applied={} updated_trade_outcome={:?} iteration_queue={:?}",
                 symbol,
                 normalized_entry_quality,
                 factor_alignment,
                 factor_uncertainty,
                 realized_outcome,
+                structural_learning_semantics_summary,
                 feedback_records_applied,
                 updated_trade_outcome,
                 factor_iteration_queue
@@ -6360,13 +5927,14 @@ fn build_update_agent_prompts(input: BuildUpdateAgentPromptsInput<'_>) -> AgentP
                 objective: "Review the consumed analyze pre-bayes evidence against the realized outcome.".to_string(),
                 system_prompt: "You are the update-pre-bayes reviewer. Compare the realized outcome with the consumed analyze pre-bayes gate, bridge, and multi-timeframe summary before deciding whether to revise factor logic, evidence mapping, or BBN calibration.".to_string(),
                 user_prompt: format!(
-                    "Symbol={} realized_outcome={} consumed_pre_bayes_gate_status={} consumed_pre_bayes_quality={:.3} consumed_pre_bayes_conflicts={:?} consumed_pre_bayes_filtered_assignments={:?} consumed_multi_timeframe_summary={:?} consumed_bridge_selected_entry_quality={:?} consumed_bridge_probability_gap={:.3}",
+                    "Symbol={} realized_outcome={} consumed_pre_bayes_gate_status={} consumed_pre_bayes_quality={:.3} consumed_pre_bayes_conflicts={:?} consumed_pre_bayes_filtered_assignments={:?} consumed_canonical_structural_regime={} consumed_multi_timeframe_summary={:?} consumed_bridge_selected_entry_quality={:?} consumed_bridge_probability_gap={:.3}",
                     symbol,
                     realized_outcome,
                     filter.gating_status,
                     filter.evidence_quality_score,
                     filter.conflict_flags,
                     filter.evidence_assignments,
+                    consumed_canonical_structural_regime_summary,
                     consumed_multi_timeframe_summary,
                     bridge_diff.as_ref().and_then(|diff| diff.selected_entry_quality.clone()),
                     bridge_diff
@@ -6549,8 +6117,8 @@ fn neutral_auxiliary(symbol: &str) -> AuxiliaryMarketEvidence {
 
 fn neutral_options_summary(
     symbol: &str,
-) -> ict_engine::data::realtime::openalice::OptionsChainSummary {
-    ict_engine::data::realtime::openalice::OptionsChainSummary {
+) -> ict_engine::data::realtime::market_support::OptionsChainSummary {
+    ict_engine::data::realtime::market_support::OptionsChainSummary {
         symbol: symbol.to_string(),
         source: Some("fallback:neutral_options_summary".to_string()),
         underlying_price: None,
@@ -6588,8 +6156,9 @@ mod tests {
     use ict_engine::application::multi_timeframe_inputs::MULTI_TIMEFRAME_INTERVALS;
     use ict_engine::bbn::trading::topology::build_trading_network;
     use ict_engine::config::build_frame_features_for_market;
+    use ict_engine::hmm::init_hmm_params;
     use ict_engine::state::{
-        BacktestRunRecord, FactorAutoresearchAttempt, FactorAutoresearchDecision,
+        load_state, BacktestRunRecord, FactorAutoresearchAttempt, FactorAutoresearchDecision,
         FactorAutoresearchLiveSnapshot, FactorPipelineLabelSource, ResearchRunRecord,
     };
 
@@ -6607,14 +6176,60 @@ mod tests {
         state_dir: &str,
         refresh: bool,
         section: Option<&str>,
+        output_format: &str,
     ) -> Result<()> {
         ict_engine::application::orchestration::pre_bayes_status_command(
             symbol,
             state_dir,
             refresh,
             section,
+            output_format,
             refresh_workflow_snapshot,
         )
+    }
+
+    #[test]
+    fn test_hybrid_regime_duration_context_does_not_treat_active_streak_as_history() {
+        let previous_runs = [1usize, 2, 3]
+            .into_iter()
+            .map(|age| AnalyzeRunRecord {
+                hybrid_regime_label: Some("range_choppy".to_string()),
+                hybrid_regime_age_bars: Some(age),
+                ..AnalyzeRunRecord::default()
+            })
+            .collect::<Vec<_>>();
+
+        let (current_age, historical_ages) =
+            hybrid_regime_duration_context(&previous_runs, "range_choppy");
+
+        assert_eq!(current_age, 4);
+        assert!(historical_ages.is_empty());
+    }
+
+    #[test]
+    fn test_hybrid_regime_duration_context_keeps_completed_same_label_dwell_samples() {
+        let previous_runs = [
+            ("range_choppy", 1usize),
+            ("range_choppy", 2),
+            ("trend_decay", 1),
+            ("trend_decay", 2),
+            ("range_choppy", 1),
+            ("range_choppy", 2),
+            ("range_choppy", 3),
+        ]
+        .into_iter()
+        .map(|(label, age)| AnalyzeRunRecord {
+            hybrid_regime_label: Some(label.to_string()),
+            hybrid_regime_age_bars: Some(age),
+            ..AnalyzeRunRecord::default()
+        })
+        .collect::<Vec<_>>();
+
+        let (current_age, historical_ages) =
+            hybrid_regime_duration_context(&previous_runs, "range_choppy");
+
+        assert_eq!(current_age, 4);
+        assert_eq!(historical_ages, vec![2]);
     }
 
     fn sample_candles(count: usize) -> Vec<Candle> {
@@ -7381,11 +6996,16 @@ mod tests {
             data_1m: None,
             data_5m: None,
             data_15m: None,
+            data_30m: None,
             data_1h: None,
             data_4h: None,
             data_1d: None,
             paired_data: None,
+            paired_candles_override: None,
+            auxiliary_override: None,
+            runtime_notes: Vec::new(),
             mutation_spec: None,
+            control_matrix_plan: None,
             state_dir: temp.path().to_str().unwrap(),
         })
         .unwrap();
@@ -7425,6 +7045,8 @@ mod tests {
                 multi_timeframe_summary: &[],
                 native_frames: AnalyzeNativeFrames::default(),
             },
+            regime_bundle_adapter: None,
+            apply_regime_bundle_bbn_soft_evidence: false,
             execution_focus: true,
         })
         .unwrap();
@@ -7468,6 +7090,8 @@ mod tests {
                 multi_timeframe_summary: &[],
                 native_frames: AnalyzeNativeFrames::default(),
             },
+            regime_bundle_adapter: None,
+            apply_regime_bundle_bbn_soft_evidence: false,
             execution_focus: true,
         })
         .unwrap();
@@ -7475,6 +7099,436 @@ mod tests {
         fn assert_shared_shell_type(_: &ict_engine::analyze_report_shell::AnalyzeReport) {}
 
         assert_shared_shell_type(&report);
+    }
+
+    #[test]
+    fn test_build_analyze_report_path_ranker_lineage_uses_state_dir_runtime_scores() {
+        let temp = tempfile::tempdir().unwrap();
+        let htf = sample_candles(220);
+        let mtf = sample_candles(180);
+        let ltf = sample_candles(140);
+        let params = load_or_init_hmm_params("NQ", temp.path().to_str().unwrap());
+        let network = load_or_init_trading_network("NQ", temp.path().to_str().unwrap()).unwrap();
+        let learning_state = load_learning_state(temp.path(), "NQ").unwrap();
+        let provider_status_agent =
+            ict_engine::application::provider_catalog::ProviderCatalogAgentSurface::default();
+        let snapshot = WorkflowSnapshot {
+            symbol: "NQ".to_string(),
+            ..WorkflowSnapshot::default()
+        };
+        let summary =
+            ict_engine::application::orchestration::export_structural_path_ranking_target(
+                temp.path().to_str().unwrap(),
+                "NQ",
+                &snapshot,
+                &provider_status_agent,
+                &[],
+                &learning_state.structural_prior_state,
+            )
+            .unwrap();
+        let build_report = || {
+            build_analyze_report(BuildAnalyzeReportInput {
+                symbol: "NQ",
+                state_dir: temp.path().to_str().unwrap(),
+                htf: &htf,
+                mtf: &mtf,
+                ltf: &ltf,
+                params: &params,
+                network: &network,
+                build_context: AnalyzeBuildContext {
+                    symbol: "NQ",
+                    paired_candles: None,
+                    auxiliary: None,
+                    learning_state: &learning_state,
+                    multi_timeframe_summary: &[],
+                    native_frames: AnalyzeNativeFrames::default(),
+                },
+                regime_bundle_adapter: None,
+                apply_regime_bundle_bbn_soft_evidence: false,
+                execution_focus: true,
+            })
+        };
+        build_report().unwrap();
+        let trace_path = temp.path().join("NQ").join(EXECUTION_TREE_TRACE_FILE);
+        let trace: ict_engine::application::orchestration::ExecutionTreeArtifact =
+            serde_json::from_str(&std::fs::read_to_string(&trace_path).unwrap()).unwrap();
+        let discovered_path_id = trace
+            .output
+            .split_reason_lineage
+            .iter()
+            .find(|line| line.contains("ranker_score="))
+            .and_then(|line| line.split("path_id=").nth(1))
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("ranker score path id")
+            .to_string();
+        let artifact_dir = std::path::Path::new(&summary.summary_path)
+            .parent()
+            .expect("summary parent")
+            .to_path_buf();
+        std::fs::write(
+            artifact_dir.join("artifact_scores.jsonl"),
+            format!(
+                "{}\n",
+                serde_json::json!({
+                    "candidate_set_id": "structural-candidates:NQ:previous-run",
+                    "path_id": discovered_path_id,
+                    "raw_path_score": 0.97,
+                    "calibrated_path_prob": 0.88,
+                    "path_prob_lower_bound": 0.79,
+                    "execution_gate_status": "pass"
+                })
+            ),
+        )
+        .unwrap();
+        let artifact =
+            ict_engine::application::entry_models::training_export::StructuralPathRankingTrainerArtifact {
+                protocol_version: "structural-path-ranking-trainer-artifact-v1".to_string(),
+                dataset_role: "external_path_ranker_training_dataset".to_string(),
+                model_family: "catboost".to_string(),
+                artifact_uri: "artifact_scores.jsonl".to_string(),
+                model_artifact_uri: None,
+                score_column: "raw_path_score".to_string(),
+                trained_rows: 42,
+                history_rows: 42,
+                calibration_rows: 12,
+                selected_features: vec!["rank".to_string(), "raw_path_score".to_string()],
+                validation_metrics:
+                    ict_engine::belief_core::ranking_label::StructuralPathRankerValidationMetrics::default(),
+                calibration_metrics:
+                    ict_engine::belief_core::ranking_label::StructuralPathRankerCalibrationMetrics::default(),
+                rule_list: Vec::new(),
+                tree_json: None,
+                created_at: None,
+                notes: vec![],
+            };
+        std::fs::write(
+            artifact_dir.join("structural_path_ranking_trainer_artifact.json"),
+            serde_json::to_string_pretty(&artifact).unwrap(),
+        )
+        .unwrap();
+        ict_engine::application::entry_models::enable_structural_path_ranking_runtime_command(
+            temp.path().to_str().unwrap(),
+            "NQ",
+            ict_engine::application::orchestration::STRUCTURAL_PATH_RANKING_RUNTIME_MODE_PREFER_HISTORY,
+        )
+        .unwrap();
+
+        let report = build_report().unwrap();
+
+        assert!(report.supporting.execution_triage.is_some());
+        let trace: ict_engine::application::orchestration::ExecutionTreeArtifact =
+            serde_json::from_str(&std::fs::read_to_string(trace_path).unwrap()).unwrap();
+        let ranker_line = trace
+            .output
+            .split_reason_lineage
+            .iter()
+            .find(|line| line.contains("ranker_score="))
+            .expect("ranker score lineage");
+        assert!(
+            ranker_line.contains("runtime_source=registered_artifact_history"),
+            "ranker_line={ranker_line}"
+        );
+        assert!(
+            ranker_line.contains("raw_path_score=0.970000"),
+            "ranker_line={ranker_line}"
+        );
+        assert!(
+            trace.output.path_ranker_score_visible_to_execution_tree,
+            "execution tree did not mark the current-path ranker score as visible"
+        );
+        assert!(
+            trace.output.path_ranker_score_used_by_execution_tree,
+            "current-path ranker score should be consumed by prediction-vote branch math"
+        );
+        assert_eq!(
+            trace.output.path_ranker_runtime_source.as_deref(),
+            Some("registered_artifact_history")
+        );
+    }
+
+    #[test]
+    fn test_build_analyze_report_uses_current_analyze_regime_for_ranker_path_join() {
+        let temp = tempfile::tempdir().unwrap();
+        let htf = sample_candles(220);
+        let mtf = sample_candles(180);
+        let ltf = sample_candles(140);
+        let params = load_or_init_hmm_params("NQ", temp.path().to_str().unwrap());
+        let network = load_or_init_trading_network("NQ", temp.path().to_str().unwrap()).unwrap();
+        let learning_state = load_learning_state(temp.path(), "NQ").unwrap();
+        let provider_status_agent =
+            ict_engine::application::provider_catalog::ProviderCatalogAgentSurface::default();
+        let mut snapshot = WorkflowSnapshot {
+            symbol: "NQ".to_string(),
+            latest_analyze: Some(WorkflowPhaseSnapshot {
+                canonical_structural_active_regime: Some("trend".to_string()),
+                canonical_structural_confidence: Some(0.82),
+                canonical_structural_probabilities: BTreeMap::from([
+                    ("trend".to_string(), 0.82),
+                    ("range".to_string(), 0.18),
+                ]),
+                ..WorkflowPhaseSnapshot::default()
+            }),
+            ..WorkflowSnapshot::default()
+        };
+        snapshot.latest_ensemble_vote = Some(EnsembleVoteRecord {
+            source_phase: "research".to_string(),
+            source_run_id: Some("stale-research".to_string()),
+            posterior_active_regime: "research_iteration".to_string(),
+            posterior_probabilities: BTreeMap::new(),
+            posterior_normalization_status: "stale".to_string(),
+            confidence: 0.2,
+            consensus_strength: 0.2,
+            posterior_confidence: Some(0.2),
+            ..EnsembleVoteRecord::default()
+        });
+        ict_engine::state::persistence::save_workflow_snapshot(temp.path(), "NQ", &snapshot)
+            .unwrap();
+        let summary =
+            ict_engine::application::orchestration::export_structural_path_ranking_target(
+                temp.path().to_str().unwrap(),
+                "NQ",
+                &snapshot,
+                &provider_status_agent,
+                &[],
+                &learning_state.structural_prior_state,
+            )
+            .unwrap();
+        let target_rows = std::fs::read_to_string(&summary.jsonl_path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            target_rows.iter().any(|row| row["path_id"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("belief_regime_node:trend:trend_follow_through")),
+            "expected trend structural path rows: {target_rows:?}"
+        );
+        let score_lines = target_rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                serde_json::json!({
+                    "candidate_set_id": row["candidate_set_id"].as_str().unwrap(),
+                    "path_id": row["path_id"].as_str().unwrap(),
+                    "raw_path_score": 0.93 - index as f64 * 0.03,
+                    "calibrated_path_prob": 0.84 - index as f64 * 0.02,
+                    "path_prob_lower_bound": 0.74 - index as f64 * 0.02,
+                    "execution_gate_status": "pass",
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let score_file = temp
+            .path()
+            .join("NQ")
+            .join("policy_training")
+            .join("current_analyze_scores.jsonl");
+        std::fs::write(&score_file, format!("{score_lines}\n")).unwrap();
+        ict_engine::application::entry_models::register_structural_path_ranking_trainer_artifact_command(
+            temp.path().to_str().unwrap(),
+            "NQ",
+            "current_analyze_scores.jsonl",
+            "catboost",
+            Some("raw_path_score"),
+            Some(target_rows.len()),
+            Some(target_rows.len()),
+        )
+        .unwrap();
+        ict_engine::application::entry_models::enable_structural_path_ranking_runtime_command(
+            temp.path().to_str().unwrap(),
+            "NQ",
+            ict_engine::application::orchestration::STRUCTURAL_PATH_RANKING_RUNTIME_MODE_CANDIDATE_SET_ONLY,
+        )
+        .unwrap();
+
+        build_analyze_report(BuildAnalyzeReportInput {
+            symbol: "NQ",
+            state_dir: temp.path().to_str().unwrap(),
+            htf: &htf,
+            mtf: &mtf,
+            ltf: &ltf,
+            params: &params,
+            network: &network,
+            build_context: AnalyzeBuildContext {
+                symbol: "NQ",
+                paired_candles: None,
+                auxiliary: None,
+                learning_state: &learning_state,
+                multi_timeframe_summary: &[],
+                native_frames: AnalyzeNativeFrames::default(),
+            },
+            regime_bundle_adapter: None,
+            apply_regime_bundle_bbn_soft_evidence: false,
+            execution_focus: true,
+        })
+        .unwrap();
+
+        let trace_path = temp.path().join("NQ").join(EXECUTION_TREE_TRACE_FILE);
+        let trace: ict_engine::application::orchestration::ExecutionTreeArtifact =
+            serde_json::from_str(&std::fs::read_to_string(trace_path).unwrap()).unwrap();
+        let ranker_line = trace
+            .output
+            .split_reason_lineage
+            .iter()
+            .find(|line| line.contains("ranker_score="))
+            .expect("ranker score lineage");
+        assert!(
+            ranker_line.contains("path:scenario:NQ:belief_regime_node:trend:trend_follow_through"),
+            "ranker_line={ranker_line}"
+        );
+        assert!(
+            ranker_line.contains("runtime_source=registered_artifact_path"),
+            "ranker_line={ranker_line}"
+        );
+        assert!(
+            ranker_line.contains("raw_path_score=0.930000"),
+            "ranker_line={ranker_line}"
+        );
+        assert!(
+            trace.output.path_ranker_score_visible_to_execution_tree,
+            "execution tree did not mark current analyze ranker score as visible"
+        );
+        assert!(
+            trace.output.path_ranker_score_used_by_execution_tree,
+            "current analyze ranker score should be consumed by prediction-vote branch math"
+        );
+    }
+
+    #[test]
+    fn test_analyze_command_threads_registered_ranker_scores_into_execution_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let htf = temp.path().join("htf.json");
+        let mtf = temp.path().join("mtf.json");
+        let ltf = temp.path().join("ltf.json");
+
+        for (path, count) in [(&htf, 220usize), (&mtf, 180usize), (&ltf, 140usize)] {
+            std::fs::write(
+                path,
+                serde_json::to_string(&serde_json::json!({
+                    "candles": sample_candles(count)
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        analyze_command(
+            "NQ",
+            htf.to_str().unwrap(),
+            mtf.to_str().unwrap(),
+            ltf.to_str().unwrap(),
+            temp.path().to_str().unwrap(),
+            OutputFormat::Json,
+            false,
+            true,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+        ict_engine::application::entry_models::export_structural_path_ranking_target_command(
+            temp.path().to_str().unwrap(),
+            "NQ",
+        )
+        .unwrap();
+        let target_path = temp
+            .path()
+            .join("NQ")
+            .join("policy_training")
+            .join("structural_path_ranking_target.jsonl");
+        let target_rows = std::fs::read_to_string(&target_path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            target_rows.len() >= 3,
+            "expected regime-path target rows, got {}",
+            target_rows.len()
+        );
+        let score_lines = target_rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                serde_json::json!({
+                    "candidate_set_id": row["candidate_set_id"].as_str().unwrap(),
+                    "path_id": row["path_id"].as_str().unwrap(),
+                    "raw_path_score": 0.91 - index as f64 * 0.04,
+                    "calibrated_path_prob": 0.86 - index as f64 * 0.03,
+                    "path_prob_lower_bound": 0.74 - index as f64 * 0.02,
+                    "execution_gate_status": if index == 0 { "pass" } else { "observe" },
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let score_file = temp
+            .path()
+            .join("NQ")
+            .join("policy_training")
+            .join("cli_ranker_scores.jsonl");
+        std::fs::write(&score_file, format!("{score_lines}\n")).unwrap();
+        ict_engine::application::entry_models::register_structural_path_ranking_trainer_artifact_command(
+            temp.path().to_str().unwrap(),
+            "NQ",
+            "cli_ranker_scores.jsonl",
+            "catboost",
+            Some("raw_path_score"),
+            Some(target_rows.len()),
+            Some(target_rows.len()),
+        )
+        .unwrap();
+        ict_engine::application::entry_models::enable_structural_path_ranking_runtime_command(
+            temp.path().to_str().unwrap(),
+            "NQ",
+            ict_engine::application::orchestration::STRUCTURAL_PATH_RANKING_RUNTIME_MODE_CANDIDATE_SET_ONLY,
+        )
+        .unwrap();
+
+        analyze_command(
+            "NQ",
+            htf.to_str().unwrap(),
+            mtf.to_str().unwrap(),
+            ltf.to_str().unwrap(),
+            temp.path().to_str().unwrap(),
+            OutputFormat::Json,
+            false,
+            true,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+
+        let trace_path = temp.path().join("NQ").join(EXECUTION_TREE_TRACE_FILE);
+        let trace: ict_engine::application::orchestration::ExecutionTreeArtifact =
+            serde_json::from_str(&std::fs::read_to_string(trace_path).unwrap()).unwrap();
+        let ranker_line = trace
+            .output
+            .split_reason_lineage
+            .iter()
+            .find(|line| line.contains("ranker_score="))
+            .expect("ranker score lineage");
+
+        assert!(
+            ranker_line.contains("runtime_source=registered_artifact"),
+            "ranker_line={ranker_line}"
+        );
+        assert!(
+            ranker_line.contains("raw_path_score=0.910000"),
+            "ranker_line={ranker_line}"
+        );
+        assert!(trace.output.path_ranker_score_visible_to_execution_tree);
+        assert!(trace.output.path_ranker_score_used_by_execution_tree);
+        assert_eq!(
+            trace.output.path_ranker_runtime_source.as_deref(),
+            Some("registered_artifact")
+        );
     }
 
     #[test]
@@ -7494,6 +7548,18 @@ mod tests {
             structural_break_index: Some(21),
             recommended_next_command: "ict-engine update".to_string(),
             objective_market_credibility_shrink: Some(shrink.clone()),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("trend".to_string()),
+                    confidence: Some(0.78),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.78),
+                        ("range".to_string(), 0.14),
+                        ("transition".to_string(), 0.08),
+                    ]),
+                    evidence: vec!["duration_persistence_prior=0.900".to_string()],
+                },
+            ),
             ..BacktestRunRecord::default()
         };
 
@@ -7510,6 +7576,50 @@ mod tests {
         assert!(snapshot
             .phase_summary
             .contains("objective_market_credibility="));
+        assert_eq!(
+            snapshot.canonical_structural_active_regime.as_deref(),
+            Some("trend")
+        );
+        assert_eq!(snapshot.canonical_structural_confidence, Some(0.78));
+    }
+
+    #[test]
+    fn test_workflow_phase_snapshot_from_research_run_surfaces_canonical_structural_regime() {
+        let run = ResearchRunRecord {
+            source_command: "factor-research".to_string(),
+            research_objective: "generic".to_string(),
+            aggregate_return: 0.04,
+            feedback_records_applied: 1,
+            recommended_next_command: "ict-engine factor-backtest".to_string(),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("range".to_string()),
+                    confidence: Some(0.61),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.21),
+                        ("range".to_string(), 0.61),
+                        ("transition".to_string(), 0.18),
+                    ]),
+                    evidence: vec!["legacy_range_bias".to_string()],
+                },
+            ),
+            ..ResearchRunRecord::default()
+        };
+
+        let snapshot = workflow_phase_snapshot_from_research_run(&run);
+
+        assert_eq!(
+            snapshot.canonical_structural_active_regime.as_deref(),
+            Some("range")
+        );
+        assert_eq!(snapshot.canonical_structural_confidence, Some(0.61));
+        assert_eq!(
+            snapshot
+                .canonical_structural_probabilities
+                .get("range")
+                .copied(),
+            Some(0.61)
+        );
     }
 
     #[test]
@@ -7642,12 +7752,52 @@ mod tests {
             Some("futures_index")
         );
         assert_eq!(
+            ict_engine::application::belief::market_category_for_symbol("SPY"),
+            Some("futures_index")
+        );
+        assert_eq!(
+            ict_engine::application::belief::market_category_for_symbol("QQQ"),
+            Some("futures_index")
+        );
+        assert_eq!(
             ict_engine::application::belief::market_category_for_symbol("GC"),
             Some("metals")
         );
         assert_eq!(
+            ict_engine::application::belief::market_category_for_symbol("GLD"),
+            Some("metals")
+        );
+        assert_eq!(
+            ict_engine::application::belief::market_category_for_symbol("USO"),
+            Some("energy")
+        );
+        assert_eq!(
+            ict_engine::application::belief::market_category_for_symbol("BTCUSD"),
+            Some("crypto")
+        );
+        assert_eq!(
+            ict_engine::application::belief::market_category_for_symbol("BTC-USD"),
+            Some("crypto")
+        );
+        assert_eq!(
+            ict_engine::application::belief::market_category_for_symbol("EURUSD"),
+            Some("fx")
+        );
+        assert_eq!(
+            ict_engine::application::belief::market_category_for_symbol("EURUSD=X"),
+            Some("fx")
+        );
+        assert_eq!(
             ict_engine::application::belief::market_behavior_profile_for_family("energy"),
             "energy_volatility_shock_sensitive"
+        );
+        assert_eq!(
+            ict_engine::application::belief::market_behavior_profile_for_family("crypto"),
+            "crypto_trend_volatility_sensitive"
+        );
+        assert_eq!(
+            ict_engine::application::belief::market_behavior_profile_for_family("fx"),
+            "fx_macro_trend_liquidity_sensitive"
         );
     }
 
@@ -7707,6 +7857,7 @@ mod tests {
                 d1: Some(&candles),
                 h4: Some(&candles),
                 h1: None,
+                m30: None,
                 m15: None,
                 m5: None,
                 m1: None,
@@ -7829,6 +7980,8 @@ mod tests {
                 multi_timeframe_summary: &[],
                 native_frames: AnalyzeNativeFrames::default(),
             },
+            regime_bundle_adapter: None,
+            apply_regime_bundle_bbn_soft_evidence: false,
             execution_focus: true,
         })
         .unwrap();
@@ -7858,50 +8011,6 @@ mod tests {
         assert!(rendered.contains("pda_family=displacement"));
         assert!(rendered.contains("pda_hybrid_alignment=false"));
         assert!(bundle.pda_sequence_summary.is_none());
-    }
-
-    #[test]
-    fn test_live_inferable_defaults_cover_gc_and_cl() {
-        let defaults = BTreeMap::from([
-            (
-                "GC".to_string(),
-                BTreeMap::from([
-                    ("futures_symbol".to_string(), "GC=F".to_string()),
-                    ("spot_symbol".to_string(), "GLD".to_string()),
-                    ("options_symbol".to_string(), "GLD".to_string()),
-                    ("spot_kind".to_string(), "etf".to_string()),
-                ]),
-            ),
-            (
-                "CL".to_string(),
-                BTreeMap::from([
-                    ("futures_symbol".to_string(), "CL=F".to_string()),
-                    ("spot_symbol".to_string(), "USO".to_string()),
-                    ("options_symbol".to_string(), "USO".to_string()),
-                    ("spot_kind".to_string(), "etf".to_string()),
-                ]),
-            ),
-        ]);
-        assert_eq!(defaults["GC"]["futures_symbol"], "GC=F");
-        assert_eq!(defaults["CL"]["spot_symbol"], "USO");
-    }
-
-    #[test]
-    fn test_analyze_live_symbol_can_infer_gc_and_cl_defaults() {
-        let gc = match "GC" {
-            "GC" => Some(("GC=F", "GLD", "GLD", "etf")),
-            _ => None,
-        }
-        .unwrap();
-        let cl = match "CL" {
-            "CL" => Some(("CL=F", "USO", "USO", "etf")),
-            _ => None,
-        }
-        .unwrap();
-        assert_eq!(gc.0, "GC=F");
-        assert_eq!(gc.1, "GLD");
-        assert_eq!(cl.0, "CL=F");
-        assert_eq!(cl.1, "USO");
     }
 
     #[test]
@@ -8010,25 +8119,59 @@ mod tests {
             data_1m: None,
             data_5m: None,
             data_15m: None,
+            data_30m: None,
             data_1h: None,
             data_4h: None,
             data_1d: None,
             paired_data: None,
+            paired_candles_override: None,
+            auxiliary_override: None,
+            runtime_notes: Vec::new(),
             mutation_spec: None,
+            control_matrix_plan: None,
             state_dir: temp.path().to_str().unwrap(),
         })
         .unwrap();
         let learning_state = load_learning_state(temp.path(), "NQ").unwrap();
         let runs: Vec<ResearchRunRecord> =
             load_state(temp.path(), "NQ", ict_engine::state::RESEARCH_RUNS_FILE).unwrap();
+        let report_with_control_matrix = run_factor_research(RunFactorResearchInput {
+            symbol: "NQ",
+            data: data.to_str().unwrap(),
+            objective: ResearchObjectiveMode::Generic,
+            data_1m: None,
+            data_5m: None,
+            data_15m: None,
+            data_30m: None,
+            data_1h: None,
+            data_4h: None,
+            data_1d: None,
+            paired_data: None,
+            paired_candles_override: None,
+            auxiliary_override: None,
+            runtime_notes: Vec::new(),
+            mutation_spec: None,
+            control_matrix_plan: Some(ict_engine::application::backtest::ControlMatrixPlan::pb12()),
+            state_dir: temp.path().to_str().unwrap(),
+        })
+        .unwrap();
+        let runs_with_control_matrix: Vec<ResearchRunRecord> =
+            load_state(temp.path(), "NQ", ict_engine::state::RESEARCH_RUNS_FILE).unwrap();
         let snapshot: WorkflowSnapshot =
             load_state(temp.path(), "NQ", ict_engine::state::WORKFLOW_SNAPSHOT_FILE).unwrap();
 
         assert!(!report.backtest.scorecards.is_empty());
+        assert!(!report_with_control_matrix.backtest.scorecards.is_empty());
         assert!(!learning_state.factor_rankings.is_empty());
         assert_eq!(report.research_objective, "generic");
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].research_objective, "generic");
+        assert_eq!(runs[0].control_matrix_plan, None);
+        assert_eq!(runs_with_control_matrix.len(), 2);
+        assert_eq!(
+            runs_with_control_matrix[1].control_matrix_plan,
+            Some(ict_engine::application::backtest::ControlMatrixPlan::pb12())
+        );
         let ensemble: EnsembleVoteRecord =
             load_state(temp.path(), "NQ", ict_engine::state::ENSEMBLE_VOTE_FILE).unwrap();
         assert_eq!(ensemble.symbol, "NQ");
@@ -8036,12 +8179,172 @@ mod tests {
         assert!(snapshot.latest_research.is_some());
         assert!(snapshot.latest_ensemble_vote.is_some());
         assert_eq!(snapshot.current_focus_phase, "research");
+        assert!(!learning_state.structural_prior_state.paths.is_empty());
+        assert_eq!(
+            learning_state
+                .structural_prior_state
+                .last_offline_seed_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.source_label.as_str()),
+            Some("research_run_structural_prior_seed")
+        );
         assert!(snapshot
             .latest_research
             .as_ref()
             .unwrap()
             .phase_summary
             .contains("objective=generic"));
+    }
+
+    #[test]
+    fn test_factor_research_command_pb12_executes_real_runner_without_polluting_primary_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("candles.json");
+        std::fs::write(
+            &data,
+            serde_json::to_string(&serde_json::json!({
+                "candles": sample_candles(140)
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        ict_engine::application::backtest::factor_research_command(
+            ict_engine::application::backtest::FactorResearchCommandInput {
+                symbol: "NQ",
+                data: data.to_str().unwrap(),
+                objective: "generic",
+                mutation_spec_path: None,
+                control_matrix_pb12: true,
+                emit_mutation_evaluation: false,
+                ensemble: false,
+                state_dir: temp.path().to_str().unwrap(),
+                output_format: "human",
+            },
+            load_factor_mutation_spec,
+            |objective_mode,
+             mutation_spec,
+             control_matrix_plan,
+             _control_matrix_run,
+             runtime_overrides,
+             run_state_dir| {
+                run_factor_research(RunFactorResearchInput {
+                    symbol: "NQ",
+                    data: data.to_str().unwrap(),
+                    objective: objective_mode,
+                    data_1m: None,
+                    data_5m: None,
+                    data_15m: None,
+                    data_30m: None,
+                    data_1h: None,
+                    data_4h: None,
+                    data_1d: None,
+                    paired_data: None,
+                    paired_candles_override: runtime_overrides.paired_candles,
+                    auxiliary_override: runtime_overrides.auxiliary,
+                    runtime_notes: runtime_overrides.runtime_notes,
+                    mutation_spec: mutation_spec.as_ref(),
+                    control_matrix_plan,
+                    state_dir: run_state_dir,
+                })
+            },
+        )
+        .unwrap();
+
+        let artifacts = ict_engine::application::backtest::load_control_matrix_research_artifacts(
+            temp.path(),
+            "NQ",
+        )
+        .unwrap();
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].control_matrix_plan.kind.as_str(), "pb12");
+        assert_eq!(artifacts[0].run_count, 12);
+        assert_eq!(artifacts[0].runs.len(), 12);
+        assert_eq!(
+            artifacts[0]
+                .baseline_run
+                .as_ref()
+                .map(|run| run.run_label.as_str()),
+            Some("pb12_run_12_baseline")
+        );
+        assert_eq!(
+            artifacts[0].discovery_summary.status,
+            "baseline_unavailable"
+        );
+
+        let ledger: Vec<ict_engine::state::ArtifactLedgerEntry> =
+            load_state(temp.path(), "NQ", ict_engine::state::ARTIFACT_LEDGER_FILE).unwrap();
+        assert!(ledger
+            .iter()
+            .any(|entry| entry.artifact_kind == "auto_quant_pb12_research_run"));
+
+        let research_runs: Vec<ResearchRunRecord> =
+            load_state_or_default(temp.path(), "NQ", ict_engine::state::RESEARCH_RUNS_FILE)
+                .unwrap();
+        assert!(
+            research_runs.is_empty(),
+            "PB12 sweep must not append to primary research history"
+        );
+        assert!(
+            !state_exists(temp.path(), "NQ", ict_engine::state::LEARNING_STATE_FILE),
+            "PB12 sweep must not persist primary learning_state"
+        );
+        assert!(
+            !state_exists(temp.path(), "NQ", ict_engine::state::BBN_STATE_FILE),
+            "PB12 sweep must not persist primary BBN state"
+        );
+    }
+
+    #[test]
+    fn test_run_factor_research_with_mutation_seeds_factor_mutation_prior() {
+        let temp = tempfile::tempdir().unwrap();
+        let data = temp.path().join("candles.json");
+        std::fs::write(
+            &data,
+            serde_json::to_string(&serde_json::json!({
+                "candles": sample_candles(140)
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let mutation_spec = FactorMutationSpec {
+            mutation_id: "mut-1".to_string(),
+            base_factor: "structure_ict".to_string(),
+            ..FactorMutationSpec::default()
+        };
+
+        let report = run_factor_research(RunFactorResearchInput {
+            symbol: "NQ",
+            data: data.to_str().unwrap(),
+            objective: ResearchObjectiveMode::Generic,
+            data_1m: None,
+            data_5m: None,
+            data_15m: None,
+            data_30m: None,
+            data_1h: None,
+            data_4h: None,
+            data_1d: None,
+            paired_data: None,
+            paired_candles_override: None,
+            auxiliary_override: None,
+            runtime_notes: Vec::new(),
+            mutation_spec: Some(&mutation_spec),
+            control_matrix_plan: None,
+            state_dir: temp.path().to_str().unwrap(),
+        })
+        .unwrap();
+
+        let learning_state = load_learning_state(temp.path(), "NQ").unwrap();
+        assert!(report.factor_mutation_evaluation.is_some());
+        assert_eq!(
+            learning_state
+                .structural_prior_state
+                .last_offline_seed_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.source_label.as_str()),
+            Some("factor_mutation_structural_prior_seed")
+        );
     }
 
     #[test]
@@ -8097,12 +8400,14 @@ mod tests {
         )
         .unwrap();
 
-        let report = run_factor_backtest(
-            "NQ",
-            data.to_str().unwrap(),
-            None,
-            temp.path().to_str().unwrap(),
-        )
+        let report = run_factor_backtest(RunFactorBacktestInput {
+            symbol: "NQ",
+            data: data.to_str().unwrap(),
+            multi_timeframe_inputs: MultiTimeframeInputPaths::default(),
+            paired_data: None,
+            auxiliary_override: None,
+            state_dir: temp.path().to_str().unwrap(),
+        })
         .unwrap();
         let learning_state = load_learning_state(temp.path(), "NQ").unwrap();
         let runs: Vec<BacktestRunRecord> =
@@ -8126,6 +8431,154 @@ mod tests {
         assert!(runs[0].hybrid_remaining_expected_bars.is_none());
         assert!(snapshot.latest_backtest.is_some());
         assert_eq!(snapshot.current_focus_phase, "backtest");
+        assert!(!learning_state.structural_prior_state.paths.is_empty());
+        assert_eq!(
+            learning_state
+                .structural_prior_state
+                .last_offline_seed_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.source_label.as_str()),
+            Some("backtest_run_structural_prior_seed")
+        );
+    }
+
+    #[test]
+    fn test_analyze_research_backtest_structural_playbook_preserves_canonical_lineage() {
+        let temp = tempfile::tempdir().unwrap();
+        let htf = temp.path().join("htf.json");
+        let mtf = temp.path().join("mtf.json");
+        let ltf = temp.path().join("ltf.json");
+        let research_data = temp.path().join("candles.json");
+
+        for (path, count) in [
+            (&htf, 220usize),
+            (&mtf, 180usize),
+            (&ltf, 140usize),
+            (&research_data, 140usize),
+        ] {
+            std::fs::write(
+                path,
+                serde_json::to_string(&serde_json::json!({
+                    "candles": sample_candles(count)
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        analyze_command(
+            "NQ",
+            htf.to_str().unwrap(),
+            mtf.to_str().unwrap(),
+            ltf.to_str().unwrap(),
+            temp.path().to_str().unwrap(),
+            OutputFormat::Json,
+            false,
+            true,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
+
+        let analyze_snapshot: WorkflowSnapshot =
+            load_state(temp.path(), "NQ", ict_engine::state::WORKFLOW_SNAPSHOT_FILE).unwrap();
+        let analyze_learning_state = load_learning_state(temp.path(), "NQ").unwrap();
+        let analyze_scorecards = load_ensemble_executor_scorecards(temp.path(), "NQ").unwrap();
+        let provider_status_agent =
+            ict_engine::application::provider_catalog::provider_status_agent_surface(
+                None, None, None,
+            )
+            .unwrap();
+        let analyze_value =
+            ict_engine::application::orchestration::build_workflow_status_phase_value_with_structural_prior_state(
+                &analyze_snapshot,
+                &analyze_scorecards,
+                &provider_status_agent,
+                &analyze_learning_state.feedback_history,
+                &analyze_learning_state.structural_prior_state,
+                "structural-playbook",
+            )
+            .unwrap();
+        let expected_node_label = analyze_value["node"]["node_label"]
+            .as_str()
+            .expect("analyze structural node label")
+            .to_string();
+        let expected_node_id = analyze_value["node"]["node_id"]
+            .as_str()
+            .expect("analyze structural node id")
+            .to_string();
+        let expected_branch_label = analyze_value["branch_set"]["branches"][0]["branch_label"]
+            .as_str()
+            .expect("analyze structural branch label")
+            .to_string();
+
+        run_factor_research(RunFactorResearchInput {
+            symbol: "NQ",
+            data: research_data.to_str().unwrap(),
+            objective: ResearchObjectiveMode::Generic,
+            data_1m: None,
+            data_5m: None,
+            data_15m: None,
+            data_30m: None,
+            data_1h: None,
+            data_4h: None,
+            data_1d: None,
+            paired_data: None,
+            paired_candles_override: None,
+            auxiliary_override: None,
+            runtime_notes: Vec::new(),
+            mutation_spec: None,
+            control_matrix_plan: None,
+            state_dir: temp.path().to_str().unwrap(),
+        })
+        .unwrap();
+        run_factor_backtest(RunFactorBacktestInput {
+            symbol: "NQ",
+            data: research_data.to_str().unwrap(),
+            multi_timeframe_inputs: MultiTimeframeInputPaths::default(),
+            paired_data: None,
+            auxiliary_override: None,
+            state_dir: temp.path().to_str().unwrap(),
+        })
+        .unwrap();
+
+        let snapshot: WorkflowSnapshot =
+            load_state(temp.path(), "NQ", ict_engine::state::WORKFLOW_SNAPSHOT_FILE).unwrap();
+        let learning_state = load_learning_state(temp.path(), "NQ").unwrap();
+        let scorecards = load_ensemble_executor_scorecards(temp.path(), "NQ").unwrap();
+
+        let value =
+            ict_engine::application::orchestration::build_workflow_status_phase_value_with_structural_prior_state(
+                &snapshot,
+                &scorecards,
+                &provider_status_agent,
+                &learning_state.feedback_history,
+                &learning_state.structural_prior_state,
+                "structural-playbook",
+            )
+            .unwrap();
+
+        assert!(snapshot.latest_analyze.is_some());
+        assert!(snapshot.latest_research.is_some());
+        assert!(snapshot.latest_backtest.is_some());
+        assert_eq!(snapshot.current_focus_phase, "backtest");
+        assert_eq!(
+            value["node"]["node_id"].as_str(),
+            Some(expected_node_id.as_str())
+        );
+        assert_eq!(
+            value["node"]["node_label"].as_str(),
+            Some(expected_node_label.as_str())
+        );
+        assert_ne!(
+            value["node"]["node_label"].as_str(),
+            Some(snapshot.current_focus_phase.as_str())
+        );
+        assert_eq!(
+            value["branch_set"]["branches"][0]["branch_label"].as_str(),
+            Some(expected_branch_label.as_str())
+        );
     }
 
     #[test]
@@ -8141,19 +8594,23 @@ mod tests {
         )
         .unwrap();
 
-        run_factor_backtest(
-            "NQ",
-            data.to_str().unwrap(),
-            None,
-            temp.path().to_str().unwrap(),
-        )
+        run_factor_backtest(RunFactorBacktestInput {
+            symbol: "NQ",
+            data: data.to_str().unwrap(),
+            multi_timeframe_inputs: MultiTimeframeInputPaths::default(),
+            paired_data: None,
+            auxiliary_override: None,
+            state_dir: temp.path().to_str().unwrap(),
+        })
         .unwrap();
-        run_factor_backtest(
-            "NQ",
-            data.to_str().unwrap(),
-            None,
-            temp.path().to_str().unwrap(),
-        )
+        run_factor_backtest(RunFactorBacktestInput {
+            symbol: "NQ",
+            data: data.to_str().unwrap(),
+            multi_timeframe_inputs: MultiTimeframeInputPaths::default(),
+            paired_data: None,
+            auxiliary_override: None,
+            state_dir: temp.path().to_str().unwrap(),
+        })
         .unwrap();
 
         let runs: Vec<BacktestRunRecord> =
@@ -8552,11 +9009,16 @@ mod tests {
             data_1m: None,
             data_5m: None,
             data_15m: None,
+            data_30m: None,
             data_1h: None,
             data_4h: None,
             data_1d: None,
             paired_data: None,
+            paired_candles_override: None,
+            auxiliary_override: None,
+            runtime_notes: Vec::new(),
             mutation_spec: None,
+            control_matrix_plan: None,
             state_dir: temp.path().to_str().unwrap(),
         })
         .unwrap();
@@ -8567,11 +9029,16 @@ mod tests {
             data_1m: None,
             data_5m: None,
             data_15m: None,
+            data_30m: None,
             data_1h: None,
             data_4h: None,
             data_1d: None,
             paired_data: None,
+            paired_candles_override: None,
+            auxiliary_override: None,
+            runtime_notes: Vec::new(),
             mutation_spec: None,
+            control_matrix_plan: None,
             state_dir: temp.path().to_str().unwrap(),
         })
         .unwrap();
@@ -8620,6 +9087,9 @@ mod tests {
             OutputFormat::Json,
             false,
             true,
+            None,
+            false,
+            false,
         )
         .unwrap();
 
@@ -8627,6 +9097,7 @@ mod tests {
             load_state(temp.path(), "NQ", ict_engine::state::ANALYZE_RUNS_FILE).unwrap();
         let snapshot: WorkflowSnapshot =
             load_state(temp.path(), "NQ", ict_engine::state::WORKFLOW_SNAPSHOT_FILE).unwrap();
+        let learning_state = load_learning_state(temp.path(), "NQ").unwrap();
 
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].source_command, "analyze");
@@ -8643,6 +9114,7 @@ mod tests {
         assert!(snapshot.latest_analyze.is_some());
         assert!(snapshot.latest_ensemble_vote.is_some());
         assert_eq!(snapshot.current_focus_phase, "analyze");
+        assert!(!learning_state.structural_prior_state.paths.is_empty());
     }
 
     #[test]
@@ -8682,6 +9154,8 @@ mod tests {
                 multi_timeframe_summary: &[],
                 native_frames: AnalyzeNativeFrames::default(),
             },
+            regime_bundle_adapter: None,
+            apply_regime_bundle_bbn_soft_evidence: false,
             execution_focus: true,
         })
         .unwrap();
@@ -8737,11 +9211,16 @@ mod tests {
             data_1m: None,
             data_5m: None,
             data_15m: None,
+            data_30m: None,
             data_1h: None,
             data_4h: None,
             data_1d: None,
             paired_data: None,
+            paired_candles_override: None,
+            auxiliary_override: None,
+            runtime_notes: Vec::new(),
             mutation_spec: None,
+            control_matrix_plan: None,
             state_dir: temp.path().to_str().unwrap(),
         })
         .unwrap();
@@ -8781,6 +9260,9 @@ mod tests {
             OutputFormat::Json,
             false,
             true,
+            None,
+            false,
+            false,
         )
         .unwrap();
 
@@ -8828,6 +9310,9 @@ mod tests {
             OutputFormat::Json,
             false,
             true,
+            None,
+            false,
+            false,
         )
         .unwrap();
         analyze_command(
@@ -8839,6 +9324,9 @@ mod tests {
             OutputFormat::Json,
             false,
             true,
+            None,
+            false,
+            false,
         )
         .unwrap();
 
@@ -8878,6 +9366,9 @@ mod tests {
             OutputFormat::Json,
             false,
             true,
+            None,
+            false,
+            false,
         )
         .unwrap();
 
@@ -8915,6 +9406,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: None,
                 actionable_only: false,
                 conflicts_only: false,
@@ -8935,6 +9427,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("diffs"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -8952,6 +9445,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("execution-candidate-history"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -8969,6 +9463,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("ensemble-vote"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -8986,6 +9481,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("ensemble-vote-history"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9003,6 +9499,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("ensemble-scorecards"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9020,6 +9517,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: None,
                 actionable_only: true,
                 conflicts_only: false,
@@ -9037,6 +9535,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: None,
                 actionable_only: false,
                 conflicts_only: false,
@@ -9054,6 +9553,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("artifact-history-summary"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9071,6 +9571,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("artifact-review-rules"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9088,6 +9589,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: None,
                 actionable_only: false,
                 conflicts_only: false,
@@ -9105,6 +9607,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("agent-bootstrap"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9153,6 +9656,10 @@ mod tests {
         let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
             state_dir: "state",
             symbol: "NQ",
+            analyze_runs: &[],
+            research_runs: &[],
+            backtest_runs: &[],
+            update_runs: &[],
             latest_train: None,
             latest_analyze: None,
             latest_research: None,
@@ -9387,6 +9894,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("artifact-factor-trends"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9404,6 +9912,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("artifact-lineage-summaries"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9421,6 +9930,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("artifact-decision-summary"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9486,6 +9996,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("artifact-impact-leaderboard"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9503,6 +10014,7 @@ mod tests {
                 symbol: "NQ",
                 state_dir: temp.path().to_str().unwrap(),
                 refresh: false,
+                provider_profile: None,
                 phase: Some("artifact-impact-consumed-trend"),
                 actionable_only: false,
                 conflicts_only: false,
@@ -9515,8 +10027,14 @@ mod tests {
             },
         )
         .unwrap();
-        pre_bayes_status_command("NQ", temp.path().to_str().unwrap(), false, Some("policy"))
-            .unwrap();
+        pre_bayes_status_command(
+            "NQ",
+            temp.path().to_str().unwrap(),
+            false,
+            Some("policy"),
+            "json",
+        )
+        .unwrap();
     }
 
     #[test]
@@ -9869,6 +10387,10 @@ mod tests {
         let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
             state_dir: "state",
             symbol: "NQ",
+            analyze_runs: std::slice::from_ref(&analyze),
+            research_runs: &[],
+            backtest_runs: &[],
+            update_runs: std::slice::from_ref(&update),
             latest_train: None,
             latest_analyze: Some(&analyze),
             latest_research: None,
@@ -10001,6 +10523,49 @@ mod tests {
             .sources
             .iter()
             .any(|item| item.left_value.contains("policy-v2:medium")));
+    }
+
+    #[test]
+    fn test_workflow_field_diffs_prefer_canonical_structural_probabilities_for_market_regime() {
+        let research = WorkflowPhaseSnapshot {
+            phase: "research".to_string(),
+            canonical_structural_active_regime: Some("range".to_string()),
+            canonical_structural_confidence: Some(0.61),
+            canonical_structural_probabilities: BTreeMap::from([
+                ("trend".to_string(), 0.21),
+                ("range".to_string(), 0.61),
+                ("transition".to_string(), 0.18),
+            ]),
+            pre_bayes_soft_evidence: BTreeMap::from([(
+                "market_regime".to_string(),
+                BTreeMap::from([("bull".to_string(), 1.0)]),
+            )]),
+            ..WorkflowPhaseSnapshot::default()
+        };
+        let update = WorkflowPhaseSnapshot {
+            phase: "update".to_string(),
+            canonical_structural_active_regime: Some("trend".to_string()),
+            canonical_structural_confidence: Some(0.78),
+            canonical_structural_probabilities: BTreeMap::from([
+                ("trend".to_string(), 0.78),
+                ("range".to_string(), 0.14),
+                ("transition".to_string(), 0.08),
+            ]),
+            pre_bayes_soft_evidence: BTreeMap::from([(
+                "market_regime".to_string(),
+                BTreeMap::from([("bear".to_string(), 1.0)]),
+            )]),
+            ..WorkflowPhaseSnapshot::default()
+        };
+
+        let diffs = workflow_field_diffs(&None, &Some(research), &None, &Some(update));
+        let market_diff = diffs
+            .iter()
+            .find(|item| item.field == "pre_bayes_soft_market_regime")
+            .expect("market regime diff");
+
+        assert!(market_diff.left_value.contains("\"range\": 0.61"));
+        assert!(market_diff.right_value.contains("\"trend\": 0.78"));
     }
 
     #[test]
@@ -10585,9 +11150,12 @@ mod tests {
             OutputFormat::Json,
             false,
             true,
+            None,
+            false,
+            false,
         )
         .unwrap();
-        update_command(UpdateCommandInput {
+        crate::update_command::update_command(UpdateCommandInput {
             symbol: "NQ",
             outcome: "win",
             entry_signal: Some("strong_buy"),
@@ -10619,6 +11187,116 @@ mod tests {
         assert!(ledger.iter().any(|entry| {
             entry.consumed_by_update_run_id.as_deref() == Some(runs[0].run_id.as_str())
         }));
+    }
+
+    #[test]
+    fn test_update_command_accepts_structural_feedback_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let feedback_path = temp.path().join("structural-feedback.json");
+        std::fs::write(
+            &feedback_path,
+            serde_json::to_string(&serde_json::json!({
+                "protocol_version": "structural-feedback-v1",
+                "recommendation_id": "structural-feedback:NQ:node:path",
+                "recommended_at": "2026-04-29T00:00:00Z",
+                "symbol": "NQ",
+                "node_id": "NQ:belief_regime_node:trend",
+                "branch_id": "NQ:belief_regime_node:trend:trend_follow_through",
+                "scenario_id": "scenario:NQ:trend_follow_through",
+                "path_id": "path:scenario:NQ:trend_follow_through:primary",
+                "direction": "bull",
+                "entry_style": "conditional_execution",
+                "candidate_set_id": "structural-candidates:NQ:test",
+                "candidate_set_size": 3,
+                "selected_path_probability": 0.42,
+                "selected_entry_quality": "medium",
+                "selected_entry_quality_probability": 0.58,
+                "pre_bayes_gate_status": "pass_neutralized",
+                "path_posterior": 0.72,
+                "bbn_support_score": 0.72,
+                "followed_path": true,
+                "realized_outcome": "win",
+                "realized_pnl": 0.03,
+                "exit_reason": "target_hit",
+                "notes": "user followed the structural path"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        crate::update_command::update_command(UpdateCommandInput {
+            symbol: "NQ",
+            outcome: "win",
+            entry_signal: Some("medium"),
+            feedback_file: Some(feedback_path.to_str().unwrap()),
+            state_dir: temp.path().to_str().unwrap(),
+            pnl: None,
+            regime: None,
+            direction: None,
+            ensemble: false,
+        })
+        .unwrap();
+
+        let learning_state = load_learning_state(temp.path(), "NQ").unwrap();
+        let runs: Vec<UpdateRunRecord> =
+            load_state(temp.path(), "NQ", ict_engine::state::UPDATE_RUNS_FILE).unwrap();
+        let snapshot: WorkflowSnapshot =
+            load_state(temp.path(), "NQ", ict_engine::state::WORKFLOW_SNAPSHOT_FILE).unwrap();
+        assert_eq!(learning_state.feedback_history.len(), 1);
+        let feedback = &learning_state.feedback_history[0];
+        let refs = feedback
+            .structural_feedback
+            .as_ref()
+            .expect("structural refs");
+        assert_eq!(refs.recommendation_id, "structural-feedback:NQ:node:path");
+        assert_eq!(
+            refs.path_id,
+            "path:scenario:NQ:trend_follow_through:primary"
+        );
+        assert!(refs.followed_path);
+        assert_eq!(refs.exit_reason.as_deref(), Some("target_hit"));
+        assert!(
+            (feedback
+                .model_probabilities_before_trade
+                .selected_probability
+                - 0.42)
+                .abs()
+                < 1e-9
+        );
+        let run_refs = runs[0]
+            .structural_feedback
+            .as_ref()
+            .expect("update run structural refs");
+        assert_eq!(run_refs.path_id, refs.path_id);
+        let snapshot_refs = snapshot
+            .latest_update
+            .as_ref()
+            .and_then(|phase| phase.structural_feedback.as_ref())
+            .expect("snapshot structural refs");
+        assert_eq!(snapshot_refs.branch_id, refs.branch_id);
+        let path_prior = learning_state
+            .structural_prior_state
+            .paths
+            .get(&refs.path_id)
+            .expect("path structural prior");
+        assert_eq!(path_prior.observations, 1);
+        assert_eq!(path_prior.followed_count, 1);
+        assert_eq!(path_prior.wins, 1);
+        assert!(path_prior.smoothed_prior > 0.5);
+        assert!(runs[0].factor_family_outcomes.iter().all(|outcome| outcome
+            .promotion_decision
+            .reason
+            .contains("learning_semantics=")));
+        assert!(runs[0]
+            .artifact_action_summary
+            .iter()
+            .any(|line| line.contains("learning_semantics=")));
+        assert!(runs[0]
+            .agent_prompts
+            .prompts
+            .iter()
+            .filter(|prompt| prompt.id == "promotion_gate" || prompt.id == "rollback_review")
+            .all(|prompt| prompt.user_prompt.contains("learning_semantics=")));
     }
 
     #[test]
@@ -11338,6 +12016,18 @@ mod tests {
                 ]),
                 ..PreBayesEvidenceFilter::default()
             },
+            canonical_structural_regime_posterior: Some(
+                &ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("trend".to_string()),
+                    confidence: Some(0.78),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.78),
+                        ("range".to_string(), 0.14),
+                        ("transition".to_string(), 0.08),
+                    ]),
+                    evidence: vec!["duration_persistence_prior=0.900".to_string()],
+                },
+            ),
             factor_ranking: &[],
             factor_iteration_queue: &[],
             feedback_history_summary: &FeedbackHistorySummary::default(),
@@ -11384,7 +12074,10 @@ mod tests {
             .find(|prompt| prompt.id == "analysis_market_review")
             .map(|prompt| prompt
                 .user_prompt
-                .contains("higher_timeframe_direction_bias=bullish"))
+                .contains("higher_timeframe_direction_bias=bullish")
+                && prompt
+                    .user_prompt
+                    .contains("canonical_structural_regime=active=trend confidence=0.780"))
             .unwrap_or(false));
     }
 
@@ -11410,6 +12103,10 @@ mod tests {
         let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
             state_dir: "state",
             symbol: "NQ",
+            analyze_runs: &[],
+            research_runs: &[],
+            backtest_runs: &[],
+            update_runs: &[],
             latest_train: None,
             latest_analyze: None,
             latest_research: None,
@@ -11441,14 +12138,460 @@ mod tests {
     }
 
     #[test]
+    fn test_workflow_snapshot_overlays_analyze_ensemble_vote_with_canonical_structural_posterior() {
+        let analyze = AnalyzeRunRecord {
+            run_id: "analyze:1".to_string(),
+            symbol: "NQ".to_string(),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("trend".to_string()),
+                    confidence: Some(0.78),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.78),
+                        ("range".to_string(), 0.14),
+                        ("transition".to_string(), 0.08),
+                    ]),
+                    evidence: vec!["duration_persistence_prior=0.900".to_string()],
+                },
+            ),
+            ..AnalyzeRunRecord::default()
+        };
+
+        let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
+            state_dir: "state",
+            symbol: "NQ",
+            analyze_runs: std::slice::from_ref(&analyze),
+            research_runs: &[],
+            backtest_runs: &[],
+            update_runs: &[],
+            latest_train: None,
+            latest_analyze: Some(&analyze),
+            latest_research: None,
+            latest_backtest: None,
+            latest_update: None,
+            pre_bayes_policy_history: &[],
+            pending_update_history: &[],
+            execution_candidate_history: &[],
+            artifact_ledger: &[],
+        });
+
+        let vote = snapshot.latest_ensemble_vote.expect("latest ensemble vote");
+        assert_eq!(vote.source_phase, "analyze");
+        assert_eq!(vote.source_run_id.as_deref(), Some("analyze:1"));
+        assert_eq!(vote.posterior_active_regime, "trend");
+        assert_eq!(vote.posterior_confidence, Some(0.78));
+        assert_eq!(vote.posterior_probabilities["trend"], 0.78);
+        assert!(vote
+            .posterior_evidence
+            .iter()
+            .any(|line| line.contains("duration_persistence_prior")));
+    }
+
+    #[test]
+    fn test_workflow_snapshot_overlays_recent_analyze_ensemble_history_with_canonical_structural_posterior(
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let analyze = AnalyzeRunRecord {
+            run_id: "analyze:1".to_string(),
+            symbol: "NQ".to_string(),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("trend".to_string()),
+                    confidence: Some(0.78),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.78),
+                        ("range".to_string(), 0.14),
+                        ("transition".to_string(), 0.08),
+                    ]),
+                    evidence: vec!["duration_persistence_prior=0.900".to_string()],
+                },
+            ),
+            ..AnalyzeRunRecord::default()
+        };
+        append_ensemble_vote_history(
+            temp.path(),
+            "NQ",
+            EnsembleVoteRecord {
+                artifact_id: "ensemble-vote:analyze:test".to_string(),
+                generated_at: Utc::now(),
+                symbol: "NQ".to_string(),
+                source_phase: "analyze".to_string(),
+                source_run_id: Some("analyze:1".to_string()),
+                provenance: RunProvenance::default(),
+                dataset_comparability: DatasetComparability::default(),
+                ensemble_version: "ensemble-audit-v2".to_string(),
+                final_action: "execute_follow_through".to_string(),
+                recommended_command: "ict-engine workflow-status --symbol NQ --phase human-next"
+                    .to_string(),
+                human_next_triage: "hard_blocked=false ensemble_action=execute_follow_through"
+                    .to_string(),
+                hard_block:
+                    ict_engine::application::orchestration::EnsembleHardBlockArtifact::default(),
+                confidence: 0.55,
+                consensus_strength: 0.55,
+                disagreement_flags: Vec::new(),
+                executor_summaries: Vec::new(),
+                split_explanations: Vec::new(),
+                executor_scorecards: Vec::new(),
+                executor_scorecards_source: None,
+                posterior_fingerprint: "fp-raw".to_string(),
+                posterior_normalization_status: "normalized".to_string(),
+                posterior_active_regime: "bull".to_string(),
+                posterior_confidence: Some(0.55),
+                posterior_probabilities: BTreeMap::from([
+                    ("bull".to_string(), 0.55),
+                    ("range".to_string(), 0.30),
+                    ("transition".to_string(), 0.15),
+                ]),
+                posterior_evidence: vec!["raw".to_string()],
+            },
+        )
+        .unwrap();
+
+        let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
+            state_dir: temp.path().to_str().unwrap(),
+            symbol: "NQ",
+            analyze_runs: std::slice::from_ref(&analyze),
+            research_runs: &[],
+            backtest_runs: &[],
+            update_runs: &[],
+            latest_train: None,
+            latest_analyze: Some(&analyze),
+            latest_research: None,
+            latest_backtest: None,
+            latest_update: None,
+            pre_bayes_policy_history: &[],
+            pending_update_history: &[],
+            execution_candidate_history: &[],
+            artifact_ledger: &[],
+        });
+
+        let vote = snapshot
+            .recent_ensemble_votes
+            .last()
+            .expect("recent analyze ensemble vote");
+        assert_eq!(vote.posterior_active_regime, "trend");
+        assert_eq!(vote.posterior_confidence, Some(0.78));
+        assert_eq!(vote.posterior_probabilities["trend"], 0.78);
+    }
+
+    #[test]
+    fn test_workflow_snapshot_overlays_older_recent_analyze_ensemble_history_with_matching_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let analyze_old = AnalyzeRunRecord {
+            run_id: "analyze:old".to_string(),
+            symbol: "NQ".to_string(),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("range".to_string()),
+                    confidence: Some(0.61),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.21),
+                        ("range".to_string(), 0.61),
+                        ("transition".to_string(), 0.18),
+                    ]),
+                    evidence: vec!["legacy_range_bias".to_string()],
+                },
+            ),
+            ..AnalyzeRunRecord::default()
+        };
+        let analyze_latest = AnalyzeRunRecord {
+            run_id: "analyze:new".to_string(),
+            symbol: "NQ".to_string(),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("trend".to_string()),
+                    confidence: Some(0.78),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.78),
+                        ("range".to_string(), 0.14),
+                        ("transition".to_string(), 0.08),
+                    ]),
+                    evidence: vec!["duration_persistence_prior=0.900".to_string()],
+                },
+            ),
+            ..AnalyzeRunRecord::default()
+        };
+        append_ensemble_vote_history(
+            temp.path(),
+            "NQ",
+            EnsembleVoteRecord {
+                artifact_id: "ensemble-vote:analyze:old".to_string(),
+                generated_at: Utc::now(),
+                symbol: "NQ".to_string(),
+                source_phase: "analyze".to_string(),
+                source_run_id: Some("analyze:old".to_string()),
+                provenance: RunProvenance::default(),
+                dataset_comparability: DatasetComparability::default(),
+                ensemble_version: "ensemble-audit-v2".to_string(),
+                final_action: "observe".to_string(),
+                recommended_command: "ict-engine workflow-status --symbol NQ --phase human-next"
+                    .to_string(),
+                human_next_triage: "history-old".to_string(),
+                hard_block:
+                    ict_engine::application::orchestration::EnsembleHardBlockArtifact::default(),
+                confidence: 0.20,
+                consensus_strength: 0.20,
+                disagreement_flags: Vec::new(),
+                executor_summaries: Vec::new(),
+                split_explanations: Vec::new(),
+                executor_scorecards: Vec::new(),
+                executor_scorecards_source: None,
+                posterior_fingerprint: "fp-old-raw".to_string(),
+                posterior_normalization_status: "normalized".to_string(),
+                posterior_active_regime: "bull".to_string(),
+                posterior_confidence: Some(0.20),
+                posterior_probabilities: BTreeMap::from([
+                    ("bull".to_string(), 0.20),
+                    ("range".to_string(), 0.60),
+                    ("transition".to_string(), 0.20),
+                ]),
+                posterior_evidence: vec!["raw-old".to_string()],
+            },
+        )
+        .unwrap();
+
+        let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
+            state_dir: temp.path().to_str().unwrap(),
+            symbol: "NQ",
+            analyze_runs: &[analyze_old.clone(), analyze_latest.clone()],
+            research_runs: &[],
+            backtest_runs: &[],
+            update_runs: &[],
+            latest_train: None,
+            latest_analyze: Some(&analyze_latest),
+            latest_research: None,
+            latest_backtest: None,
+            latest_update: None,
+            pre_bayes_policy_history: &[],
+            pending_update_history: &[],
+            execution_candidate_history: &[],
+            artifact_ledger: &[],
+        });
+
+        let vote = snapshot
+            .recent_ensemble_votes
+            .last()
+            .expect("older recent analyze vote");
+        assert_eq!(vote.source_run_id.as_deref(), Some("analyze:old"));
+        assert_eq!(vote.posterior_active_regime, "range");
+        assert_eq!(vote.posterior_confidence, Some(0.61));
+        assert_eq!(vote.posterior_probabilities["range"], 0.61);
+    }
+
+    #[test]
+    fn test_workflow_snapshot_overlays_recent_research_ensemble_history_with_matching_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let research = ResearchRunRecord {
+            run_id: "research:1".to_string(),
+            symbol: "NQ".to_string(),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("range".to_string()),
+                    confidence: Some(0.61),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.21),
+                        ("range".to_string(), 0.61),
+                        ("transition".to_string(), 0.18),
+                    ]),
+                    evidence: vec!["legacy_range_bias".to_string()],
+                },
+            ),
+            ..ResearchRunRecord::default()
+        };
+        append_ensemble_vote_history(
+            temp.path(),
+            "NQ",
+            EnsembleVoteRecord {
+                artifact_id: "ensemble-vote:research:test".to_string(),
+                generated_at: Utc::now(),
+                symbol: "NQ".to_string(),
+                source_phase: "factor-research".to_string(),
+                source_run_id: Some("research:1".to_string()),
+                provenance: RunProvenance::default(),
+                dataset_comparability: DatasetComparability::default(),
+                ensemble_version: "ensemble-audit-v2".to_string(),
+                final_action: "observe".to_string(),
+                recommended_command: "ict-engine workflow-status --symbol NQ --phase human-next"
+                    .to_string(),
+                human_next_triage: "history-research".to_string(),
+                hard_block:
+                    ict_engine::application::orchestration::EnsembleHardBlockArtifact::default(),
+                confidence: 0.20,
+                consensus_strength: 0.20,
+                disagreement_flags: Vec::new(),
+                executor_summaries: Vec::new(),
+                split_explanations: Vec::new(),
+                executor_scorecards: Vec::new(),
+                executor_scorecards_source: None,
+                posterior_fingerprint: "fp-research-raw".to_string(),
+                posterior_normalization_status: "normalized".to_string(),
+                posterior_active_regime: "bull".to_string(),
+                posterior_confidence: Some(0.20),
+                posterior_probabilities: BTreeMap::from([
+                    ("bull".to_string(), 0.20),
+                    ("range".to_string(), 0.60),
+                    ("transition".to_string(), 0.20),
+                ]),
+                posterior_evidence: vec!["raw-research".to_string()],
+            },
+        )
+        .unwrap();
+
+        let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
+            state_dir: temp.path().to_str().unwrap(),
+            symbol: "NQ",
+            analyze_runs: &[],
+            research_runs: std::slice::from_ref(&research),
+            backtest_runs: &[],
+            update_runs: &[],
+            latest_train: None,
+            latest_analyze: None,
+            latest_research: Some(&research),
+            latest_backtest: None,
+            latest_update: None,
+            pre_bayes_policy_history: &[],
+            pending_update_history: &[],
+            execution_candidate_history: &[],
+            artifact_ledger: &[],
+        });
+
+        let vote = snapshot
+            .recent_ensemble_votes
+            .last()
+            .expect("recent research ensemble vote");
+        assert_eq!(vote.posterior_active_regime, "range");
+        assert_eq!(vote.posterior_confidence, Some(0.61));
+        assert_eq!(vote.posterior_probabilities["range"], 0.61);
+    }
+
+    #[test]
+    fn test_workflow_snapshot_prefers_latest_research_synthetic_ensemble_over_older_analyze_when_history_missing(
+    ) {
+        let analyze = AnalyzeRunRecord {
+            run_id: "analyze:old".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 30, 0, 0, 0).unwrap(),
+            symbol: "NQ".to_string(),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("trend".to_string()),
+                    confidence: Some(0.78),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.78),
+                        ("range".to_string(), 0.14),
+                        ("transition".to_string(), 0.08),
+                    ]),
+                    evidence: vec!["duration_persistence_prior=0.900".to_string()],
+                },
+            ),
+            ..AnalyzeRunRecord::default()
+        };
+        let research = ResearchRunRecord {
+            run_id: "research:new".to_string(),
+            timestamp: Utc.with_ymd_and_hms(2026, 4, 30, 1, 0, 0).unwrap(),
+            symbol: "NQ".to_string(),
+            source_command: "factor-research".to_string(),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("range".to_string()),
+                    confidence: Some(0.61),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.21),
+                        ("range".to_string(), 0.61),
+                        ("transition".to_string(), 0.18),
+                    ]),
+                    evidence: vec!["legacy_range_bias".to_string()],
+                },
+            ),
+            ..ResearchRunRecord::default()
+        };
+
+        let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
+            state_dir: "state",
+            symbol: "NQ",
+            analyze_runs: std::slice::from_ref(&analyze),
+            research_runs: std::slice::from_ref(&research),
+            backtest_runs: &[],
+            update_runs: &[],
+            latest_train: None,
+            latest_analyze: Some(&analyze),
+            latest_research: Some(&research),
+            latest_backtest: None,
+            latest_update: None,
+            pre_bayes_policy_history: &[],
+            pending_update_history: &[],
+            execution_candidate_history: &[],
+            artifact_ledger: &[],
+        });
+
+        let vote = snapshot
+            .latest_ensemble_vote
+            .expect("synthetic research vote");
+        assert_eq!(vote.source_phase, "research");
+        assert_eq!(vote.source_run_id.as_deref(), Some("research:new"));
+        assert_eq!(vote.posterior_active_regime, "range");
+        assert_eq!(vote.posterior_confidence, Some(0.61));
+    }
+
+    #[test]
+    fn test_workflow_snapshot_synthesizes_research_ensemble_vote_from_canonical_structural_posterior_when_history_missing(
+    ) {
+        let research = ResearchRunRecord {
+            run_id: "research:synthetic".to_string(),
+            symbol: "NQ".to_string(),
+            source_command: "factor-research".to_string(),
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("range".to_string()),
+                    confidence: Some(0.61),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.21),
+                        ("range".to_string(), 0.61),
+                        ("transition".to_string(), 0.18),
+                    ]),
+                    evidence: vec!["legacy_range_bias".to_string()],
+                },
+            ),
+            ..ResearchRunRecord::default()
+        };
+
+        let snapshot = build_workflow_snapshot(BuildWorkflowSnapshotInput {
+            state_dir: "state",
+            symbol: "NQ",
+            analyze_runs: &[],
+            research_runs: std::slice::from_ref(&research),
+            backtest_runs: &[],
+            update_runs: &[],
+            latest_train: None,
+            latest_analyze: None,
+            latest_research: Some(&research),
+            latest_backtest: None,
+            latest_update: None,
+            pre_bayes_policy_history: &[],
+            pending_update_history: &[],
+            execution_candidate_history: &[],
+            artifact_ledger: &[],
+        });
+
+        let vote = snapshot
+            .latest_ensemble_vote
+            .expect("synthetic research vote");
+        assert_eq!(vote.source_phase, "research");
+        assert_eq!(vote.source_run_id.as_deref(), Some("research:synthetic"));
+        assert_eq!(vote.posterior_active_regime, "range");
+        assert_eq!(vote.posterior_confidence, Some(0.61));
+        assert_eq!(vote.posterior_probabilities["range"], 0.61);
+    }
+
+    #[test]
     fn test_command_recommendations_for_live_context_use_persisted_paths() {
         let commands = command_recommendations(&CommandContext {
             symbol: "NQ".to_string(),
             state_dir: "state".to_string(),
             analyze: Some(AnalyzeCommandSource::Live {
                 source: Box::new(LiveDataSourceProvenance {
-                    futures_backend: "openbb".to_string(),
-                    aux_backend: "openalice".to_string(),
+                    futures_backend: "yfinance".to_string(),
+                    aux_backend: "external_http_runtime".to_string(),
                     futures_base_url: "http://127.0.0.1:8080".to_string(),
                     aux_base_url: "http://127.0.0.1:6901/api/v1".to_string(),
                     futures_symbol: "NQ".to_string(),
@@ -11576,6 +12719,8 @@ mod tests {
             realized_outcome: "win".to_string(),
             pnl: 0.02,
             regime_at_entry: Regime::ManipulationExpansion,
+            structural_feedback: None,
+            reflection_mismatch_tags: Vec::new(),
         };
 
         let updates = ict_engine::application::backtest::apply_feedback_to_trade_outcome_network(
@@ -11587,6 +12732,133 @@ mod tests {
 
         assert_eq!(updates, 1);
         assert!(after > before);
+    }
+
+    #[test]
+    fn test_apply_feedback_to_trade_outcome_network_skips_not_followed_feedback() {
+        let mut network = build_trading_network().unwrap();
+        let before = network.nodes["trade_outcome"].cpt.entries[&vec![0, 0, 0]][0];
+        let feedback = FeedbackRecord {
+            timestamp: Utc.with_ymd_and_hms(2024, 2, 1, 12, 0, 0).unwrap(),
+            symbol: "NQ".to_string(),
+            source: "structural_feedback_submission".to_string(),
+            run_id: None,
+            trade_id: None,
+            prompt_version: None,
+            factor_version: None,
+            data_fingerprint: None,
+            factors_used: vec![FeedbackFactorUsage {
+                factor_name: "trend_momentum".to_string(),
+                category: "factor_backtest".to_string(),
+                direction: Direction::Bull,
+                value: 0.8,
+                confidence: 0.8,
+                weight: 0.3,
+                long_support: 0.3,
+                short_support: 0.0,
+                uncertainty_contribution: 0.1,
+            }],
+            model_probabilities_before_trade: ModelProbabilitySnapshot {
+                selected_direction: Direction::Bull,
+                selected_probability: 0.8,
+                long_score: 0.3,
+                short_score: 0.0,
+                win_prob_long: 0.8,
+                win_prob_short: 0.0,
+                uncertainty: 0.1,
+            },
+            realized_outcome: "not_followed".to_string(),
+            pnl: 0.0,
+            regime_at_entry: Regime::ManipulationExpansion,
+            structural_feedback: Some(ict_engine::state::StructuralFeedbackRefs {
+                protocol_version: "structural-feedback-v1".to_string(),
+                recommendation_id: "rec-not-followed".to_string(),
+                recommended_at: "2026-04-29T00:00:00Z".to_string(),
+                node_id: "node-1".to_string(),
+                branch_id: "branch-1".to_string(),
+                scenario_id: "scenario-1".to_string(),
+                path_id: "path-1".to_string(),
+                followed_path: false,
+                exit_reason: Some("user_skipped".to_string()),
+                notes: None,
+            }),
+            reflection_mismatch_tags: Vec::new(),
+        };
+
+        let updates = ict_engine::application::backtest::apply_feedback_to_trade_outcome_network(
+            &mut network,
+            &[feedback],
+        )
+        .unwrap();
+        let after = network.nodes["trade_outcome"].cpt.entries[&vec![0, 0, 0]][0];
+
+        assert_eq!(updates, 0);
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn test_apply_feedback_to_trade_outcome_network_maps_invalidated_to_loss_proxy() {
+        let mut network = build_trading_network().unwrap();
+        let loss_index = network.nodes["trade_outcome"]
+            .state_index("loss")
+            .expect("loss state index");
+        let before_loss = network.nodes["trade_outcome"].cpt.entries[&vec![0, 0, 0]][loss_index];
+        let feedback = FeedbackRecord {
+            timestamp: Utc.with_ymd_and_hms(2024, 2, 1, 12, 0, 0).unwrap(),
+            symbol: "NQ".to_string(),
+            source: "structural_feedback_submission".to_string(),
+            run_id: None,
+            trade_id: None,
+            prompt_version: None,
+            factor_version: None,
+            data_fingerprint: None,
+            factors_used: vec![FeedbackFactorUsage {
+                factor_name: "trend_momentum".to_string(),
+                category: "factor_backtest".to_string(),
+                direction: Direction::Bull,
+                value: 0.8,
+                confidence: 0.8,
+                weight: 0.3,
+                long_support: 0.3,
+                short_support: 0.0,
+                uncertainty_contribution: 0.1,
+            }],
+            model_probabilities_before_trade: ModelProbabilitySnapshot {
+                selected_direction: Direction::Bull,
+                selected_probability: 0.8,
+                long_score: 0.3,
+                short_score: 0.0,
+                win_prob_long: 0.8,
+                win_prob_short: 0.0,
+                uncertainty: 0.1,
+            },
+            realized_outcome: "invalidated".to_string(),
+            pnl: -0.01,
+            regime_at_entry: Regime::ManipulationExpansion,
+            structural_feedback: Some(ict_engine::state::StructuralFeedbackRefs {
+                protocol_version: "structural-feedback-v1".to_string(),
+                recommendation_id: "rec-invalidated".to_string(),
+                recommended_at: "2026-04-29T00:00:00Z".to_string(),
+                node_id: "node-1".to_string(),
+                branch_id: "branch-1".to_string(),
+                scenario_id: "scenario-1".to_string(),
+                path_id: "path-1".to_string(),
+                followed_path: true,
+                exit_reason: Some("invalidation".to_string()),
+                notes: None,
+            }),
+            reflection_mismatch_tags: Vec::new(),
+        };
+
+        let updates = ict_engine::application::backtest::apply_feedback_to_trade_outcome_network(
+            &mut network,
+            &[feedback],
+        )
+        .unwrap();
+        let after_loss = network.nodes["trade_outcome"].cpt.entries[&vec![0, 0, 0]][loss_index];
+
+        assert_eq!(updates, 1);
+        assert!(after_loss > before_loss);
     }
 
     #[test]
@@ -11605,15 +12877,77 @@ mod tests {
             factor_alignment: "bullish",
             factor_uncertainty: "low",
             realized_outcome: "win",
+            structural_learning_credit_class: Some("positive_executed"),
+            structural_learning_success_credit: Some(1.0),
+            structural_learning_observation_weight: Some(1.0),
             feedback_records_applied: 1,
             consumed_pre_bayes_evidence_filter: None,
             consumed_pre_bayes_entry_quality_bridge: None,
+            consumed_canonical_structural_regime_posterior: None,
             consumed_multi_timeframe_summary: &[],
         });
 
         assert!(!prompts.prompts.is_empty());
         assert_eq!(prompts.prompts[0].id, "update_feedback_review");
         assert_eq!(prompts.prompts[0].stage, "feedback_update");
+        assert!(prompts.prompts[0]
+            .user_prompt
+            .contains("structural_learning_semantics=class=positive_executed success_credit=1.000 observation_weight=1.000"));
+    }
+
+    #[test]
+    fn test_build_update_agent_prompts_includes_consumed_canonical_structural_regime_context() {
+        let prompts = build_update_agent_prompts(BuildUpdateAgentPromptsInput {
+            symbol: "NQ",
+            factor_ranking: &[],
+            factor_iteration_queue: &[],
+            feedback_history_summary: &FeedbackHistorySummary::default(),
+            updated_trade_outcome: &BTreeMap::from([
+                ("win".to_string(), 0.6),
+                ("breakeven".to_string(), 0.2),
+                ("loss".to_string(), 0.2),
+            ]),
+            normalized_entry_quality: "high",
+            factor_alignment: "bullish",
+            factor_uncertainty: "low",
+            realized_outcome: "win",
+            structural_learning_credit_class: Some("positive_executed"),
+            structural_learning_success_credit: Some(1.0),
+            structural_learning_observation_weight: Some(1.0),
+            feedback_records_applied: 1,
+            consumed_pre_bayes_evidence_filter: Some(&PreBayesEvidenceFilter {
+                gating_status: "pass_soft".to_string(),
+                evidence_quality_score: 0.66,
+                evidence_assignments: BTreeMap::from([(
+                    "market_regime".to_string(),
+                    "trend".to_string(),
+                )]),
+                ..PreBayesEvidenceFilter::default()
+            }),
+            consumed_pre_bayes_entry_quality_bridge: None,
+            consumed_canonical_structural_regime_posterior: Some(
+                &ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("trend".to_string()),
+                    confidence: Some(0.78),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.78),
+                        ("range".to_string(), 0.14),
+                        ("transition".to_string(), 0.08),
+                    ]),
+                    evidence: vec!["duration_persistence_prior=0.900".to_string()],
+                },
+            ),
+            consumed_multi_timeframe_summary: &[],
+        });
+
+        assert!(prompts
+            .prompts
+            .iter()
+            .find(|prompt| prompt.id == "update_consumed_pre_bayes_review")
+            .map(|prompt| prompt
+                .user_prompt
+                .contains("consumed_canonical_structural_regime=active=trend confidence=0.780"))
+            .unwrap_or(false));
     }
 
     #[test]
@@ -12025,8 +13359,14 @@ mod tests {
 
     #[test]
     fn test_duration_sizing_scale_is_market_family_aware() {
-        assert_eq!(duration_sizing_scale("NQ", "trend", 2.0), 0.25);
-        assert_eq!(duration_sizing_scale("GC", "range", 2.0), 0.35);
+        assert_eq!(
+            duration_sizing_scale("NQ", "trend", 2.0),
+            duration_sizing_scale("ES", "trend", 2.0)
+        );
+        assert_eq!(
+            duration_sizing_scale("GC", "range", 2.0),
+            duration_sizing_scale("CL", "range", 2.0)
+        );
         assert_eq!(duration_sizing_scale("ES", "transition", 2.0), 0.40);
     }
 
@@ -12249,7 +13589,7 @@ mod tests {
             },
             &serde_json::json!({"compact": true}),
             Some(sample_compare_report("scaled_down")),
-            "Backtest ran with execution_realism=test and produced 1 trades.".to_string(),
+            "Backtest | trades=1 | comparable=true".to_string(),
         );
 
         assert_eq!(
@@ -12265,12 +13605,21 @@ mod tests {
     #[test]
     fn test_factor_backtest_output_payload_includes_human_compare_summary() {
         let payload = ict_engine::application::reporting::build_factor_backtest_output_payload(
-            &FactorBacktestRunResult::default(),
-            &serde_json::json!({"compact": true}),
-            Some(sample_compare_report("scaled_down")),
-            serde_json::json!({"credibility": true}),
-            None,
-            "ict-engine update --symbol NQ --outcome <win|loss|breakeven> --state-dir state",
+            ict_engine::application::reporting::FactorBacktestOutputPayloadInput {
+                report: &FactorBacktestRunResult::default(),
+                compact_backtest_report: &serde_json::json!({"compact": true}),
+                compare: Some(sample_compare_report("scaled_down")),
+                credibility_summary: serde_json::json!({"credibility": true}),
+                ensemble_surface: None,
+                suggested_update_command:
+                    "ict-engine update --symbol NQ --outcome <win|loss|breakeven> --state-dir state",
+                structural_path_ranking_runtime_summary: Some(
+                    "Ranker runtime: runtime enabled=true ready=true source=registered_artifact status=enabled_registered_artifact_ready mode=candidate_set_only matches=2",
+                ),
+                structural_path_ranking_validation_summary: Some(
+                    "Ranker validation: calibration=true quality_ready=true raw_scored_mature=30/30 production_validation=30/30 observation_validation=0/30 ready=true",
+                ),
+            },
         );
 
         assert_eq!(
@@ -12281,8 +13630,20 @@ mod tests {
         );
         assert!(payload.get("compact_compare_report").is_some());
         assert!(payload.get("backtest_compare_report").is_some());
+        assert_eq!(
+            payload["structural_path_ranking_runtime_summary"],
+            serde_json::json!(
+                "Ranker runtime: runtime enabled=true ready=true source=registered_artifact status=enabled_registered_artifact_ready mode=candidate_set_only matches=2"
+            )
+        );
+        assert_eq!(
+            payload["structural_path_ranking_validation_summary"],
+            serde_json::json!(
+                "Ranker validation: calibration=true quality_ready=true raw_scored_mature=30/30 production_validation=30/30 observation_validation=0/30 ready=true"
+            )
+        );
         let human_output = payload["human_output"].as_str().unwrap_or_default();
-        assert!(human_output.contains("Factor backtest"));
+        assert!(human_output.contains("Factor backtest |"));
         assert!(!human_output.contains("\"factor_results\""));
     }
 
@@ -12291,12 +13652,16 @@ mod tests {
         let expected =
             "ict-engine update --symbol NQ --outcome <win|loss|breakeven> --state-dir state";
         let payload = ict_engine::application::reporting::build_factor_backtest_output_payload(
-            &FactorBacktestRunResult::default(),
-            &serde_json::json!({"compact": true}),
-            None,
-            serde_json::json!({"credibility": true}),
-            None,
-            expected,
+            ict_engine::application::reporting::FactorBacktestOutputPayloadInput {
+                report: &FactorBacktestRunResult::default(),
+                compact_backtest_report: &serde_json::json!({"compact": true}),
+                compare: None,
+                credibility_summary: serde_json::json!({"credibility": true}),
+                ensemble_surface: None,
+                suggested_update_command: expected,
+                structural_path_ranking_runtime_summary: None,
+                structural_path_ranking_validation_summary: None,
+            },
         );
 
         assert_eq!(
@@ -12316,6 +13681,7 @@ mod tests {
             }),
             None,
             serde_json::json!({"lifecycle": true}),
+            Some(serde_json::json!({"kind": "pb12"})),
         );
 
         assert_eq!(
@@ -12329,6 +13695,10 @@ mod tests {
         assert!(payload["reflection_bundle"]
             .to_string()
             .contains("Research compare:"));
+        assert_eq!(
+            payload["control_matrix_plan"]["kind"],
+            serde_json::json!("pb12")
+        );
     }
 
     #[test]
@@ -12342,6 +13712,7 @@ mod tests {
             }),
             None,
             serde_json::json!({"lifecycle": true}),
+            Some(serde_json::json!({"kind": "pb12"})),
         );
 
         assert_eq!(
@@ -12352,6 +13723,10 @@ mod tests {
         );
         assert!(payload.get("compact_compare_report").is_some());
         assert!(payload.get("research_compare_report").is_some());
+        assert_eq!(
+            payload["control_matrix_plan"]["kind"],
+            serde_json::json!("pb12")
+        );
     }
 
     #[test]
@@ -12438,7 +13813,7 @@ mod tests {
             Some(&sample_compare_report("scaled_down")),
         );
 
-        assert!(rendered.contains("Backtest ran with"));
+        assert!(rendered.starts_with("Backtest | trades=1 | comparable=true"));
         assert!(rendered.contains("Backtest compare:"));
         assert!(rendered.contains("risk=duration_sizing_scale_delta=-0.750"));
     }
@@ -12450,9 +13825,27 @@ mod tests {
             Some(&sample_compare_report("scaled_up")),
         );
 
-        assert!(rendered.contains("Factor research summary:"));
+        assert!(rendered.starts_with("Factor research |"));
         assert!(rendered.contains("Research compare:"));
         assert!(rendered.contains("next=inspect_duration_constraints"));
+    }
+
+    #[test]
+    fn test_market_state_summary_threads_primary_secondary_regime() {
+        let summary = build_market_state_summary_for_candles(&sample_candles(80));
+
+        assert!(summary
+            .iter()
+            .any(|item| item.starts_with("market_state_primary_regime=")));
+        assert!(summary
+            .iter()
+            .any(|item| item.starts_with("market_state_secondary_regime=")));
+        assert!(summary
+            .iter()
+            .any(|item| item.starts_with("market_state_bbn_market_regime=")));
+        assert!(summary
+            .iter()
+            .any(|item| item.starts_with("market_state_bbn_liquidity_context=")));
     }
 
     #[test]
@@ -12478,7 +13871,8 @@ mod tests {
             .join("nq.continuous-15m.json")
             .to_string_lossy()
             .to_string();
-        let resolved = resolve_multi_timeframe_inputs(&primary, None, None, None, None, None, None);
+        let resolved =
+            resolve_multi_timeframe_inputs(&primary, MultiTimeframeInputPaths::default());
         let summary =
             ict_engine::application::multi_timeframe_inputs::build_multi_timeframe_summary(
                 &primary, &resolved,
@@ -12489,7 +13883,7 @@ mod tests {
         assert_eq!(resolved.paths.len(), MULTI_TIMEFRAME_INTERVALS.len());
         assert!(summary
             .iter()
-            .any(|item| item.contains("covered_intervals=1m,5m,15m,1h,4h,1d")));
+            .any(|item| item.contains("covered_intervals=1m,5m,15m,30m,1h,4h,1d")));
     }
 
     #[test]
@@ -12515,7 +13909,8 @@ mod tests {
             .join("nq.continuous-15m.json")
             .to_string_lossy()
             .to_string();
-        let resolved = resolve_multi_timeframe_inputs(&primary, None, None, None, None, None, None);
+        let resolved =
+            resolve_multi_timeframe_inputs(&primary, MultiTimeframeInputPaths::default());
         let signal =
             ict_engine::application::multi_timeframe_inputs::build_multi_timeframe_research_signal(
                 &resolved,
@@ -13040,6 +14435,128 @@ mod tests {
     }
 
     #[test]
+    fn test_workflow_phase_snapshot_prefers_canonical_structural_regime_posterior_when_present() {
+        let snapshot = workflow_phase_snapshot_from_analyze_run(&AnalyzeRunRecord {
+            run_id: "analyze:structural".to_string(),
+            source_command: "analyze".to_string(),
+            pre_bayes_evidence_filter: PreBayesEvidenceFilter {
+                gating_status: "pass_hard".to_string(),
+                evidence_assignments: BTreeMap::from([(
+                    "market_regime".to_string(),
+                    "bull".to_string(),
+                )]),
+                soft_market_regime_distribution: BTreeMap::from([
+                    ("bull".to_string(), 1.0),
+                    ("bear".to_string(), 0.0),
+                ]),
+                ..PreBayesEvidenceFilter::default()
+            },
+            canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("trend".to_string()),
+                    confidence: Some(0.78),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.78),
+                        ("range".to_string(), 0.14),
+                        ("transition".to_string(), 0.08),
+                    ]),
+                    evidence: vec!["duration_persistence_prior=0.900".to_string()],
+                },
+            ),
+            ..AnalyzeRunRecord::default()
+        });
+
+        assert_eq!(
+            snapshot.pre_bayes_filtered_assignments["market_regime"],
+            "trend"
+        );
+        assert_eq!(
+            snapshot.pre_bayes_soft_evidence["market_regime"]["trend"],
+            0.78
+        );
+        assert_eq!(
+            snapshot.canonical_structural_active_regime.as_deref(),
+            Some("trend")
+        );
+        assert_eq!(snapshot.canonical_structural_confidence, Some(0.78));
+        assert_eq!(
+            snapshot
+                .canonical_structural_probabilities
+                .get("trend")
+                .copied(),
+            Some(0.78)
+        );
+        assert!(snapshot
+            .pre_bayes_soft_evidence
+            .get("market_regime")
+            .unwrap()
+            .contains_key("transition"));
+    }
+
+    #[test]
+    fn test_workflow_phase_snapshot_from_update_run_prefers_consumed_canonical_structural_regime_posterior(
+    ) {
+        let snapshot = workflow_phase_snapshot_from_update_run(&UpdateRunRecord {
+            run_id: "update:structural".to_string(),
+            source_command: "update".to_string(),
+            structural_learning_credit_class: Some("fractional_abandoned".to_string()),
+            structural_learning_success_credit: Some(0.25),
+            structural_learning_observation_weight: Some(0.75),
+            consumed_pre_bayes_evidence_filter: Some(PreBayesEvidenceFilter {
+                evidence_assignments: BTreeMap::from([(
+                    "market_regime".to_string(),
+                    "bull".to_string(),
+                )]),
+                soft_market_regime_distribution: BTreeMap::from([
+                    ("bull".to_string(), 1.0),
+                    ("bear".to_string(), 0.0),
+                ]),
+                ..PreBayesEvidenceFilter::default()
+            }),
+            consumed_canonical_structural_regime_posterior: Some(
+                ict_engine::state::CanonicalStructuralRegimePosterior {
+                    active_regime: Some("trend".to_string()),
+                    confidence: Some(0.78),
+                    probabilities: BTreeMap::from([
+                        ("trend".to_string(), 0.78),
+                        ("range".to_string(), 0.14),
+                        ("transition".to_string(), 0.08),
+                    ]),
+                    evidence: vec!["duration_persistence_prior=0.900".to_string()],
+                },
+            ),
+            ..UpdateRunRecord::default()
+        });
+
+        assert_eq!(
+            snapshot.pre_bayes_filtered_assignments["market_regime"],
+            "trend"
+        );
+        assert_eq!(
+            snapshot.pre_bayes_soft_evidence["market_regime"]["trend"],
+            0.78
+        );
+        assert_eq!(
+            snapshot.canonical_structural_active_regime.as_deref(),
+            Some("trend")
+        );
+        assert_eq!(snapshot.canonical_structural_confidence, Some(0.78));
+        assert_eq!(
+            snapshot
+                .canonical_structural_probabilities
+                .get("trend")
+                .copied(),
+            Some(0.78)
+        );
+        assert_eq!(
+            snapshot.structural_learning_credit_class.as_deref(),
+            Some("fractional_abandoned")
+        );
+        assert_eq!(snapshot.structural_learning_success_credit, Some(0.25));
+        assert_eq!(snapshot.structural_learning_observation_weight, Some(0.75));
+    }
+
+    #[test]
     fn test_multi_timeframe_entry_quality_bias_respects_direction() {
         let supportive = multi_timeframe_entry_quality_bias(
             &ParsedMultiTimeframeEvidence {
@@ -13407,8 +14924,12 @@ mod tests {
 
         let rendered = serde_json::to_string(&value).unwrap();
         assert!(rendered.contains("<local-path>"));
-        assert!(!rendered.contains("/tmp/a.json"));
-        assert!(!rendered.contains("/tmp/b.json"));
+        assert_eq!(value["historical_data_candidates"][0], "<local-path>");
+        assert_eq!(value["historical_data_candidates"][1], "<local-path>");
+        assert!(value["what_you_should_do_now"]
+            .as_str()
+            .unwrap()
+            .contains("<local-path>"));
     }
 
     #[test]
@@ -14076,7 +15597,7 @@ mod tests {
 
     #[test]
     fn test_cli_backtest_accepts_human_output_alias() {
-        let cli = Cli::try_parse_from([
+        let cli = parse_cli_from([
             "ict-engine",
             "backtest",
             "--symbol",
@@ -14094,7 +15615,7 @@ mod tests {
 
     #[test]
     fn test_cli_factor_research_accepts_output_format() {
-        let cli = Cli::try_parse_from([
+        let cli = parse_cli_from([
             "ict-engine",
             "factor-research",
             "--symbol",
@@ -14114,10 +15635,123 @@ mod tests {
     }
 
     #[test]
+    fn test_cli_factor_research_accepts_provider_profile() {
+        let cli = parse_cli_from([
+            "ict-engine",
+            "factor-research",
+            "--symbol",
+            "NQ",
+            "--data",
+            "candles.json",
+            "--profile",
+            "thrill3r-nq-closed-loop-v1",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::FactorResearch { profile, .. } => {
+                assert_eq!(profile.as_deref(), Some("thrill3r-nq-closed-loop-v1"));
+            }
+            other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_cli_factor_autoresearch_accepts_provider_profile() {
+        let cli = parse_cli_from([
+            "ict-engine",
+            "factor-autoresearch",
+            "--symbol",
+            "NQ",
+            "--data",
+            "candles.json",
+            "--profile",
+            "thrill3r-nq-closed-loop-v1",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::FactorAutoresearch { profile, .. } => {
+                assert_eq!(profile.as_deref(), Some("thrill3r-nq-closed-loop-v1"));
+            }
+            other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
     fn test_cli_env_command_parses() {
-        let cli = Cli::try_parse_from(["ict-engine", "env"]).unwrap();
+        let cli = parse_cli_from(["ict-engine", "env"]).unwrap();
         match cli.command {
             Commands::Env => {}
+            other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_cli_validate_market_state_accepts_zero_config_defaults() {
+        let cli = parse_cli_from([
+            "ict-engine",
+            "validate-market-state",
+            "--data",
+            "candles.json",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::ValidateMarketState {
+                data,
+                window_size,
+                step_size,
+                verbose,
+                compact,
+                no_enhanced,
+                config,
+                profile,
+            } => {
+                assert_eq!(data, "candles.json");
+                assert_eq!(window_size, 100);
+                assert_eq!(step_size, 1);
+                assert!(!verbose);
+                assert!(!compact);
+                assert!(!no_enhanced);
+                assert!(config.is_none());
+                assert!(profile.is_none());
+            }
+            other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_cli_validate_market_state_accepts_compact_flag() {
+        let cli = parse_cli_from([
+            "ict-engine",
+            "validate-market-state",
+            "--data",
+            "candles.json",
+            "--compact",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::ValidateMarketState { compact, .. } => assert!(compact),
+            other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_cli_validate_market_state_accepts_high_confidence_profile() {
+        let cli = parse_cli_from([
+            "ict-engine",
+            "validate-market-state",
+            "--data",
+            "candles.json",
+            "--profile",
+            "high_confidence",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::ValidateMarketState { profile, .. } => {
+                assert_eq!(profile.as_deref(), Some("high_confidence"));
+            }
             other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
         }
     }
@@ -14187,7 +15821,7 @@ mod tests {
 
     #[test]
     fn test_cli_analyze_accepts_json_alias_mix_at_parse_level() {
-        let cli = Cli::try_parse_from([
+        let cli = parse_cli_from([
             "ict-engine",
             "analyze",
             "--symbol",
@@ -14205,8 +15839,7 @@ mod tests {
 
     #[test]
     fn test_cli_analyze_default_output_format_is_empty_sentinel() {
-        let cli =
-            Cli::try_parse_from(["ict-engine", "analyze", "--symbol", "DEMO", "--demo"]).unwrap();
+        let cli = parse_cli_from(["ict-engine", "analyze", "--symbol", "DEMO", "--demo"]).unwrap();
         match cli.command {
             Commands::Analyze { output_format, .. } => {
                 assert_eq!(output_format, "");
@@ -14217,7 +15850,7 @@ mod tests {
 
     #[test]
     fn test_cli_workflow_status_accepts_stable_flag() {
-        let cli = Cli::try_parse_from([
+        let cli = parse_cli_from([
             "ict-engine",
             "workflow-status",
             "--symbol",
@@ -14232,5 +15865,15 @@ mod tests {
             }
             other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
         }
+    }
+
+    fn parse_cli_from<const N: usize>(args: [&str; N]) -> Result<Cli, clap::Error> {
+        let owned = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || Cli::try_parse_from(owned))
+            .expect("spawn parse thread")
+            .join()
+            .expect("join parse thread")
     }
 }

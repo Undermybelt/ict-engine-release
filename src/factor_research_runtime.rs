@@ -1,4 +1,5 @@
 use super::*;
+use ict_engine::application::backtest::parse_duration_sizing_scale;
 
 pub(crate) fn run_factor_research(
     input: RunFactorResearchInput<'_>,
@@ -10,21 +11,41 @@ pub(crate) fn run_factor_research(
         data_1m,
         data_5m,
         data_15m,
+        data_30m,
         data_1h,
         data_4h,
         data_1d,
         paired_data,
+        paired_candles_override,
+        auxiliary_override,
+        runtime_notes,
         mutation_spec,
+        control_matrix_plan,
         state_dir,
     } = input;
     let candles = load_candles(data)?;
-    let paired_candles = paired_data.map(load_candles).transpose()?;
-    let resolved_multi_timeframe_inputs =
-        resolve_multi_timeframe_inputs(data, data_1m, data_5m, data_15m, data_1h, data_4h, data_1d);
+    let paired_candles = match paired_candles_override {
+        Some(candles) => Some(candles),
+        None => paired_data.map(load_candles).transpose()?,
+    };
+    let resolved_multi_timeframe_inputs = resolve_multi_timeframe_inputs(
+        data,
+        MultiTimeframeInputPaths {
+            data_1m,
+            data_5m,
+            data_15m,
+            data_30m,
+            data_1h,
+            data_4h,
+            data_1d,
+        },
+    );
     let multi_timeframe_summary =
         build_multi_timeframe_summary(data, &resolved_multi_timeframe_inputs)?;
     let multi_timeframe_signal =
         build_multi_timeframe_research_signal(&resolved_multi_timeframe_inputs)?;
+    let structure_ict_context =
+        build_structure_ict_context_events(&resolved_multi_timeframe_inputs)?;
     let previous_runs: Vec<ResearchRunRecord> =
         load_state_or_default(state_dir, symbol, RESEARCH_RUNS_FILE)?;
     let mut learning_state = load_learning_state(state_dir, symbol)?;
@@ -36,6 +57,10 @@ pub(crate) fn run_factor_research(
         .map(LearningState::feedback_key)
         .collect::<std::collections::BTreeSet<_>>();
     let mut registry = FactorRegistry::default();
+    ict_engine::factors::FactorHotplugConfig::apply_to_registry_if_present(
+        state_dir,
+        &mut registry,
+    );
     let baseline_multi_timeframe_summary = multi_timeframe_summary
         .iter()
         .chain(multi_timeframe_signal.summary.iter())
@@ -54,6 +79,14 @@ pub(crate) fn run_factor_research(
             baseline_learning_state: &baseline_learning_state,
             candles: &candles,
             paired_candles: paired_candles.as_deref(),
+            m1_events: structure_ict_context.m1_events.as_deref(),
+            m5_events: structure_ict_context.m5_events.as_deref(),
+            m15_events: structure_ict_context.m15_events.as_deref(),
+            m30_events: structure_ict_context.m30_events.as_deref(),
+            h1_events: structure_ict_context.h1_events.as_deref(),
+            h4_events: structure_ict_context.h4_events.as_deref(),
+            d1_events: structure_ict_context.d1_events.as_deref(),
+            w1_events: structure_ict_context.w1_events.as_deref(),
             multi_timeframe_summary: &baseline_multi_timeframe_summary,
             evaluate_expansion_preview: spec.evaluate_expansion_preview,
         })
@@ -68,8 +101,17 @@ pub(crate) fn run_factor_research(
         &candles,
         &FactorContext {
             paired_candles: paired_candles.as_deref(),
-            auxiliary: None,
+            m1_events: structure_ict_context.m1_events.as_deref(),
+            m5_events: structure_ict_context.m5_events.as_deref(),
+            m15_events: structure_ict_context.m15_events.as_deref(),
+            m30_events: structure_ict_context.m30_events.as_deref(),
+            h1_events: structure_ict_context.h1_events.as_deref(),
+            h4_events: structure_ict_context.h4_events.as_deref(),
+            d1_events: structure_ict_context.d1_events.as_deref(),
+            w1_events: structure_ict_context.w1_events.as_deref(),
+            auxiliary: auxiliary_override.as_ref(),
             regime: None,
+            regime_v2_labels: None,
         },
         Some(&mut learning_state),
         &FactorBacktestConfig::default(),
@@ -112,6 +154,7 @@ pub(crate) fn run_factor_research(
         learning_state.factor_rankings = report.backtest.scorecards.clone();
     }
     let score_deltas = ranking_diffs(&previous_rankings, &learning_state.factor_rankings);
+    let first_score_delta = score_deltas.first().map(|item| item.score_delta);
     let thresholds = decision_thresholds();
     let factor_family_decisions = learning_state.family_decisions();
     report.factor_score_deltas = score_deltas.clone();
@@ -263,6 +306,13 @@ pub(crate) fn run_factor_research(
         .chain(multi_timeframe_signal.summary.iter())
         .cloned()
         .collect();
+    report
+        .multi_timeframe_summary
+        .extend(build_market_state_summary_for_candles(&candles));
+    report
+        .multi_timeframe_summary
+        .push(structure_ict_pda_context_summary(&structure_ict_context));
+    report.multi_timeframe_summary.extend(runtime_notes);
     report.agent_prompts.prompts.push(research_diff_prompt(
         symbol,
         &score_deltas,
@@ -418,6 +468,19 @@ pub(crate) fn run_factor_research(
             report.recommended_commands.research.command,
             shell_quote(report.research_objective.as_str())
         );
+    }
+    if report.recommended_commands.research.ready
+        && !report
+            .recommended_commands
+            .research
+            .command
+            .contains(" --backend ")
+    {
+        report
+            .recommended_commands
+            .research
+            .command
+            .push_str(" --backend native");
     }
     concretize_action_plan_commands(&mut report.agent_action_plan, &report.recommended_commands);
     report.recommended_next_command =
@@ -582,6 +645,22 @@ pub(crate) fn run_factor_research(
             .iter()
             .map(|result| result.trades.len())
             .sum(),
+        canonical_structural_regime_posterior: report
+            .workflow_snapshot
+            .latest_analyze
+            .as_ref()
+            .and_then(|phase| {
+                if phase.canonical_structural_probabilities.is_empty() {
+                    None
+                } else {
+                    Some(ict_engine::state::CanonicalStructuralRegimePosterior {
+                        active_regime: phase.canonical_structural_active_regime.clone(),
+                        confidence: phase.canonical_structural_confidence,
+                        probabilities: phase.canonical_structural_probabilities.clone(),
+                        evidence: Vec::new(),
+                    })
+                }
+            }),
         artifact_decision_summary: report.artifact_decision_summary.clone(),
         artifact_decision_section: report.artifact_decision_section.clone(),
         agent_prompts: report.agent_prompts.clone(),
@@ -597,6 +676,7 @@ pub(crate) fn run_factor_research(
             .agent_context_bundle_minimal
             .pda_cluster_label
             .clone(),
+        control_matrix_plan,
     };
     let research_runs = append_research_run(state_dir, symbol, research_run_record.clone())?;
     let market_family = market_category_for_symbol(symbol);
@@ -651,6 +731,113 @@ pub(crate) fn run_factor_research(
         )?;
     }
     report.workflow_snapshot = refresh_workflow_snapshot(state_dir, symbol)?;
+    let research_support_hint = crate::analyze_shared::structural_support_hint_for_research(
+        crate::analyze_shared::ResearchStructuralSupportInput {
+            baseline_composite_score: report
+                .backtest
+                .scorecards
+                .first()
+                .map(|score| score.composite_score),
+            aggregate_return: report.aggregate_return,
+            execution_readiness: research_execution_fields.execution_readiness,
+            comparable_to_previous: report.dataset_comparability.comparable,
+            feedback_records_applied: report.feedback_records_applied,
+            conformal_coverage_1sigma: report
+                .backtest
+                .factor_results
+                .first()
+                .map(|result| result.metrics.conformal_coverage_1sigma),
+            regime_break_penalty: report
+                .backtest
+                .factor_results
+                .first()
+                .map(|result| result.metrics.regime_break_penalty),
+            structural_break_detected: report
+                .backtest
+                .factor_results
+                .first()
+                .map(|result| result.metrics.structural_break_detected),
+            quality_delta: first_score_delta,
+            family_avg_score: report
+                .factor_family_decisions
+                .iter()
+                .map(|family| family.avg_score)
+                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)),
+        },
+    );
+    let research_support_hint = crate::analyze_shared::offline_structural_support_hint(
+        crate::analyze_shared::OfflineStructuralSupportHintInput {
+            artifact_validation_bias: Some(
+                crate::analyze_shared::artifact_validation_support_bias(
+                    &report.workflow_snapshot.artifact_decision_summary,
+                ),
+            ),
+            baseline_support: research_support_hint,
+            ..crate::analyze_shared::OfflineStructuralSupportHintInput::default()
+        },
+    );
+    crate::analyze_shared::apply_offline_structural_prior_seed(
+        &mut learning_state,
+        &report.workflow_snapshot,
+        &format!("structural-prior-seed:{}", research_run_record.run_id),
+        run_timestamp,
+        research_support_hint,
+        "research_run_structural_prior_seed",
+    );
+    if let Some(evaluation) = mutation_evaluation.as_ref() {
+        let mutation_support_hint = crate::analyze_shared::structural_support_hint_for_mutation(
+            crate::analyze_shared::MutationStructuralSupportInput {
+                baseline_composite_score: report
+                    .backtest
+                    .scorecards
+                    .first()
+                    .map(|score| score.composite_score),
+                aggregate_return: report.aggregate_return,
+                execution_readiness: research_execution_fields.execution_readiness,
+                comparable_to_previous: report.dataset_comparability.comparable,
+                feedback_records_applied: report.feedback_records_applied,
+                conformal_coverage_1sigma: report
+                    .backtest
+                    .factor_results
+                    .first()
+                    .map(|result| result.metrics.conformal_coverage_1sigma),
+                regime_break_penalty: report
+                    .backtest
+                    .factor_results
+                    .first()
+                    .map(|result| result.metrics.regime_break_penalty),
+                structural_break_detected: report
+                    .backtest
+                    .factor_results
+                    .first()
+                    .map(|result| result.metrics.structural_break_detected),
+                evaluation,
+            },
+        );
+        let mutation_support_hint = crate::analyze_shared::offline_structural_support_hint(
+            crate::analyze_shared::OfflineStructuralSupportHintInput {
+                artifact_validation_bias: Some(
+                    crate::analyze_shared::artifact_validation_support_bias(
+                        &report.workflow_snapshot.artifact_decision_summary,
+                    ),
+                ),
+                baseline_support: mutation_support_hint,
+                ..crate::analyze_shared::OfflineStructuralSupportHintInput::default()
+            },
+        );
+        crate::analyze_shared::apply_offline_structural_prior_seed(
+            &mut learning_state,
+            &report.workflow_snapshot,
+            &format!(
+                "structural-prior-seed:factor-mutation:{}",
+                research_run_record.run_id
+            ),
+            run_timestamp,
+            mutation_support_hint,
+            "factor_mutation_structural_prior_seed",
+        );
+    }
+    save_learning_state(state_dir, symbol, &learning_state)?;
     report.artifact_decision_summary = artifact_decision_summary_from_snapshot(
         &report.workflow_snapshot,
         &report.artifact_action_summary,

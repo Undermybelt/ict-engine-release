@@ -1,7 +1,8 @@
 use anyhow::Result;
 
 use crate::application::multi_timeframe_inputs::{
-    build_multi_timeframe_summary, resolve_multi_timeframe_inputs, MULTI_TIMEFRAME_INTERVALS,
+    build_multi_timeframe_summary, resolve_multi_timeframe_inputs, MultiTimeframeInputPaths,
+    MULTI_TIMEFRAME_INTERVALS,
 };
 use crate::config::build_frame_features;
 use crate::data::load_candles;
@@ -9,7 +10,8 @@ use crate::data::load_candles;
 pub fn build_multi_timeframe_training_observations(
     primary_data: &str,
 ) -> Result<(Vec<Vec<f64>>, Vec<String>, usize)> {
-    let resolved = resolve_multi_timeframe_inputs(primary_data, None, None, None, None, None, None);
+    let resolved =
+        resolve_multi_timeframe_inputs(primary_data, MultiTimeframeInputPaths::default());
     let mut observations = Vec::new();
     let mut summary = build_multi_timeframe_summary(primary_data, &resolved)?;
     let mut candles_total = 0usize;

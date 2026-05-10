@@ -3,8 +3,9 @@ use anyhow::Result;
 use crate::application::multi_timeframe_inputs::{
     detected_multi_timeframe_clean_root, detected_tomac_root, detected_tomac_root_or_placeholder,
 };
+use crate::application::provider_catalog::provider_status_agent_surface;
 use crate::state::{
-    load_ensemble_executor_scorecards, load_workflow_snapshot,
+    load_ensemble_executor_scorecards, load_learning_state, load_workflow_snapshot,
     migrate_ensemble_executor_scorecards, recommended_next_command_meta,
     RecommendedNextCommandKind, WorkflowSnapshot,
 };
@@ -49,6 +50,7 @@ pub struct WorkflowStatusCommandInput<'a> {
     pub symbol: &'a str,
     pub state_dir: &'a str,
     pub refresh: bool,
+    pub provider_profile: Option<&'a str>,
     pub phase: Option<&'a str>,
     pub actionable_only: bool,
     pub conflicts_only: bool,
@@ -71,6 +73,7 @@ where
         symbol,
         state_dir,
         refresh,
+        provider_profile,
         phase,
         actionable_only,
         conflicts_only,
@@ -90,12 +93,29 @@ where
     hydrate_workflow_snapshot_recommended_next_command_meta(&mut snapshot);
     let persisted_scorecards =
         load_ensemble_executor_scorecards(state_dir, symbol).unwrap_or_default();
-    let detected_tomac_root = detected_tomac_root();
-    let multi_timeframe_clean_root =
-        detected_multi_timeframe_clean_root(detected_tomac_root.as_deref());
+    let learning_state = load_learning_state(state_dir, symbol).unwrap_or_default();
+    let provider_status_agent =
+        provider_status_agent_surface(None, None, provider_profile).unwrap_or_default();
+    let (detected_tomac_root, multi_timeframe_clean_root, tomac_root_placeholder) =
+        if provider_status_agent.selected_profile.is_some() {
+            let detected_tomac_root = detected_tomac_root();
+            let multi_timeframe_clean_root =
+                detected_multi_timeframe_clean_root(detected_tomac_root.as_deref());
+            let tomac_root_placeholder = detected_tomac_root_or_placeholder();
+            (
+                detected_tomac_root,
+                multi_timeframe_clean_root,
+                tomac_root_placeholder,
+            )
+        } else {
+            (None, None, "<tomac-root>".to_string())
+        };
     dispatch_workflow_status(
         &snapshot,
         &persisted_scorecards,
+        &provider_status_agent,
+        learning_state.feedback_history.as_slice(),
+        &learning_state.structural_prior_state,
         WorkflowStatusDispatchInput {
             phase,
             actionable_only,
@@ -112,7 +132,7 @@ where
             state_dir,
             detected_tomac_root,
             multi_timeframe_clean_root,
-            tomac_root_placeholder: detected_tomac_root_or_placeholder(),
+            tomac_root_placeholder,
         },
     )
 }
@@ -122,6 +142,7 @@ pub fn pre_bayes_status_command<F>(
     state_dir: &str,
     refresh: bool,
     section: Option<&str>,
+    output_format: &str,
     refresh_snapshot: F,
 ) -> Result<()>
 where
@@ -132,7 +153,7 @@ where
     } else {
         load_workflow_snapshot(state_dir, symbol)?
     };
-    emit_pre_bayes_status_output(&snapshot, section)
+    emit_pre_bayes_status_output(&snapshot, section, output_format)
 }
 
 pub fn pre_bayes_diff_command<F>(

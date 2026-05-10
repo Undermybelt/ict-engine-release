@@ -1,4 +1,313 @@
 use super::*;
+use ict_engine::application::provider_catalog::provider_status_agent_surface;
+use ict_engine::state::ArtifactDecisionSummary;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct OfflineStructuralSupportHintInput {
+    pub baseline_support: f64,
+    pub aggregate_return: Option<f64>,
+    pub execution_readiness: Option<f64>,
+    pub comparable_to_previous: bool,
+    pub feedback_records_applied: usize,
+    pub conformal_coverage_1sigma: Option<f64>,
+    pub regime_break_penalty: Option<f64>,
+    pub structural_break_detected: Option<bool>,
+    pub best_factor_composite_score: Option<f64>,
+    pub quality_delta: Option<f64>,
+    pub score_before: Option<f64>,
+    pub score_after: Option<f64>,
+    pub baseline_available: Option<bool>,
+    pub accepted: Option<bool>,
+    pub artifact_validation_bias: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ResearchStructuralSupportInput {
+    pub baseline_composite_score: Option<f64>,
+    pub aggregate_return: f64,
+    pub execution_readiness: Option<f64>,
+    pub comparable_to_previous: bool,
+    pub feedback_records_applied: usize,
+    pub conformal_coverage_1sigma: Option<f64>,
+    pub regime_break_penalty: Option<f64>,
+    pub structural_break_detected: Option<bool>,
+    pub quality_delta: Option<f64>,
+    pub family_avg_score: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MutationStructuralSupportInput<'a> {
+    pub baseline_composite_score: Option<f64>,
+    pub aggregate_return: f64,
+    pub execution_readiness: Option<f64>,
+    pub comparable_to_previous: bool,
+    pub feedback_records_applied: usize,
+    pub conformal_coverage_1sigma: Option<f64>,
+    pub regime_break_penalty: Option<f64>,
+    pub structural_break_detected: Option<bool>,
+    pub evaluation: &'a FactorMutationEvaluation,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct BacktestStructuralSupportInput {
+    pub baseline_composite_score: Option<f64>,
+    pub aggregate_return: f64,
+    pub execution_readiness: Option<f64>,
+    pub comparable_to_previous: bool,
+    pub feedback_records_applied: usize,
+    pub conformal_coverage_1sigma: Option<f64>,
+    pub regime_break_penalty: Option<f64>,
+    pub structural_break_detected: Option<bool>,
+    pub quality_delta: Option<f64>,
+}
+
+pub(crate) fn offline_structural_support_hint(input: OfflineStructuralSupportHintInput) -> f64 {
+    let mut support = input.baseline_support.clamp(0.0, 1.0);
+    if let Some(readiness) = input.execution_readiness {
+        support = (support * 0.55 + readiness.clamp(0.0, 1.0) * 0.45).clamp(0.0, 1.0);
+    }
+    if let Some(aggregate_return) = input.aggregate_return {
+        let return_bias = (aggregate_return * 4.0).clamp(-0.20, 0.20);
+        support = (support + return_bias).clamp(0.0, 1.0);
+    }
+    if input.comparable_to_previous {
+        support = (support + 0.05).clamp(0.0, 1.0);
+    } else {
+        support = (support - 0.03).clamp(0.0, 1.0);
+    }
+    if input.feedback_records_applied > 0 {
+        let feedback_bias = (input.feedback_records_applied as f64 / 20.0).min(1.0) * 0.05;
+        support = (support + feedback_bias).clamp(0.0, 1.0);
+    }
+    if let Some(coverage) = input.conformal_coverage_1sigma {
+        let coverage_bias = ((coverage - 0.55) / 0.35).clamp(-0.15, 0.15);
+        support = (support + coverage_bias).clamp(0.0, 1.0);
+    }
+    if let Some(regime_break_penalty) = input.regime_break_penalty {
+        support = (support - regime_break_penalty.clamp(0.0, 0.25)).clamp(0.0, 1.0);
+    }
+    if matches!(input.structural_break_detected, Some(true)) {
+        support = (support - 0.08).clamp(0.0, 1.0);
+    }
+    if let Some(score) = input.best_factor_composite_score {
+        let score_bias = (score - 0.50).clamp(-0.10, 0.15);
+        support = (support + score_bias).clamp(0.0, 1.0);
+    }
+    if let Some(score_delta) = input.quality_delta {
+        support = (support + score_delta.clamp(-0.10, 0.10)).clamp(0.0, 1.0);
+    }
+    if let Some(artifact_validation_bias) = input.artifact_validation_bias {
+        support = (support + artifact_validation_bias.clamp(-0.12, 0.12)).clamp(0.0, 1.0);
+    }
+    if let (Some(before), Some(after)) = (input.score_before, input.score_after) {
+        support = (support + (after - before).clamp(-0.10, 0.10)).clamp(0.0, 1.0);
+    }
+    if let Some(baseline_available) = input.baseline_available {
+        support = if baseline_available {
+            (support + 0.03).clamp(0.0, 1.0)
+        } else {
+            (support - 0.03).clamp(0.0, 1.0)
+        };
+    }
+    if let Some(accepted) = input.accepted {
+        support = if accepted {
+            (support + 0.08).clamp(0.0, 1.0)
+        } else {
+            (support - 0.08).clamp(0.0, 1.0)
+        };
+    }
+    support
+}
+
+pub(crate) fn structural_baseline_support(score: Option<f64>, fallback: f64) -> f64 {
+    score.unwrap_or(fallback).clamp(0.0, 1.0)
+}
+
+pub(crate) fn artifact_validation_support_bias(summary: &ArtifactDecisionSummary) -> f64 {
+    let mut bias: f64 = match summary.consumed_trend_status.as_str() {
+        "validated_positive" | "validated_improving" => 0.08,
+        "validated_negative" | "validated_regressing" => -0.10,
+        "validated_neutral" => -0.02,
+        _ => 0.0,
+    };
+    bias += match summary.promotion_strength.as_str() {
+        "high" => 0.03,
+        "medium" => 0.01,
+        _ => 0.0,
+    };
+    bias += match summary.rollback_strength.as_str() {
+        "high" => -0.03,
+        "medium" => -0.01,
+        _ => 0.0,
+    };
+    bias.clamp(-0.12, 0.12)
+}
+
+pub(crate) fn structural_support_hint_for_analyze(
+    posterior_confidence: f64,
+    execution_readiness: Option<f64>,
+    comparable_to_previous: bool,
+    feedback_records_applied: usize,
+) -> f64 {
+    offline_structural_support_hint(OfflineStructuralSupportHintInput {
+        baseline_support: structural_baseline_support(Some(posterior_confidence), 0.50),
+        aggregate_return: None,
+        execution_readiness,
+        comparable_to_previous,
+        feedback_records_applied,
+        conformal_coverage_1sigma: None,
+        regime_break_penalty: None,
+        structural_break_detected: None,
+        best_factor_composite_score: None,
+        quality_delta: None,
+        score_before: None,
+        score_after: None,
+        baseline_available: None,
+        accepted: None,
+        artifact_validation_bias: None,
+    })
+}
+
+pub(crate) fn structural_support_hint_for_research(input: ResearchStructuralSupportInput) -> f64 {
+    offline_structural_support_hint(OfflineStructuralSupportHintInput {
+        baseline_support: structural_baseline_support(input.baseline_composite_score, 0.50),
+        aggregate_return: Some(input.aggregate_return),
+        execution_readiness: input.execution_readiness,
+        comparable_to_previous: input.comparable_to_previous,
+        feedback_records_applied: input.feedback_records_applied,
+        conformal_coverage_1sigma: input.conformal_coverage_1sigma,
+        regime_break_penalty: input.regime_break_penalty,
+        structural_break_detected: input.structural_break_detected,
+        best_factor_composite_score: input.family_avg_score.or(input.baseline_composite_score),
+        quality_delta: input.quality_delta,
+        score_before: None,
+        score_after: None,
+        baseline_available: None,
+        accepted: None,
+        artifact_validation_bias: None,
+    })
+}
+
+pub(crate) fn structural_support_hint_for_mutation(
+    input: MutationStructuralSupportInput<'_>,
+) -> f64 {
+    offline_structural_support_hint(OfflineStructuralSupportHintInput {
+        baseline_support: structural_baseline_support(
+            Some(input.evaluation.metrics_after.best_factor_composite_score)
+                .or(input.baseline_composite_score),
+            0.50,
+        ),
+        aggregate_return: Some(input.aggregate_return),
+        execution_readiness: input.execution_readiness,
+        comparable_to_previous: input.comparable_to_previous,
+        feedback_records_applied: input.feedback_records_applied,
+        conformal_coverage_1sigma: input.conformal_coverage_1sigma,
+        regime_break_penalty: input.regime_break_penalty,
+        structural_break_detected: input.structural_break_detected,
+        best_factor_composite_score: Some(
+            input.evaluation.metrics_after.best_factor_composite_score,
+        ),
+        quality_delta: Some(input.evaluation.score_delta),
+        score_before: Some(input.evaluation.score_before),
+        score_after: Some(input.evaluation.score_after),
+        baseline_available: Some(input.evaluation.baseline_available),
+        accepted: Some(input.evaluation.accepted),
+        artifact_validation_bias: None,
+    })
+}
+
+pub(crate) fn structural_support_hint_for_backtest(input: BacktestStructuralSupportInput) -> f64 {
+    offline_structural_support_hint(OfflineStructuralSupportHintInput {
+        baseline_support: structural_baseline_support(input.baseline_composite_score, 0.50),
+        aggregate_return: Some(input.aggregate_return),
+        execution_readiness: input.execution_readiness,
+        comparable_to_previous: input.comparable_to_previous,
+        feedback_records_applied: input.feedback_records_applied,
+        conformal_coverage_1sigma: input.conformal_coverage_1sigma,
+        regime_break_penalty: input.regime_break_penalty,
+        structural_break_detected: input.structural_break_detected,
+        best_factor_composite_score: input.baseline_composite_score,
+        quality_delta: input.quality_delta,
+        score_before: None,
+        score_after: None,
+        baseline_available: None,
+        accepted: None,
+        artifact_validation_bias: None,
+    })
+}
+
+pub(crate) fn structural_prior_seed_from_support_hint(
+    source_label: &str,
+    support: f64,
+) -> ict_engine::state::StructuralPriorSeed {
+    let (observations, wins, breakevens, losses) = if support >= 0.75 {
+        (3, 2, 1, 0)
+    } else if support >= 0.60 {
+        (2, 1, 1, 0)
+    } else if support >= 0.50 {
+        (1, 0, 1, 0)
+    } else {
+        (1, 0, 0, 1)
+    };
+    ict_engine::state::StructuralPriorSeed {
+        source_label: source_label.to_string(),
+        tempering_coefficient: Some(support.clamp(0.0, 1.0)),
+        observations,
+        followed_count: observations,
+        wins,
+        losses,
+        breakevens,
+        invalidated: 0,
+        abandoned: 0,
+        not_followed: 0,
+        avg_pnl: (support - 0.5) * 0.04,
+    }
+}
+
+pub(crate) fn apply_offline_structural_prior_seed(
+    learning_state: &mut LearningState,
+    snapshot: &WorkflowSnapshot,
+    recommendation_id: &str,
+    recommended_at: chrono::DateTime<chrono::Utc>,
+    support_hint: f64,
+    note: &str,
+) {
+    let provider_status_agent = provider_status_agent_surface(None, None, None).unwrap_or_default();
+    if let Some(bundle) =
+        ict_engine::application::orchestration::build_structural_recommended_path_bundle_artifact_with_prior_state(
+            snapshot,
+            &provider_status_agent,
+            learning_state.feedback_history.as_slice(),
+            &learning_state.structural_prior_state,
+        )
+    {
+        let branch_id = bundle
+            .scenario_id
+            .strip_prefix("scenario:")
+            .unwrap_or(bundle.scenario_id.as_str())
+            .to_string();
+        let node_id = branch_id
+            .rsplit_once(':')
+            .map(|(prefix, _)| prefix.to_string())
+            .unwrap_or_else(|| branch_id.clone());
+        let refs = ict_engine::state::StructuralFeedbackRefs {
+            protocol_version: "structural-prior-seed-v1".to_string(),
+            recommendation_id: recommendation_id.to_string(),
+            recommended_at: recommended_at.to_rfc3339(),
+            node_id,
+            branch_id,
+            scenario_id: bundle.scenario_id.clone(),
+            path_id: bundle.path_id.clone(),
+            followed_path: true,
+            exit_reason: Some("offline_prior_seed".to_string()),
+            notes: Some(note.to_string()),
+        };
+        let support = ((bundle.current_posterior + bundle.composite_score + support_hint) / 3.0)
+            .clamp(0.0, 1.0);
+        let seed = structural_prior_seed_from_support_hint(note, support);
+        learning_state.apply_structural_prior_seed(&refs, &seed);
+    }
+}
 
 pub(crate) fn persist_analyze_run(
     state_dir: &str,
@@ -38,6 +347,35 @@ pub(crate) fn persist_analyze_run(
         selected_direction: report.supporting.decision.selected_direction,
         selected_entry_quality: report.supporting.entry_quality.selected_state.clone(),
         decision_hint: report.supporting.decision_hint.clone(),
+        regime_probs: Some(report.supporting.model_state.regime_probs),
+        market_state_evidence: report.supporting.market_state_evidence.clone(),
+        canonical_structural_regime_posterior: Some(
+            ict_engine::state::CanonicalStructuralRegimePosterior {
+                active_regime: report
+                    .supporting
+                    .canonical_belief_report
+                    .regime_posterior
+                    .active_regime
+                    .clone(),
+                confidence: report
+                    .supporting
+                    .canonical_belief_report
+                    .regime_posterior
+                    .confidence,
+                probabilities: report
+                    .supporting
+                    .canonical_belief_report
+                    .regime_posterior
+                    .probabilities
+                    .clone(),
+                evidence: report
+                    .supporting
+                    .canonical_belief_report
+                    .regime_posterior
+                    .evidence
+                    .clone(),
+            },
+        ),
         hybrid_regime_label: report.analysis.regime_bayesian.hybrid_regime_label.clone(),
         hybrid_regime_age_bars: report
             .supporting
@@ -79,6 +417,7 @@ pub(crate) fn persist_analyze_run(
             .execution_artifact
             .as_ref()
             .map(|artifact| artifact.hard_gate_status.clone()),
+        entry_model_packets: report.supporting.entry_model_packets.clone(),
         pre_bayes_evidence_filter: report.supporting.pre_bayes_evidence_filter.clone(),
         pre_bayes_entry_quality_bridge: report.supporting.pre_bayes_entry_quality_bridge.clone(),
         factor_family_decisions: report.supporting.factor_family_decisions.clone(),
@@ -104,6 +443,7 @@ pub(crate) fn persist_analyze_run(
         prompt_workflow: report.supporting.agent_prompts.workflow.clone(),
     };
     append_analyze_run(state_dir, &report.symbol, analyze_run_record.clone())?;
+    let mut learning_state = load_learning_state(state_dir, &report.symbol).unwrap_or_default();
     let blocking_truth = report.supporting.workflow_snapshot.blocking_truth.clone();
     let hard_blocked = matches!(
         blocking_truth.status.as_str(),
@@ -144,6 +484,37 @@ pub(crate) fn persist_analyze_run(
         &analyze_ensemble_vote,
         &canonical_scorecards,
     );
+    let structural_snapshot = WorkflowSnapshot {
+        symbol: report.symbol.clone(),
+        current_focus_phase: "analyze".to_string(),
+        current_focus_reason: report.supporting.workflow_state.reason.clone(),
+        recommended_next_command: report.supporting.recommended_next_command.clone(),
+        recommended_next_command_meta: recommended_next_command_meta(
+            &report.supporting.recommended_next_command,
+        ),
+        blocking_truth: report.supporting.workflow_snapshot.blocking_truth.clone(),
+        latest_analyze: Some(workflow_phase_snapshot_from_analyze_run(
+            &analyze_run_record,
+        )),
+        latest_ensemble_vote: Some(analyze_ensemble_record.clone()),
+        ..WorkflowSnapshot::default()
+    };
+    apply_offline_structural_prior_seed(
+        &mut learning_state,
+        &structural_snapshot,
+        &format!("structural-prior-seed:{}", analyze_run_record.run_id),
+        analyze_run_record.timestamp,
+        structural_support_hint_for_analyze(
+            analyze_ensemble_record
+                .posterior_confidence
+                .unwrap_or(analyze_ensemble_record.confidence),
+            analyze_run_record.execution_readiness,
+            analyze_run_record.dataset_comparability.comparable,
+            analyze_run_record.feedback_history_summary.total_records,
+        ),
+        "analyze_run_structural_prior_seed",
+    );
+    save_learning_state(state_dir, &report.symbol, &learning_state)?;
     persist_ensemble_vote_record(state_dir, &analyze_ensemble_record, &canonical_scorecards)?;
     append_pre_bayes_policy_history(
         state_dir,
@@ -607,4 +978,259 @@ pub(crate) fn apply_command_context_to_analyze_report(
         .multi_timeframe_summary = report.supporting.multi_timeframe_summary.clone();
     report.supporting.agent_context_bundle_minimal =
         build_agent_context_bundle_minimal(&report.supporting.agent_context_bundle);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_offline_structural_support_hint_prefers_positive_comparable_high_readiness_runs() {
+        let weak = offline_structural_support_hint(OfflineStructuralSupportHintInput {
+            baseline_support: 0.50,
+            aggregate_return: Some(-0.01),
+            execution_readiness: Some(0.42),
+            comparable_to_previous: false,
+            feedback_records_applied: 0,
+            conformal_coverage_1sigma: None,
+            regime_break_penalty: None,
+            structural_break_detected: None,
+            best_factor_composite_score: None,
+            quality_delta: Some(-0.04),
+            score_before: None,
+            score_after: None,
+            baseline_available: None,
+            accepted: None,
+            artifact_validation_bias: None,
+        });
+        let strong = offline_structural_support_hint(OfflineStructuralSupportHintInput {
+            baseline_support: 0.50,
+            aggregate_return: Some(0.04),
+            execution_readiness: Some(0.83),
+            comparable_to_previous: true,
+            feedback_records_applied: 8,
+            conformal_coverage_1sigma: None,
+            regime_break_penalty: None,
+            structural_break_detected: None,
+            best_factor_composite_score: None,
+            quality_delta: Some(0.06),
+            score_before: None,
+            score_after: None,
+            baseline_available: None,
+            accepted: None,
+            artifact_validation_bias: None,
+        });
+
+        assert!(strong > weak);
+        assert!(strong > 0.60);
+    }
+
+    #[test]
+    fn test_offline_structural_support_hint_rewards_accepted_mutation() {
+        let rejected = offline_structural_support_hint(OfflineStructuralSupportHintInput {
+            baseline_support: 0.55,
+            aggregate_return: None,
+            execution_readiness: Some(0.60),
+            comparable_to_previous: true,
+            feedback_records_applied: 0,
+            conformal_coverage_1sigma: None,
+            regime_break_penalty: None,
+            structural_break_detected: None,
+            best_factor_composite_score: None,
+            quality_delta: Some(-0.02),
+            score_before: Some(0.52),
+            score_after: Some(0.50),
+            baseline_available: Some(true),
+            accepted: Some(false),
+            artifact_validation_bias: None,
+        });
+        let accepted = offline_structural_support_hint(OfflineStructuralSupportHintInput {
+            baseline_support: 0.55,
+            aggregate_return: None,
+            execution_readiness: Some(0.60),
+            comparable_to_previous: true,
+            feedback_records_applied: 0,
+            conformal_coverage_1sigma: None,
+            regime_break_penalty: None,
+            structural_break_detected: None,
+            best_factor_composite_score: None,
+            quality_delta: Some(0.02),
+            score_before: Some(0.52),
+            score_after: Some(0.58),
+            baseline_available: Some(true),
+            accepted: Some(true),
+            artifact_validation_bias: None,
+        });
+
+        assert!(accepted > rejected);
+    }
+
+    #[test]
+    fn test_structural_baseline_support_prefers_best_factor_score() {
+        assert_eq!(structural_baseline_support(Some(0.78), 0.50), 0.78);
+        assert_eq!(structural_baseline_support(None, 0.50), 0.50);
+        assert_eq!(structural_baseline_support(Some(1.40), 0.50), 1.0);
+        assert_eq!(structural_baseline_support(Some(-0.20), 0.50), 0.0);
+    }
+
+    #[test]
+    fn test_artifact_validation_support_bias_penalizes_regression() {
+        let positive = artifact_validation_support_bias(&ArtifactDecisionSummary {
+            consumed_trend_status: "validated_positive".to_string(),
+            promotion_strength: "high".to_string(),
+            rollback_strength: "low".to_string(),
+            ..ArtifactDecisionSummary::default()
+        });
+        let regressing = artifact_validation_support_bias(&ArtifactDecisionSummary {
+            consumed_trend_status: "validated_regressing".to_string(),
+            promotion_strength: "low".to_string(),
+            rollback_strength: "high".to_string(),
+            ..ArtifactDecisionSummary::default()
+        });
+
+        assert!(positive > regressing);
+        assert!(regressing < 0.0);
+    }
+
+    #[test]
+    fn test_structural_support_hint_for_research_uses_family_quality() {
+        let low = structural_support_hint_for_research(ResearchStructuralSupportInput {
+            baseline_composite_score: Some(0.58),
+            aggregate_return: 0.01,
+            execution_readiness: Some(0.60),
+            comparable_to_previous: true,
+            feedback_records_applied: 1,
+            conformal_coverage_1sigma: Some(0.65),
+            regime_break_penalty: Some(0.08),
+            structural_break_detected: Some(false),
+            quality_delta: Some(0.01),
+            family_avg_score: Some(0.42),
+        });
+        let high = structural_support_hint_for_research(ResearchStructuralSupportInput {
+            family_avg_score: Some(0.76),
+            ..ResearchStructuralSupportInput {
+                baseline_composite_score: Some(0.58),
+                aggregate_return: 0.01,
+                execution_readiness: Some(0.60),
+                comparable_to_previous: true,
+                feedback_records_applied: 1,
+                conformal_coverage_1sigma: Some(0.65),
+                regime_break_penalty: Some(0.08),
+                structural_break_detected: Some(false),
+                quality_delta: Some(0.01),
+                family_avg_score: Some(0.42),
+            }
+        });
+
+        assert!(high > low);
+    }
+
+    #[test]
+    fn test_structural_support_hint_for_backtest_penalizes_breaks() {
+        let low = structural_support_hint_for_backtest(BacktestStructuralSupportInput {
+            baseline_composite_score: Some(0.68),
+            aggregate_return: 0.02,
+            execution_readiness: Some(0.70),
+            comparable_to_previous: true,
+            feedback_records_applied: 1,
+            conformal_coverage_1sigma: Some(0.48),
+            regime_break_penalty: Some(0.22),
+            structural_break_detected: Some(true),
+            quality_delta: Some(-0.02),
+        });
+        let high = structural_support_hint_for_backtest(BacktestStructuralSupportInput {
+            baseline_composite_score: Some(0.68),
+            aggregate_return: 0.02,
+            execution_readiness: Some(0.70),
+            comparable_to_previous: true,
+            feedback_records_applied: 1,
+            conformal_coverage_1sigma: Some(0.82),
+            regime_break_penalty: Some(0.04),
+            structural_break_detected: Some(false),
+            quality_delta: Some(0.02),
+        });
+
+        assert!(high > low);
+    }
+
+    #[test]
+    fn test_offline_structural_support_hint_penalizes_breaks_and_rewards_coverage() {
+        let poor = offline_structural_support_hint(OfflineStructuralSupportHintInput {
+            baseline_support: 0.55,
+            aggregate_return: Some(0.01),
+            execution_readiness: Some(0.62),
+            comparable_to_previous: true,
+            feedback_records_applied: 2,
+            conformal_coverage_1sigma: Some(0.42),
+            regime_break_penalty: Some(0.24),
+            structural_break_detected: Some(true),
+            best_factor_composite_score: Some(0.48),
+            quality_delta: Some(-0.03),
+            score_before: None,
+            score_after: None,
+            baseline_available: None,
+            accepted: None,
+            artifact_validation_bias: None,
+        });
+        let good = offline_structural_support_hint(OfflineStructuralSupportHintInput {
+            baseline_support: 0.55,
+            aggregate_return: Some(0.03),
+            execution_readiness: Some(0.76),
+            comparable_to_previous: true,
+            feedback_records_applied: 6,
+            conformal_coverage_1sigma: Some(0.81),
+            regime_break_penalty: Some(0.04),
+            structural_break_detected: Some(false),
+            best_factor_composite_score: Some(0.74),
+            quality_delta: Some(0.05),
+            score_before: None,
+            score_after: None,
+            baseline_available: None,
+            accepted: None,
+            artifact_validation_bias: None,
+        });
+
+        assert!(good > poor);
+        assert!(good > 0.65);
+    }
+
+    #[test]
+    fn test_offline_structural_support_hint_rewards_baseline_available_and_score_improvement() {
+        let weak = offline_structural_support_hint(OfflineStructuralSupportHintInput {
+            baseline_support: 0.58,
+            aggregate_return: Some(0.01),
+            execution_readiness: Some(0.60),
+            comparable_to_previous: true,
+            feedback_records_applied: 1,
+            conformal_coverage_1sigma: Some(0.66),
+            regime_break_penalty: Some(0.08),
+            structural_break_detected: Some(false),
+            best_factor_composite_score: Some(0.62),
+            quality_delta: Some(0.00),
+            score_before: Some(0.62),
+            score_after: Some(0.62),
+            baseline_available: Some(false),
+            accepted: None,
+            artifact_validation_bias: None,
+        });
+        let strong = offline_structural_support_hint(OfflineStructuralSupportHintInput {
+            baseline_support: 0.58,
+            aggregate_return: Some(0.01),
+            execution_readiness: Some(0.60),
+            comparable_to_previous: true,
+            feedback_records_applied: 1,
+            conformal_coverage_1sigma: Some(0.66),
+            regime_break_penalty: Some(0.08),
+            structural_break_detected: Some(false),
+            best_factor_composite_score: Some(0.62),
+            quality_delta: Some(0.06),
+            score_before: Some(0.62),
+            score_after: Some(0.71),
+            baseline_available: Some(true),
+            accepted: None,
+            artifact_validation_bias: None,
+        });
+
+        assert!(strong > weak);
+    }
 }

@@ -55,6 +55,14 @@ pub fn user_data_selection_prompt(symbol: &str, data_paths: &[String]) -> String
     )
 }
 
+fn demo_research_backend_suffix(recorded_data_paths: &[String]) -> &'static str {
+    if recorded_data_paths.len() == 1 && recorded_data_paths[0].starts_with("examples/demo/") {
+        " --backend native"
+    } else {
+        ""
+    }
+}
+
 pub fn command_recommendations(context: &CommandContext) -> CommandRecommendations {
     let mut recorded_data_paths = Vec::new();
     if let Some(analyze) = &context.analyze {
@@ -97,7 +105,10 @@ pub fn command_recommendations(context: &CommandContext) -> CommandRecommendatio
             recorded_data_paths.push(data.clone());
         }
     }
+    let requires_user_data_selection =
+        context.user_data_selection_required && recorded_data_paths.len() > 1;
     let user_prompt = user_data_selection_prompt(&context.symbol, &recorded_data_paths);
+    let research_backend_suffix = demo_research_backend_suffix(&recorded_data_paths);
     let analyze = match &context.analyze {
         Some(AnalyzeCommandSource::Files {
             data_htf,
@@ -118,7 +129,7 @@ pub fn command_recommendations(context: &CommandContext) -> CommandRecommendatio
         ),
         Some(AnalyzeCommandSource::Live { source }) => recommended_command(
             format!(
-                "ict-engine analyze-live --symbol {} --futures-symbol {} --spot-symbol {} --options-symbol {} --spot-kind {} --futures-backend {} --aux-backend {} --openalice-base-url {} --nofx-base-url {} --state-dir {}",
+                "ict-engine analyze-live --symbol {} --futures-symbol {} --spot-symbol {} --options-symbol {} --spot-kind {} --futures-backend {} --aux-backend {} --external-http-base-url {} --crypto-public-base-url {} --state-dir {}",
                 shell_quote(&context.symbol),
                 shell_quote(&source.futures_symbol),
                 shell_quote(&source.spot_symbol),
@@ -145,7 +156,7 @@ pub fn command_recommendations(context: &CommandContext) -> CommandRecommendatio
     let mut research = if let Some(data) = &context.research_data {
         recommended_command(
             format!(
-                "ict-engine factor-research --symbol {} --data {}{} --state-dir {}",
+                "ict-engine factor-research --symbol {} --data {}{} --state-dir {}{}",
                 shell_quote(&context.symbol),
                 shell_quote(data),
                 context
@@ -153,7 +164,8 @@ pub fn command_recommendations(context: &CommandContext) -> CommandRecommendatio
                     .as_ref()
                     .map(|paired| format!(" --paired-data {}", shell_quote(paired)))
                     .unwrap_or_default(),
-                shell_quote(&context.state_dir)
+                shell_quote(&context.state_dir),
+                research_backend_suffix
             ),
             true,
             Vec::new(),
@@ -194,7 +206,7 @@ pub fn command_recommendations(context: &CommandContext) -> CommandRecommendatio
         )
     };
 
-    if context.user_data_selection_required {
+    if requires_user_data_selection {
         for command in [&mut research, &mut backtest] {
             command.user_data_selection_required = true;
             command.user_data_selection_prompt = user_prompt.clone();
@@ -298,5 +310,68 @@ pub fn command_recommendations(context: &CommandContext) -> CommandRecommendatio
         research,
         backtest,
         update,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_recorded_research_path_does_not_require_user_selection() {
+        let commands = command_recommendations(&CommandContext {
+            symbol: "DEMO".to_string(),
+            state_dir: "state".to_string(),
+            analyze: Some(AnalyzeCommandSource::Files {
+                data_htf: "examples/demo/demo-15m.json".to_string(),
+                data_mtf: "examples/demo/demo-15m.json".to_string(),
+                data_ltf: "examples/demo/demo-15m.json".to_string(),
+            }),
+            research_data: Some("examples/demo/demo-15m.json".to_string()),
+            paired_data: None,
+            update_outcome: None,
+            update_entry_signal: None,
+            update_feedback_file: None,
+            user_data_selection_required: true,
+        });
+
+        assert!(commands.research.ready);
+        assert!(!commands.research.user_data_selection_required);
+        assert_eq!(
+            commands.research.command,
+            "ict-engine factor-research --symbol DEMO --data examples/demo/demo-15m.json --state-dir state --backend native"
+        );
+        assert_eq!(commands.research.recorded_data_paths.len(), 1);
+        assert_eq!(
+            commands.research.recorded_data_paths[0],
+            "examples/demo/demo-15m.json"
+        );
+    }
+
+    #[test]
+    fn multiple_recorded_research_paths_still_require_user_selection() {
+        let commands = command_recommendations(&CommandContext {
+            symbol: "NQ".to_string(),
+            state_dir: "state".to_string(),
+            analyze: Some(AnalyzeCommandSource::Files {
+                data_htf: "htf.json".to_string(),
+                data_mtf: "mtf.json".to_string(),
+                data_ltf: "ltf.json".to_string(),
+            }),
+            research_data: Some("ltf.json".to_string()),
+            paired_data: None,
+            update_outcome: None,
+            update_entry_signal: None,
+            update_feedback_file: None,
+            user_data_selection_required: true,
+        });
+
+        assert!(!commands.research.ready);
+        assert!(commands.research.user_data_selection_required);
+        assert!(commands
+            .research
+            .missing_inputs
+            .contains(&"user_selected_historical_data".to_string()));
+        assert_eq!(commands.research.recorded_data_paths.len(), 3);
     }
 }

@@ -49,6 +49,7 @@ mod tests {
             split_reason_lineage: vec!["ready".to_string()],
             decision_hint: "execution_first_fill".to_string(),
             axial_attention_trace: Vec::new(),
+            ..ExecutionTreeOutput::default()
         }
     }
 
@@ -94,6 +95,8 @@ mod tests {
             hmm_posterior: &posterior,
             mece_recovery_confidence: Some(0.97),
             prediction_vote_score: 0.72,
+            market_state_lineage: None,
+            path_ranker_lineage: None,
             axial_trace: None,
         };
         let output = sample_output();
@@ -134,6 +137,8 @@ mod tests {
             hmm_posterior: &posterior,
             mece_recovery_confidence: Some(0.97),
             prediction_vote_score: 0.72,
+            market_state_lineage: None,
+            path_ranker_lineage: None,
             axial_trace: None,
         };
         let output = sample_output();

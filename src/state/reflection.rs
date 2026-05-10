@@ -112,6 +112,7 @@ pub fn reflection_feedback_record(
         realized_outcome: outcome,
         pnl,
         regime_at_entry: Regime::ManipulationExpansion,
+        structural_feedback: None,
         reflection_mismatch_tags: mismatch_tags
             .iter()
             .map(|tag| tag.as_str().to_string())

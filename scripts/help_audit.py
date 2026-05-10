@@ -7,6 +7,11 @@ from pathlib import Path
 from path_defaults import resolve_repo_root
 
 ROOT = resolve_repo_root(__file__)
+BANNED_HELP_PATTERNS = [
+    r"e\.g\.\s*NQ",
+    r"NQ,\s*ES,\s*GC",
+    r"NQ,\s*ES,\s*AAPL,\s*BTCUSDT",
+]
 
 
 def run_help(args):
@@ -95,10 +100,18 @@ def main():
     commands = command_list()
     rows = []
     missing = []
+    market_bias_hits = []
+    root_help = run_help(['--help'])
+    for pattern in BANNED_HELP_PATTERNS:
+        if re.search(pattern, root_help):
+            market_bias_hits.append({'command': '<root>', 'pattern': pattern})
     for cmd in commands:
         text = run_help([cmd, '--help'])
         opts = parse_options(text)
         cmd_missing = [o['flag'] for o in opts if o['flag'] != '-h, --help' and not o['has_description']]
+        for pattern in BANNED_HELP_PATTERNS:
+            if re.search(pattern, text):
+                market_bias_hits.append({'command': cmd, 'pattern': pattern})
         rows.append(
             {
                 'command': cmd,
@@ -111,16 +124,18 @@ def main():
             missing.append({'command': cmd, 'missing_descriptions': cmd_missing})
 
     summary = {
-        'root_help_has_version_flag': '-V, --version' in run_help(['--help']),
+        'root_help_has_version_flag': '-V, --version' in root_help,
         'command_count': len(commands),
         'commands_with_missing_help': len(missing),
-        'status': 'pass' if not missing else 'needs_fix',
+        'commands_with_market_bias': len(market_bias_hits),
+        'status': 'pass' if not missing and not market_bias_hits else 'needs_fix',
     }
 
     report = {
         'summary': summary,
         'commands': rows,
         'missing': missing,
+        'market_bias_hits': market_bias_hits,
     }
     print(json.dumps(report, indent=2))
 

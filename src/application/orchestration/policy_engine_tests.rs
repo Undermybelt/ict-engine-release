@@ -50,6 +50,7 @@ fn catboost_policy_engine_infer_uses_loaded_artifact_version() {
         entry_price_offset_bps: 4.0,
         sl_distance_bps: 14.0,
         tp_rr_ratio: 2.4,
+        ..Default::default()
     });
     assert_eq!(decision.policy_version, "catboost-policy-v1-sample");
     assert_eq!(decision.qualification, "qualified");
@@ -95,6 +96,7 @@ fn catboost_policy_engine_falls_back_when_feature_conditions_do_not_match() {
         entry_price_offset_bps: 0.0,
         sl_distance_bps: 0.0,
         tp_rr_ratio: 2.4,
+        ..Default::default()
     });
     assert_ne!(decision.leaf_id, "qualified-bull");
 }

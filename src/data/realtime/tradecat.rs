@@ -4,7 +4,7 @@ use futures::stream::{self, BoxStream};
 
 use crate::types::{Candle, Timeframe};
 
-use super::{openalice::Quote, provider::RealtimeDataProvider};
+use super::{market_support::Quote, provider::RealtimeDataProvider};
 
 pub struct TradeCatProvider;
 

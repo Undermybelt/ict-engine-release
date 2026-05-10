@@ -148,6 +148,8 @@ mod tests {
                     RegimeFactorStats {
                         observations: 1000,
                         wins: 500,
+                        weighted_observations: 1000.0,
+                        weighted_successes: 500.0,
                         avg_pnl: 0.00001 * seed,
                         multiplier: 0.85 + 0.1 * seed,
                     },

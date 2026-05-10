@@ -118,6 +118,36 @@ pub struct PolicyFeatureVector {
     /// PDA survival regime: "bear" / "chop" / "bull_continuation" / "unknown".
     #[serde(default)]
     pub pda_survival_regime: String,
+
+    // CisdRb entry-model packet bridge
+    #[serde(default)]
+    pub setup_model_id: String,
+    #[serde(default)]
+    pub setup_progress_state: String,
+    #[serde(default)]
+    pub cisd_run_length_observed: f64,
+    #[serde(default)]
+    pub cisd_impulse_atr: f64,
+    #[serde(default)]
+    pub cisd_body_ratio_mean: f64,
+    #[serde(default)]
+    pub rb_wick_body_ratio: f64,
+    #[serde(default)]
+    pub rb_close_location_ratio: f64,
+    #[serde(default)]
+    pub bars_between_cisd_and_rb: f64,
+    #[serde(default)]
+    pub seq_window_hit: bool,
+    #[serde(default)]
+    pub ema19_distance_bps: f64,
+    #[serde(default)]
+    pub realized_vol_zscore: f64,
+    #[serde(default)]
+    pub hmm_accumulation_prob: f64,
+    #[serde(default)]
+    pub hmm_manipulation_expansion_prob: f64,
+    #[serde(default)]
+    pub hmm_distribution_prob: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -207,6 +237,8 @@ impl CatBoostCompatiblePolicyEngine {
                     "ltf_path_label".to_string(),
                     "latest_break_type".to_string(),
                     "pda_survival_regime".to_string(),
+                    "setup_model_id".to_string(),
+                    "setup_progress_state".to_string(),
                 ],
                 numerical_features: vec![
                     "evidence_quality_score".to_string(),
@@ -232,6 +264,17 @@ impl CatBoostCompatiblePolicyEngine {
                     "pda_bull_count".to_string(),
                     "liquidity_sweep_count".to_string(),
                     "recovery_event_a_streak".to_string(),
+                    "cisd_run_length_observed".to_string(),
+                    "cisd_impulse_atr".to_string(),
+                    "cisd_body_ratio_mean".to_string(),
+                    "rb_wick_body_ratio".to_string(),
+                    "rb_close_location_ratio".to_string(),
+                    "bars_between_cisd_and_rb".to_string(),
+                    "ema19_distance_bps".to_string(),
+                    "realized_vol_zscore".to_string(),
+                    "hmm_accumulation_prob".to_string(),
+                    "hmm_manipulation_expansion_prob".to_string(),
+                    "hmm_distribution_prob".to_string(),
                 ],
                 target_label_space: vec![
                     "Observe".to_string(),

@@ -1,4 +1,6 @@
 use super::*;
+use ict_engine::application::regime::consumer_bundle_adapter::RegimeConsumerBundleAdapter;
+use std::path::Path;
 
 #[derive(Debug, Serialize)]
 struct PersistedCandlesFile {
@@ -148,12 +150,155 @@ pub(crate) struct AnalyzeLiveCommandInput<'a> {
     pub futures_symbol: Option<&'a str>,
     pub spot_symbol: Option<&'a str>,
     pub options_symbol: Option<&'a str>,
+    pub options_volatility_proxy_symbol: Option<&'a str>,
     pub spot_kind: Option<&'a str>,
     pub futures_backend: &'a str,
     pub aux_backend: &'a str,
     pub futures_base_url: &'a str,
     pub aux_base_url: &'a str,
     pub state_dir: &'a str,
+    pub output_format: &'a str,
+    pub regime_consumer_bundle: Option<&'a str>,
+    pub regime_consumer_bundle_strict: bool,
+    pub apply_regime_bundle_bbn_soft_evidence: bool,
+}
+
+pub(crate) struct AnalyzeLiveShellInput<'a> {
+    pub symbol: &'a str,
+    pub futures_symbol: Option<&'a str>,
+    pub spot_symbol: Option<&'a str>,
+    pub options_symbol: Option<&'a str>,
+    pub options_volatility_proxy_symbol: Option<&'a str>,
+    pub spot_kind: Option<&'a str>,
+    pub futures_backend: &'a str,
+    pub aux_backend: &'a str,
+    pub external_http_base_url: &'a str,
+    pub crypto_public_base_url: &'a str,
+    pub state_dir: &'a str,
+    pub output_format: &'a str,
+    pub regime_consumer_bundle: Option<&'a str>,
+    pub regime_consumer_bundle_strict: bool,
+    pub apply_regime_bundle_bbn_soft_evidence: bool,
+}
+
+pub(crate) fn analyze_live_shell(input: AnalyzeLiveShellInput<'_>) -> Result<()> {
+    let AnalyzeLiveShellInput {
+        symbol,
+        futures_symbol,
+        spot_symbol,
+        options_symbol,
+        options_volatility_proxy_symbol,
+        spot_kind,
+        futures_backend,
+        aux_backend,
+        external_http_base_url,
+        crypto_public_base_url,
+        state_dir,
+        output_format,
+        regime_consumer_bundle,
+        regime_consumer_bundle_strict,
+        apply_regime_bundle_bbn_soft_evidence,
+    } = input;
+    ensure_state_dir_ready(state_dir)?;
+    let futures_base_url = ict_engine::application::data_sources::resolve_live_backend_base_url(
+        futures_backend,
+        external_http_base_url,
+        crypto_public_base_url,
+    );
+    let aux_base_url = ict_engine::application::data_sources::resolve_live_backend_base_url(
+        aux_backend,
+        external_http_base_url,
+        crypto_public_base_url,
+    );
+    analyze_live_command(AnalyzeLiveCommandInput {
+        symbol,
+        futures_symbol,
+        spot_symbol,
+        options_symbol,
+        options_volatility_proxy_symbol,
+        spot_kind,
+        futures_backend,
+        aux_backend,
+        futures_base_url: &futures_base_url,
+        aux_base_url: &aux_base_url,
+        state_dir,
+        output_format,
+        regime_consumer_bundle,
+        regime_consumer_bundle_strict,
+        apply_regime_bundle_bbn_soft_evidence,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedLiveSymbolInputs {
+    futures_symbol: String,
+    spot_symbol: String,
+    options_symbol: String,
+    spot_kind: String,
+}
+
+fn resolve_live_symbol_inputs(
+    symbol: &str,
+    futures_symbol: Option<&str>,
+    spot_symbol: Option<&str>,
+    options_symbol: Option<&str>,
+    spot_kind: Option<&str>,
+) -> Result<ResolvedLiveSymbolInputs> {
+    let inferred = ict_engine::market_catalog::load_market_catalog(std::path::Path::new(env!(
+        "CARGO_MANIFEST_DIR"
+    )))
+    .ok()
+    .and_then(|catalog| {
+        ict_engine::application::data_sources::analyze_live_inferred_symbols(&catalog, symbol)
+    });
+    let futures_symbol = futures_symbol
+        .map(str::to_string)
+        .or_else(|| inferred.as_ref().map(|defaults| defaults.futures_symbol.clone()))
+        .ok_or_else(|| {
+            let inferred_examples = inferred
+                .as_ref()
+                .map(|defaults| {
+                    format!(
+                        "Catalog defaults exist: futures={} spot={} options={}.",
+                        defaults.futures_symbol, defaults.spot_symbol, defaults.options_symbol
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "Try a market key with built-in defaults such as NQ, ES, GC, or CL.".to_string()
+                });
+            anyhow!(
+                "analyze-live '{}' needs live symbol defaults. {} Otherwise pass --futures-symbol <symbol> --spot-symbol <symbol> --options-symbol <symbol>. Provider-first path: ict-engine provider-status --domain live_runtime --agent",
+                symbol,
+                inferred_examples
+            )
+        })?;
+    let spot_symbol = spot_symbol
+        .map(str::to_string)
+        .or_else(|| inferred.as_ref().map(|defaults| defaults.spot_symbol.clone()))
+        .ok_or_else(|| {
+            anyhow!(
+                "analyze-live '{}' still needs a spot symbol. Pass --spot-symbol <symbol> or choose a market key with built-in defaults such as NQ, ES, GC, or CL. Provider-first path: ict-engine provider-status --domain live_runtime --agent",
+                symbol
+            )
+        })?;
+    let options_symbol = options_symbol
+        .map(str::to_string)
+        .or_else(|| inferred.as_ref().map(|defaults| defaults.options_symbol.clone()))
+        .ok_or_else(|| {
+            anyhow!(
+                "analyze-live '{}' still needs an options symbol. Pass --options-symbol <symbol> or choose a market key with built-in defaults such as NQ, ES, GC, or CL. Provider-first path: ict-engine provider-status --domain live_runtime --agent",
+                symbol
+            )
+        })?;
+    Ok(ResolvedLiveSymbolInputs {
+        futures_symbol,
+        spot_symbol,
+        options_symbol,
+        spot_kind: spot_kind
+            .map(str::to_string)
+            .or_else(|| inferred.as_ref().map(|defaults| defaults.spot_kind.clone()))
+            .unwrap_or_else(|| "equity".to_string()),
+    })
 }
 
 pub(crate) fn analyze_live_command(input: AnalyzeLiveCommandInput<'_>) -> Result<()> {
@@ -162,34 +307,38 @@ pub(crate) fn analyze_live_command(input: AnalyzeLiveCommandInput<'_>) -> Result
         futures_symbol,
         spot_symbol,
         options_symbol,
+        options_volatility_proxy_symbol,
         spot_kind,
         futures_backend,
         aux_backend,
         futures_base_url,
         aux_base_url,
         state_dir,
+        output_format,
+        regime_consumer_bundle,
+        regime_consumer_bundle_strict,
+        apply_regime_bundle_bbn_soft_evidence,
     } = input;
-    let inferred = match symbol.to_ascii_uppercase().as_str() {
-        "NQ" => Some(("NQ=F", "QQQ", "QQQ", "equity")),
-        "ES" => Some(("ES=F", "SPY", "SPY", "equity")),
-        "YM" => Some(("YM=F", "DIA", "DIA", "equity")),
-        "GC" => Some(("GC=F", "GLD", "GLD", "etf")),
-        "CL" => Some(("CL=F", "USO", "USO", "etf")),
-        _ => None,
-    };
-    let futures_symbol = futures_symbol
-        .or_else(|| inferred.map(|item| item.0))
-        .ok_or_else(|| anyhow!("missing live futures_symbol for symbol '{}'", symbol))?;
-    let spot_symbol = spot_symbol
-        .or_else(|| inferred.map(|item| item.1))
-        .ok_or_else(|| anyhow!("missing live spot_symbol for symbol '{}'", symbol))?;
-    let options_symbol = options_symbol
-        .or_else(|| inferred.map(|item| item.2))
-        .unwrap_or(spot_symbol);
-    let spot_kind_raw = spot_kind
-        .or_else(|| inferred.map(|item| item.3))
-        .unwrap_or("equity");
-    let spot_kind_label = spot_kind_raw.to_string();
+    let regime_bundle_adapter = regime_consumer_bundle
+        .map(|bundle_path| {
+            RegimeConsumerBundleAdapter::load_optional(
+                Some(Path::new(bundle_path)),
+                regime_consumer_bundle_strict,
+            )
+        })
+        .transpose()?;
+    let resolved_symbols = resolve_live_symbol_inputs(
+        symbol,
+        futures_symbol,
+        spot_symbol,
+        options_symbol,
+        spot_kind,
+    )?;
+    let futures_symbol = resolved_symbols.futures_symbol.as_str();
+    let spot_symbol = resolved_symbols.spot_symbol.as_str();
+    let options_symbol = resolved_symbols.options_symbol.as_str();
+    let spot_kind_raw = resolved_symbols.spot_kind.as_str();
+    let spot_kind_label = resolved_symbols.spot_kind.clone();
     let spot_kind = SpotInstrumentKind::parse(spot_kind_raw)?;
     let futures_backend = LiveDataBackend::parse(futures_backend)?;
     let aux_backend = LiveDataBackend::parse(aux_backend)?;
@@ -275,8 +424,12 @@ pub(crate) fn analyze_live_command(input: AnalyzeLiveCommandInput<'_>) -> Result
     let spot_live_price = aux_provider
         .fetch_spot_last_price(spot_kind, spot_symbol)
         .ok();
-    let options_summary = aux_provider
-        .fetch_options_chain_summary(options_symbol)
+    let options_summary =
+        ict_engine::application::data_sources::fetch_options_summary_with_fallback(
+            aux_provider.as_ref(),
+            options_symbol,
+            options_volatility_proxy_symbol,
+        )
         .unwrap_or_else(|_| neutral_options_summary(options_symbol));
 
     let auxiliary = aux_provider.build_auxiliary_evidence(
@@ -308,11 +461,14 @@ pub(crate) fn analyze_live_command(input: AnalyzeLiveCommandInput<'_>) -> Result
                 d1: Some(&htf),
                 h4: Some(&htf_4h),
                 h1: Some(&mtf),
+                m30: None,
                 m15: Some(&ltf),
                 m5: Some(&ltf_5m),
                 m1: Some(&ltf_1m),
             },
         },
+        regime_bundle_adapter: regime_bundle_adapter.as_ref(),
+        apply_regime_bundle_bbn_soft_evidence,
         execution_focus: true,
     })?;
 
@@ -417,7 +573,7 @@ pub(crate) fn analyze_live_command(input: AnalyzeLiveCommandInput<'_>) -> Result
         report.supporting.auxiliary.as_ref(),
     );
     report.analysis.smt_correlation =
-        build_smt_correlation_section(futures_symbol, spot_symbol, &ltf, &spot_candles, auxiliary);
+        build_smt_correlation_section(futures_symbol, spot_symbol, &ltf, &spot_candles, auxiliary)?;
     report.analysis.regime_bayesian = build_regime_bayesian_section(
         &report.supporting.model_state.hmm_state,
         &report.supporting.model_state.regime_probs,
@@ -458,6 +614,23 @@ pub(crate) fn analyze_live_command(input: AnalyzeLiveCommandInput<'_>) -> Result
         &artifact_family_trends,
         &artifact_consumed_impact_summary,
     );
+    if let Some(bundle_path) = regime_consumer_bundle {
+        if let Some(adapter) = regime_bundle_adapter.as_ref() {
+            let trace_entries = adapter.trace_entries(Some(Path::new(bundle_path)));
+            report
+                .supporting
+                .artifact_action_summary
+                .push(format!("regime_bundle_trace:{}", trace_entries.join("|")));
+            report
+                .supporting
+                .artifact_action_summary
+                .extend(trace_entries);
+            adapter.append_read_only_bbn_diagnostics(
+                &mut report.supporting.artifact_action_summary,
+                &mut report.supporting.pre_bayes_evidence_filter,
+            );
+        }
+    }
     report.supporting.artifact_decision_summary =
         artifact_decision_summary_for_symbol(state_dir, symbol)?;
     report.supporting.artifact_decision_section = artifact_decision_section_from_parts(
@@ -510,11 +683,54 @@ pub(crate) fn analyze_live_command(input: AnalyzeLiveCommandInput<'_>) -> Result
         &mut report.supporting.rollback_recommendation,
     );
 
-    ict_engine::application::reporting::emit_analyze_live_output_with_input(
+    ict_engine::application::reporting::dispatch_analyze_live_output(
         &report,
-        ict_engine::application::reporting::AnalyzeLiveOutputEmitInput {
+        ict_engine::application::reporting::AnalyzeLiveOutputDispatchInput {
+            output_format,
             include_pda_sequence_summary: false,
             redact_paths: false,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_live_symbol_inputs_infers_catalog_defaults_for_nq() {
+        let resolved = resolve_live_symbol_inputs("NQ", None, None, None, None).unwrap();
+
+        assert_eq!(resolved.futures_symbol, "NQ=F");
+        assert_eq!(resolved.spot_symbol, "QQQ");
+        assert_eq!(resolved.options_symbol, "QQQ");
+        assert_eq!(resolved.spot_kind, "equity");
+    }
+
+    #[test]
+    fn resolve_live_symbol_inputs_guides_when_defaults_are_missing() {
+        let err = resolve_live_symbol_inputs("caller-symbol", None, None, None, None).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("provider-status --domain live_runtime --agent"));
+        assert!(err.to_string().contains("NQ, ES, GC, or CL"));
+    }
+
+    #[test]
+    fn resolve_live_symbol_inputs_accepts_explicit_symbols() {
+        let resolved = resolve_live_symbol_inputs(
+            "caller-symbol",
+            Some("ES=F"),
+            Some("SPY"),
+            Some("SPY"),
+            Some("equity"),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.futures_symbol, "ES=F");
+        assert_eq!(resolved.spot_symbol, "SPY");
+        assert_eq!(resolved.options_symbol, "SPY");
+        assert_eq!(resolved.spot_kind, "equity");
+    }
 }

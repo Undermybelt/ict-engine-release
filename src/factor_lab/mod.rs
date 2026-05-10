@@ -2,6 +2,7 @@ pub mod backtest;
 pub mod engine;
 pub mod factor_definition;
 pub mod metrics;
+pub mod oracle_probe;
 pub mod research;
 pub mod sparse;
 pub mod tucker;
@@ -20,6 +21,12 @@ pub use factor_definition::{
     PairedMarketQualityReport,
 };
 pub use metrics::BacktestMetrics;
+pub use oracle_probe::{
+    build_oracle_regime_probe_report, default_tiny_leg_regime_probe_config,
+    LayerContributionSurface, OracleRegimeProbeReport, ProbePromotionBoundary, RegimeProbeMode,
+    TinyLegRegimeProbeConfig, DEFAULT_EVALUATION_PERIODS, TINY_LEG_FEATURE_COUNT,
+    TINY_LEG_MERGED_CLUSTER_COUNT, TINY_LEG_RAW_CLUSTER_COUNT,
+};
 pub use research::{FactorLab, ResearchReport};
 pub use sparse::{
     adaptive_lambda, sparse_select_by_softshrink, sparsity_ratio_within_bounds, SparseSelection,

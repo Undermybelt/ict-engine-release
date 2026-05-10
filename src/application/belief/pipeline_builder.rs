@@ -18,7 +18,9 @@ use crate::types::{Candle, Direction, Regime};
 pub use super::pipeline_shared::{
     adapt_factor_pipeline_debug_report, apply_factor_outcome_overlay,
     build_canonical_belief_report, build_canonical_belief_report_with_pda,
+    build_canonical_belief_report_with_pda_and_structural_prior_state,
     build_canonical_belief_snapshot, build_canonical_belief_snapshot_with_pda,
+    build_canonical_belief_snapshot_with_pda_and_structural_prior_state,
     build_factor_pipeline_debug_report, build_pre_bayes_entry_quality_bridge, combine_bias_vectors,
     effective_trade_outcome_win_probability, multi_timeframe_entry_quality_bias, probability_map,
     raw_liquidity_context_trace, raw_market_regime_trace, raw_multi_timeframe_resonance_trace,

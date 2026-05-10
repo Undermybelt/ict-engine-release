@@ -1,4 +1,5 @@
 pub mod debug_report;
+pub mod execution_temporal_controls;
 pub mod ising_overlay;
 pub mod jump_model_sidecar;
 pub mod logic_family;
@@ -12,7 +13,11 @@ pub mod pre_bayes_summary;
 pub mod shadow_policy_surface;
 pub mod shared;
 pub mod spectral_overlay;
+pub mod structural_temporal_adjustment;
 
+pub use execution_temporal_controls::{
+    apply_duration_sizing_adjustment, apply_regime_execution_guardrail, duration_sizing_scale,
+};
 pub use ising_overlay::{apply_ising_overlay, IsingOverlayState};
 pub use jump_model_sidecar::{
     backtest_calibrated_market_jump_weight, build_jump_model_regime_sidecar,
@@ -27,10 +32,13 @@ pub use market_profiles::{market_behavior_profile_for_family, market_category_fo
 pub use ou_overlay::{apply_ou_overlay, OuOverlayState};
 pub use pipeline_builder::{
     adapt_factor_pipeline_debug_report, build_canonical_belief_report,
-    build_canonical_belief_report_with_pda, build_canonical_belief_snapshot,
-    build_canonical_belief_snapshot_with_pda, build_expansion_factor_pipeline_report,
-    build_expansion_factor_pipeline_report_with_registry, build_factor_pipeline_debug_report,
-    infer_market_from_symbol, pre_bayes_evidence_policy, FactorPipelineDebugReport,
+    build_canonical_belief_report_with_pda,
+    build_canonical_belief_report_with_pda_and_structural_prior_state,
+    build_canonical_belief_snapshot, build_canonical_belief_snapshot_with_pda,
+    build_canonical_belief_snapshot_with_pda_and_structural_prior_state,
+    build_expansion_factor_pipeline_report, build_expansion_factor_pipeline_report_with_registry,
+    build_factor_pipeline_debug_report, infer_market_from_symbol, pre_bayes_evidence_policy,
+    FactorPipelineDebugReport,
 };
 pub use pipeline_shared::{
     apply_factor_outcome_overlay, build_pre_bayes_entry_quality_bridge, combine_bias_vectors,
@@ -47,3 +55,7 @@ pub use pre_bayes_summary::{
 };
 pub use shadow_policy_surface::{build_belief_shadow_policy_surface, BeliefShadowPolicySurface};
 pub use spectral_overlay::{apply_spectral_overlay, SpectralOverlayState};
+pub use structural_temporal_adjustment::{
+    blend_branch_prior_with_transition_prior, blend_node_posterior_with_duration_prior,
+    transition_adjusted_branch_posteriors, transition_adjusted_node_posteriors,
+};

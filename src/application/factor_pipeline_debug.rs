@@ -11,7 +11,7 @@ use crate::application::decision_utils::parse_research_objective;
 use crate::application::decision_utils::research_objective_label;
 use crate::application::multi_timeframe_inputs::{
     build_multi_timeframe_research_signal, build_multi_timeframe_summary,
-    resolve_multi_timeframe_inputs,
+    resolve_multi_timeframe_inputs, MultiTimeframeInputPaths,
 };
 use crate::config::env_f64;
 use crate::data::load_candles;
@@ -25,6 +25,7 @@ pub struct FactorPipelineDebugCommandInput<'a> {
     pub data_1m: Option<&'a str>,
     pub data_5m: Option<&'a str>,
     pub data_15m: Option<&'a str>,
+    pub data_30m: Option<&'a str>,
     pub data_1h: Option<&'a str>,
     pub data_4h: Option<&'a str>,
     pub data_1d: Option<&'a str>,
@@ -39,13 +40,24 @@ pub fn factor_pipeline_debug_command(input: FactorPipelineDebugCommandInput<'_>)
         data_1m,
         data_5m,
         data_15m,
+        data_30m,
         data_1h,
         data_4h,
         data_1d,
     } = input;
     let objective_mode = parse_research_objective(objective)?;
-    let resolved_multi_timeframe_inputs =
-        resolve_multi_timeframe_inputs(data, data_1m, data_5m, data_15m, data_1h, data_4h, data_1d);
+    let resolved_multi_timeframe_inputs = resolve_multi_timeframe_inputs(
+        data,
+        MultiTimeframeInputPaths {
+            data_1m,
+            data_5m,
+            data_15m,
+            data_30m,
+            data_1h,
+            data_4h,
+            data_1d,
+        },
+    );
     let multi_timeframe_summary =
         build_multi_timeframe_summary(data, &resolved_multi_timeframe_inputs)?
             .into_iter()

@@ -8,6 +8,11 @@
 
 **Tech Stack:** Rust, Cargo, existing `src/application/*` module layout, bin-side shell modules in `src/*.rs`, markdown docs under `docs/`.
 
+Status note (2026-04-24)
+- this plan is now largely executed historical context
+- the `main.rs` runtime hotspot extraction line landed after this plan was written
+- use `docs/plans/2026-04-24-post-main-debt-inventory.md` for post-`main.rs` debt status
+
 ---
 
 ## Scope Summary

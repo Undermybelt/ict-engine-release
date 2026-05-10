@@ -309,6 +309,12 @@ mod tests {
                     ("liquidity_context".to_string(), "favorable".to_string()),
                     ("entry_quality".to_string(), "high".to_string()),
                 ]),
+                uses_soft_evidence: false,
+                soft_market_regime_distribution: BTreeMap::new(),
+                soft_liquidity_context_distribution: BTreeMap::new(),
+                soft_factor_alignment_distribution: BTreeMap::new(),
+                soft_factor_uncertainty_distribution: BTreeMap::new(),
+                soft_multi_timeframe_resonance_distribution: BTreeMap::new(),
                 microstructure_context: None,
                 market_policy: None,
             })

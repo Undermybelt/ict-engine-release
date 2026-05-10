@@ -76,3 +76,20 @@ def resolve_policy_training_dir(anchor: str | Path) -> Path:
     if override is not None:
         return override
     return (resolve_repo_root(anchor) / "state" / "policy_training").resolve()
+
+
+def cleaned_data_root_ready(anchor: str | Path, data_root: str | Path | None = None) -> bool:
+    root = (
+        Path(data_root).expanduser().resolve()
+        if data_root is not None
+        else resolve_cleaned_data_root(anchor)
+    )
+    expected = [
+        root / "cleaned-1m",
+        root / "cleaned-5m",
+        root / "cleaned-15m",
+        root / "cleaned-1h",
+        root / "cleaned-4h",
+        root / "cleaned-1d",
+    ]
+    return all(path.exists() for path in expected)

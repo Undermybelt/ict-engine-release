@@ -1,0 +1,319 @@
+{
+  "schema_version": "factor-candidate-profile/v1",
+  "profile_id": "thrill3r_nq_auto_quant_v1",
+  "display_name": "Thrill3r NQ Auto-Quant Candidate Evidence v1",
+  "opt_in_only": true,
+  "summary": "Personal reusable Auto-Quant evidence lane: local backtest zips, cross-market slices, and regime benchmark bundles for NQ factor candidate packaging.",
+  "candidate_overrides": [
+    {
+      "candidate_id": "family_f_vrp_compression_15m_v1",
+      "artifact_source": {
+        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-07_05-16-40.zip"
+      },
+      "target_market_hypothesis": [
+        "NQ/USD",
+        "GLD/USD",
+        "IWM/USD"
+      ],
+      "cross_market_metrics": {
+        "GLD/USD": {
+          "sharpe": 0.446,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        },
+        "SPY/USD": {
+          "sharpe": -0.182,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        },
+        "IWM/USD": {
+          "sharpe": 0.897,
+          "trade_count": 16,
+          "profit_factor": 7.40,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        },
+        "DIA/USD": {
+          "sharpe": -0.563,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        }
+      }
+    },
+    {
+      "candidate_id": "family_f_trend_pullback_dense_15m_v1",
+      "artifact_source": {
+        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-07_05-12-26.zip"
+      },
+      "cross_market_metrics": {
+        "GLD/USD": {
+          "sharpe": 0.641,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        },
+        "SPY/USD": {
+          "sharpe": 0.605,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        },
+        "IWM/USD": {
+          "sharpe": -0.397,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        },
+        "DIA/USD": {
+          "sharpe": -0.269,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        }
+      }
+    },
+    {
+      "candidate_id": "family_d_liquidity_sweep_reclaim_15m_wide_v1",
+      "artifact_source": {
+        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-07_05-16-11.zip"
+      },
+      "cross_market_metrics": {
+        "GLD/USD": {
+          "sharpe": 0.784,
+          "profit_factor": 2.04,
+          "total_profit_pct": 6.71,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        },
+        "SPY/USD": {
+          "sharpe": -0.290,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        },
+        "IWM/USD": {
+          "sharpe": 0.224,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        },
+        "DIA/USD": {
+          "sharpe": -0.048,
+          "window": "2025-05-07->2026-05-06",
+          "evidence_source": "slice_92_cross_market"
+        }
+      }
+    },
+    {
+      "candidate_id": "family_a_killzone_breakout_1h_v1",
+      "artifact_source": {
+        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-08_22-34-12.zip"
+      },
+      "target_market_hypothesis": [
+        "NQ/USD",
+        "IWM/USD",
+        "GLD/USD"
+      ],
+      "cross_market_metrics": {
+        "SPY/USD": {
+          "sharpe": -0.17244460172173695,
+          "trade_count": 31,
+          "profit_factor": 0.8465574869257699,
+          "total_profit_pct": -1.39,
+          "max_drawdown_pct": 3.13272,
+          "win_rate_pct": 41.935484,
+          "window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+          "evidence_source": "killzone_cross_market_freqtrade_zip"
+        },
+        "IWM/USD": {
+          "sharpe": 0.1429,
+          "trade_count": 46,
+          "profit_factor": 1.0891,
+          "total_profit_pct": 1.61,
+          "max_drawdown_pct": 5.3013,
+          "win_rate_pct": 47.8261,
+          "window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+          "evidence_source": "killzone_cross_market_stdout"
+        },
+        "GLD/USD": {
+          "sharpe": 0.437329739437554,
+          "trade_count": 35,
+          "profit_factor": 1.4245078269191331,
+          "total_profit_pct": 7.95,
+          "max_drawdown_pct": 5.288256,
+          "win_rate_pct": 57.142857,
+          "window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+          "evidence_source": "killzone_cross_market_freqtrade_zip"
+        }
+      }
+    },
+    {
+      "candidate_id": "family_a_killzone_displacement_pending_v1",
+      "artifact_source": {
+        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-08_23-06-31.zip"
+      },
+      "target_market_hypothesis": [
+        "NQ/USD",
+        "SPY/USD",
+        "IWM/USD",
+        "GLD/USD"
+      ],
+      "cross_market_metrics": {
+        "SPY/USD": {
+          "sharpe": 0.2251,
+          "trade_count": 22,
+          "profit_factor": 1.3429,
+          "total_profit_pct": 1.66,
+          "max_drawdown_pct": 2.1984,
+          "win_rate_pct": 50.0,
+          "window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+          "evidence_source": "killzone_displacement_ibkr_freqtrade_zip"
+        },
+        "IWM/USD": {
+          "sharpe": 0.1712,
+          "trade_count": 27,
+          "profit_factor": 1.1792,
+          "total_profit_pct": 1.95,
+          "max_drawdown_pct": 2.5460,
+          "win_rate_pct": 48.1481,
+          "window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+          "evidence_source": "killzone_displacement_ibkr_stdout"
+        },
+        "GLD/USD": {
+          "sharpe": 0.6078,
+          "trade_count": 24,
+          "profit_factor": 2.1495,
+          "total_profit_pct": 10.88,
+          "max_drawdown_pct": 3.8617,
+          "win_rate_pct": 62.5,
+          "window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+          "evidence_source": "killzone_displacement_ibkr_stdout"
+        }
+      },
+      "evidence_window": "freqtrade 8Y: 2018-01-01 -> 2025-12-31"
+    },
+    {
+      "candidate_id": "family_a_fvg_retrace_1h_v1",
+      "artifact_source": {
+        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-08_23-46-20.zip"
+      },
+      "target_market_hypothesis": [
+        "NQ/USD",
+        "SPY/USD",
+        "IWM/USD",
+        "GLD/USD"
+      ],
+      "cross_market_metrics": {
+        "SPY/USD": {
+          "sharpe": 0.37711711164338024,
+          "trade_count": 11,
+          "profit_factor": 2.6760070052539406,
+          "total_profit_pct": 0.61,
+          "max_drawdown_pct": 0.2704,
+          "win_rate_pct": 81.818182,
+          "window": "2025-05-17 13:00:00->2025-12-30 20:00:00",
+          "evidence_source": "fvg_retrace_cross_market_freqtrade_zip"
+        },
+        "IWM/USD": {
+          "sharpe": 0.43410326248671327,
+          "trade_count": 2,
+          "profit_factor": 0.0,
+          "total_profit_pct": 0.19,
+          "max_drawdown_pct": 0.0,
+          "win_rate_pct": 100.0,
+          "window": "2025-05-17 13:00:00->2025-12-30 20:00:00",
+          "evidence_source": "fvg_retrace_cross_market_freqtrade_zip"
+        },
+        "GLD/USD": {
+          "sharpe": -0.195126400678581,
+          "trade_count": 10,
+          "profit_factor": 0.5787691803636762,
+          "total_profit_pct": -0.62,
+          "max_drawdown_pct": 1.084161,
+          "win_rate_pct": 40.0,
+          "window": "2025-05-17 13:00:00->2025-12-30 20:00:00",
+          "evidence_source": "fvg_retrace_cross_market_freqtrade_zip"
+        }
+      },
+      "evidence_window": "freqtrade 8Y NQ: 2018-01-01 -> 2025-12-31; cross-market 1h: 2025-05-17 -> 2025-12-30"
+    },
+    {
+      "candidate_id": "family_a_fvg_retrace_5m_v1",
+      "artifact_source": {
+        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-08_23-55-11.zip"
+      },
+      "target_market_hypothesis": [
+        "NQ/USD"
+      ],
+      "evidence_window": "freqtrade 8Y NQ 5m: 2018-01-03 -> 2025-12-31"
+    },
+    {
+      "candidate_id": "family_a_killzone_breakout_15m_v1",
+      "artifact_source": {
+        "strategy_library_json": "/tmp/ict-engine-family-a-nq-15m-profile/.deps/auto-quant/strategy_library_15m.json"
+      },
+      "target_market_hypothesis": [
+        "NQ/USD"
+      ],
+      "evidence_window": "historical 15m profile export captured at /tmp/ict-engine-family-a-nq-15m-profile"
+    },
+    {
+      "candidate_id": "family_a_killzone_breakout_1d_regime_v1",
+      "artifact_source": {
+        "strategy_library_json": "/tmp/ict-engine-family-a-profile-1dregime-check/.deps/auto-quant/strategy_library_round3.json"
+      },
+      "target_market_hypothesis": [
+        "NQ/USD"
+      ],
+      "evidence_window": "historical 1d-regime profile export captured at /tmp/ict-engine-family-a-profile-1dregime-check"
+    },
+    {
+      "candidate_id": "family_a_killzone_breakout_1m_v1",
+      "artifact_source": {
+        "strategy_library_json": "/tmp/ict-engine-family-a-nq-1m-profile/.deps/auto-quant/strategy_library_1m.json"
+      },
+      "target_market_hypothesis": [
+        "NQ/USD"
+      ],
+      "evidence_window": "historical 1m profile export captured at /tmp/ict-engine-family-a-nq-1m-profile"
+    },
+    {
+      "candidate_id": "family_a_es_killzone_breakout_1h_v1",
+      "artifact_source": {
+        "strategy_library_json": "/tmp/ict-engine-family-a-es-profile/ES/auto_quant_strategy_library.json"
+      },
+      "target_market_hypothesis": [
+        "ES/USD"
+      ],
+      "evidence_window": "historical ES profile export captured at /tmp/ict-engine-family-a-es-profile"
+    },
+    {
+      "candidate_id": "family_a_eur_killzone_breakout_1h_v1",
+      "artifact_source": {
+        "strategy_library_json": "/tmp/ict-engine-family-a-eur-profile/EUR/auto_quant_strategy_library.json"
+      },
+      "target_market_hypothesis": [
+        "EUR/USD"
+      ],
+      "evidence_window": "historical EUR profile export captured at /tmp/ict-engine-family-a-eur-profile"
+    },
+    {
+      "candidate_id": "regime_primary_gate_pending_v1",
+      "pack_readiness_reason": null,
+      "artifact_source": {
+        "regime_benchmark_jsons": [
+          "/tmp/ict-engine-ibkr-probe/regime_factor_benchmark.nq.1d.post_transition_direction.ablation.base_pda_vol_regime_10y.t3.s30000.json",
+          "/tmp/ict-engine-ibkr-probe/regime_factor_benchmark.spy.1d.post_transition_direction.ablation.base_pda.t3.s30000.json",
+          "/tmp/ict-engine-ibkr-probe/regime_factor_benchmark.qqq.1d.post_transition_direction.ablation.base_pda.t3.s30000.json",
+          "/tmp/ict-engine-ibkr-probe/regime_factor_benchmark.gld.1d.post_transition_direction.ablation.base_pda.t3.s30000.json"
+        ]
+      },
+      "target_market_hypothesis": [
+        "NQ",
+        "SPY",
+        "QQQ",
+        "GLD"
+      ],
+      "base_timeframe": "1d",
+      "context_timeframes": [
+        "4h",
+        "1d"
+      ],
+      "evidence_window": "regime benchmark bundle: NQ 10y daily + SPY/QQQ/GLD daily cross-market validation"
+    }
+  ]
+}

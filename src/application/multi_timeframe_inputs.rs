@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use crate::application::data_sources::discover_tomac_futures_datasets;
 use crate::data::load_candles;
 
-pub const MULTI_TIMEFRAME_INTERVALS: [&str; 6] = ["1m", "5m", "15m", "1h", "4h", "1d"];
+pub const MULTI_TIMEFRAME_INTERVALS: [&str; 7] = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"];
 
 #[derive(Debug, Clone, Default)]
 pub struct MultiTimeframeResearchSignal {
@@ -28,6 +28,17 @@ impl ResolvedMultiTimeframeInputs {
     pub fn get(&self, interval: &str) -> Option<&str> {
         self.paths.get(interval).map(String::as_str)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MultiTimeframeInputPaths<'a> {
+    pub data_1m: Option<&'a str>,
+    pub data_5m: Option<&'a str>,
+    pub data_15m: Option<&'a str>,
+    pub data_30m: Option<&'a str>,
+    pub data_1h: Option<&'a str>,
+    pub data_4h: Option<&'a str>,
+    pub data_1d: Option<&'a str>,
 }
 
 pub fn parse_cleaned_continuous_identity(path: &str) -> Option<(String, String)> {
@@ -85,21 +96,17 @@ pub fn auto_resolve_multi_timeframe_inputs(primary_data: &str) -> ResolvedMultiT
 
 pub fn resolve_multi_timeframe_inputs(
     primary_data: &str,
-    data_1m: Option<&str>,
-    data_5m: Option<&str>,
-    data_15m: Option<&str>,
-    data_1h: Option<&str>,
-    data_4h: Option<&str>,
-    data_1d: Option<&str>,
+    input_paths: MultiTimeframeInputPaths<'_>,
 ) -> ResolvedMultiTimeframeInputs {
     let mut resolved = auto_resolve_multi_timeframe_inputs(primary_data);
     let explicit = [
-        ("1m", data_1m),
-        ("5m", data_5m),
-        ("15m", data_15m),
-        ("1h", data_1h),
-        ("4h", data_4h),
-        ("1d", data_1d),
+        ("1m", input_paths.data_1m),
+        ("5m", input_paths.data_5m),
+        ("15m", input_paths.data_15m),
+        ("30m", input_paths.data_30m),
+        ("1h", input_paths.data_1h),
+        ("4h", input_paths.data_4h),
+        ("1d", input_paths.data_1d),
     ];
     let explicit_count = explicit.iter().filter(|(_, path)| path.is_some()).count();
     for (interval, path) in explicit {
@@ -133,7 +140,8 @@ pub fn resolve_analyze_multi_timeframe_inputs(
     data_mtf: &str,
     data_ltf: &str,
 ) -> ResolvedMultiTimeframeInputs {
-    let mut resolved = resolve_multi_timeframe_inputs(data_ltf, None, None, None, None, None, None);
+    let mut resolved =
+        resolve_multi_timeframe_inputs(data_ltf, MultiTimeframeInputPaths::default());
     for (path, fallback) in [(data_htf, "1d"), (data_mtf, "1h"), (data_ltf, "15m")] {
         let interval = infer_interval_for_analyze_frame(path, fallback);
         resolved.paths.insert(interval, path.to_string());

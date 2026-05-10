@@ -18,6 +18,9 @@ impl Default for FactorRegistry {
         registry.register(FactorDefinition::structure_ict());
         registry.register(FactorDefinition::cross_market_smt());
         registry.register(FactorDefinition::options_hedging());
+        registry.register(FactorDefinition::crowding_herding());
+        registry.register(FactorDefinition::spectral_rhythm());
+        registry.register(FactorDefinition::session_liquidity());
         registry
     }
 }

@@ -41,11 +41,15 @@ pub struct AnalyzeSupporting {
     pub ict: AnalyzeIctSummary,
     pub entry_quality: AnalyzeEntryQualitySummary,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub auxiliary: Option<crate::data::realtime::openalice::AuxiliaryMarketEvidence>,
+    pub auxiliary: Option<crate::data::realtime::market_support::AuxiliaryMarketEvidence>,
     pub decision: crate::planner::ProbabilisticDecisionSnapshot,
+    #[serde(skip_serializing, default)]
+    pub entry_model_packets: crate::application::entry_models::EntryModelPacketStore,
     pub trade_outcome: AnalyzeTradeOutcomeSummary,
     pub factor_diagnostics: crate::factor_lab::FactorDiagnostics,
     pub pre_bayes_evidence_filter: crate::state::PreBayesEvidenceFilter,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub market_state_evidence: Vec<String>,
     pub pre_bayes_entry_quality_bridge: crate::state::PreBayesEntryQualityBridge,
     pub objective_jump_weight: Option<f64>,
     pub canonical_belief_report: crate::reporting::belief::BeliefReportPacket,

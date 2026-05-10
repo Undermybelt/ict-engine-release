@@ -37,3 +37,11 @@ So CPT loader smoke test could not be verified through `cargo test` yet.
 Once unrelated `CascadeResult` compile issue is fixed, run:
 - `cargo test bbn::trading::cpt_init::tests::loads_and_applies_tomac_cpt_init -- --nocapture`
 - then a higher-level inference smoke test against `trade_evidence_from_labels`
+
+## Offline Structure Candidate Boundary
+
+- Runtime remains a fixed DAG consumer.
+- New offline structure-learning candidate artifacts must use:
+  - `bbn_structure_learning_rows.jsonl`
+  - `bbn_structure_candidate_artifact.json`
+- Candidate artifacts are review/import inputs only; they are not permission to run online edge search in runtime.

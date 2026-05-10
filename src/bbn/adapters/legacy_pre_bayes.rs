@@ -161,6 +161,14 @@ pub fn belief_evidence_packet_from_pre_bayes_filter(
         timed_pda_summary,
         multi_timeframe_evidence,
         evidence_assignments: filter.evidence_assignments.clone(),
+        uses_soft_evidence: filter.uses_soft_evidence,
+        soft_market_regime_distribution: filter.soft_market_regime_distribution.clone(),
+        soft_liquidity_context_distribution: filter.soft_liquidity_context_distribution.clone(),
+        soft_factor_alignment_distribution: filter.soft_factor_alignment_distribution.clone(),
+        soft_factor_uncertainty_distribution: filter.soft_factor_uncertainty_distribution.clone(),
+        soft_multi_timeframe_resonance_distribution: filter
+            .soft_multi_timeframe_resonance_distribution
+            .clone(),
         microstructure_context: None,
         market_policy: None,
     }

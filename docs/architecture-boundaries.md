@@ -20,6 +20,9 @@ ict-engine has a large `src/main.rs`, growing workflow/reporting surfaces, and m
 - `main.rs` may wire outputs, but new ensemble logic should not live there.
 - New regime posterior/voting types belong in `domain/*` or `application/*`, not inline in CLI.
 - New persisted audit artifacts must be defined in `state/types.rs` and persisted via `state/persistence.rs`.
+- Public consumer-facing orchestration must remain ontology-free:
+  - public protocol should talk in terms of `strategy material packages`, `evidence requirements`, `provider/runtime requirements`, `dispatch`, `ingest`, and `rank`
+  - domain ontology (`MSS`, `FVG`, `CISD`, `OTE`, etc.) belongs only in internal research tooling or inside agent-produced materials stored under isolated state
 - External adapter / exchange / market-data integrations should prefer a JSON-first subprocess contract with stable error categories (`api`, `auth`, `network`, `rate_limit`, `validation`, `config`, `io`, `parse`) and keep paper/sim paths first-class before any live path.
 - For `ict-engine`, external adapter scope is read-only market data, snapshot/replay, and sim-oriented research support. No live order execution, withdrawals, transfers, staking, or broker-shell command surfaces belong in the default adapter boundary.
 - Cross-source workflow intake should prefer minimal primitive modules, explicit data->analysis->report separation, reusable SOP/skill crystallization, and typed workflow surfaces; avoid importing speculative theory stacks directly into trading inference.

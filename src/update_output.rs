@@ -1,5 +1,20 @@
 use super::*;
 
+fn structural_learning_evidence_line(
+    credit_class: Option<&str>,
+    success_credit: Option<f64>,
+    observation_weight: Option<f64>,
+) -> String {
+    format!(
+        "learning_semantics:{}",
+        ict_engine::state::structural_learning_semantics_summary(
+            credit_class,
+            success_credit,
+            observation_weight,
+        )
+    )
+}
+
 pub(crate) fn feedback_record_from_artifact(
     artifact: PendingUpdateArtifact,
     outcome_label: &str,
@@ -100,14 +115,15 @@ pub(crate) fn apply_update_outcome_to_executor_scorecards(
     quality_adjustment: i64,
 ) {
     for scorecard in scorecards {
-        match realized_outcome {
+        match realized_outcome.trim().to_ascii_lowercase().as_str() {
             "win" => scorecard.wins += 1,
-            "loss" => scorecard.losses += 1,
-            _ => scorecard.breakevens += 1,
+            "loss" | "invalidated" => scorecard.losses += 1,
+            "breakeven" | "abandoned" => scorecard.breakevens += 1,
+            _ => {}
         }
-        match realized_outcome {
+        match realized_outcome.trim().to_ascii_lowercase().as_str() {
             "win" => scorecard.validated_positive += 1,
-            "loss" => scorecard.validated_negative += 1,
+            "loss" | "invalidated" => scorecard.validated_negative += 1,
             _ => {}
         }
         scorecard.cumulative_quality_score += quality_adjustment;
@@ -215,6 +231,11 @@ pub(crate) fn emit_update_output(report: &UpdateReport, ensemble: bool) -> Resul
         .prompts
         .iter()
         .map(|prompt| format!("{}:{}:{}", prompt.stage, prompt.id, prompt.objective))
+        .chain(std::iter::once(structural_learning_evidence_line(
+            report.structural_learning_credit_class.as_deref(),
+            report.structural_learning_success_credit,
+            report.structural_learning_observation_weight,
+        )))
         .collect::<Vec<_>>();
     let reflection_next_candidates = report
         .recommended_next_command
@@ -284,4 +305,46 @@ pub(crate) fn emit_update_output(report: &UpdateReport, ensemble: bool) -> Resul
         }))?
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feedback_record_from_artifact_preserves_raw_not_followed_outcome() {
+        let mut artifact = PendingUpdateArtifact::default();
+        artifact.template_feedback.realized_outcome = "pending".to_string();
+
+        let feedback = feedback_record_from_artifact(artifact, "not_followed", None, None, None);
+
+        assert_eq!(feedback.realized_outcome, "not_followed");
+        assert_eq!(feedback.pnl, 0.0);
+    }
+
+    #[test]
+    fn apply_update_outcome_to_executor_scorecards_skips_not_followed_and_penalizes_invalidated() {
+        let mut scorecards = vec![EnsembleExecutorScorecard::default()];
+
+        apply_update_outcome_to_executor_scorecards(&mut scorecards, "not_followed", 0);
+        assert_eq!(scorecards[0].wins, 0);
+        assert_eq!(scorecards[0].losses, 0);
+        assert_eq!(scorecards[0].breakevens, 0);
+        assert_eq!(scorecards[0].validated_negative, 0);
+
+        apply_update_outcome_to_executor_scorecards(&mut scorecards, "invalidated", 0);
+        assert_eq!(scorecards[0].losses, 1);
+        assert_eq!(scorecards[0].validated_negative, 1);
+    }
+
+    #[test]
+    fn structural_learning_evidence_line_includes_fractional_semantics() {
+        let line =
+            structural_learning_evidence_line(Some("fractional_abandoned"), Some(0.25), Some(0.75));
+
+        assert_eq!(
+            line,
+            "learning_semantics:class=fractional_abandoned success_credit=0.250 observation_weight=0.750"
+        );
+    }
 }

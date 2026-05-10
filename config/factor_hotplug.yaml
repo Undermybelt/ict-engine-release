@@ -1,0 +1,14 @@
+# Factor Hot-Plug Configuration
+# Set any family to false to disable it at runtime.
+# This file is optional; when absent, all families are enabled (zero-config default).
+# Place in <state-dir>/factor_hotplug.yaml or set ICT_ENGINE_FACTOR_HOTPLUG_CONFIG env var.
+
+families:
+  trend_momentum: true
+  volatility_mean_reversion: true
+  structure_ict: true
+  cross_market_smt: true
+  options_hedging: true
+  crowding_herding: true
+  spectral_rhythm: true
+  session_liquidity: true

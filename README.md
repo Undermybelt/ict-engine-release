@@ -8,12 +8,13 @@ English first. 中文在后。
 
 ```bash
 cargo check
-cargo run -- --help
-cargo run -- analyze --help
-cargo run -- factor-research --help
+cargo build
+./target/debug/ict-engine --help
+./target/debug/ict-engine analyze --help
+./target/debug/ict-engine factor-research --help
 ```
 
-If you only want the core CLI, Rust is enough. Python scripts are optional research helpers.
+If you only want the core CLI, Rust is enough. For a first run that stays Rust-only, use the native research backend shown below. Python scripts and Auto-Quant are optional research helpers.
 
 ## Contributor baseline
 
@@ -27,35 +28,65 @@ All three must be green. CI (`.github/workflows/ci.yml`) runs these on every pus
 
 ## Common workflows
 
+### Manage Auto-Quant dependency
+
+```bash
+cargo run -- auto-quant-status --state-dir /tmp/ict-engine-auto-quant
+cargo run -- auto-quant-bootstrap --state-dir /tmp/ict-engine-auto-quant
+cargo run -- auto-quant-update --state-dir /tmp/ict-engine-auto-quant
+```
+
+These commands manage the local, pinned Auto-Quant checkout used by the integration work.
+
+For the Auto-Quant review loop:
+
+```bash
+cargo run -- factor-research --symbol DEMO --data examples/demo/demo-15m.json --backend auto-quant --state-dir /tmp/ict-engine-auto-quant
+cargo run -- auto-quant-adoption-review --symbol DEMO --state-dir /tmp/ict-engine-auto-quant
+cargo run -- auto-quant-adoption-decision --symbol DEMO --state-dir /tmp/ict-engine-auto-quant --decision adopt --rationale "approved for next bridge step"
+```
+
 ### Analyze market data
 
 ```bash
 cargo run -- analyze \
-  --symbol NQ \
+  --symbol <SYM> \
   --data-htf <1d.json> \
   --data-mtf <1h.json> \
   --data-ltf <15m.json> \
+  --state-dir /tmp/ict-engine-analyze \
   --human
 ```
 
 Human output starts with a trading-desk style summary:
 
 ```text
-NQ | Bull bias | Entry: medium | Gate: observe_only | Quality: 0.244
+<SYM> | Bull bias | Entry: medium | Gate: observe_only | Quality: 0.244
 Action: TUNE structure_ict
-Next: cargo run -- factor-research --symbol NQ --data <15m.json> --factor structure_ict
+Next: ict-engine factor-research --symbol <SYM> --data <15m.json> --state-dir /tmp/ict-engine-analyze
 ```
 
 ### Demo smoke run
 
 ```bash
-cargo run -- analyze --symbol DEMO --demo --human
+cargo run -- analyze \
+  --symbol DEMO \
+  --demo \
+  --state-dir /tmp/ict-engine-first-run-native \
+  --human
 
 cargo run -- factor-pipeline-debug \
   --symbol DEMO \
   --data examples/demo/demo-15m.json \
   --factor structure_ict \
   --objective expansion_manipulation
+
+cargo run -- factor-research \
+  --symbol DEMO \
+  --data examples/demo/demo-15m.json \
+  --state-dir /tmp/ict-engine-first-run-native \
+  --backend native \
+  --human
 ```
 
 Equivalent explicit-path form:
@@ -66,16 +97,20 @@ cargo run -- analyze \
   --data-htf examples/demo/demo-15m.json \
   --data-mtf examples/demo/demo-15m.json \
   --data-ltf examples/demo/demo-15m.json \
+  --state-dir /tmp/ict-engine-first-run-native \
   --human
 ```
 
+If you omit `--state-dir`, the CLI defaults to repo-local `state/`.
+
 This synthetic dataset is for first-run CLI verification only.
+It ships with about 52 candles, so it is intentionally too small for `backtest`, which needs at least 71.
 
 ### Diagnose why a factor or gate did not pass
 
 ```bash
 cargo run -- factor-pipeline-debug \
-  --symbol NQ \
+  --symbol <SYM> \
   --data <cleaned-15m.json> \
   --factor structure_ict \
   --objective expansion_manipulation
@@ -91,12 +126,60 @@ Read the key fields first:
 
 ### Run factor research
 
+Rust-only first run:
+
+Use this path when you want the no-pollution in-process Rust path and do not want to bootstrap Auto-Quant on first run.
+
 ```bash
 cargo run -- factor-research \
-  --symbol NQ \
+  --symbol <SYM> \
   --data <cleaned-15m.json> \
-  --objective expansion_manipulation
+  --objective expansion_manipulation \
+  --state-dir /tmp/ict-engine-first-run-native \
+  --backend native \
+  --human
 ```
+
+Auto-Quant path:
+
+```bash
+cargo run -- factor-research \
+  --symbol <SYM> \
+  --data <cleaned-15m.json> \
+  --objective expansion_manipulation \
+  --state-dir /tmp/ict-engine-auto-quant \
+  --backend auto-quant
+```
+
+### Market-data harness
+
+The public `market-data-harness` path is provider-neutral by default. It no longer fills gaps from repo-owned market presets.
+
+Preferred usage is an explicit request document:
+
+```bash
+cargo run -- market-data-harness \
+  --action plan \
+  --request-json examples/provider_requests/explicit-yfinance-request.json
+```
+
+Lightweight CLI shorthand is available for simple providers:
+
+```bash
+cargo run -- market-data-harness \
+  --action plan \
+  --market caller-request \
+  --role etf_reference \
+  --provider etf_reference=yfinance \
+  --symbol-spec etf_reference=SPY
+```
+
+For `ibkr` contracts or multi-role requests, use `--request-json` or `--request-stdin`.
+
+Auto-Quant notes:
+- first run may bootstrap a pinned dependency checkout under your chosen `--state-dir`
+- `uv` is required for the helper scripts
+- `prepare.py` may require `TA-Lib` (`brew install ta-lib`) unless you use the documented container fallback
 
 ### Read current research truth
 
@@ -105,20 +188,24 @@ cargo run -- factor-autoresearch-status --symbol <SYM> --state-dir <dir> --lates
 python3 scripts/research_verdict.py <state-or-result-dir>
 ```
 
+Auto-Quant integration note:
+- `factor-research` and `factor-autoresearch` now default to `--backend auto-quant`
+- pass `--backend native` if you explicitly want the Rust-only in-process path
+
 ## Output modes
 
 `analyze`, `backtest`, `factor-backtest`, `factor-research`, and `workflow-status` support four output surfaces:
 
 ```bash
-cargo run -- analyze --symbol NQ --data-htf <1d.json> --data-mtf <1h.json> --data-ltf <15m.json> --output-format json
-cargo run -- analyze --symbol NQ --data-htf <1d.json> --data-mtf <1h.json> --data-ltf <15m.json> --compact
-cargo run -- analyze --symbol NQ --data-htf <1d.json> --data-mtf <1h.json> --data-ltf <15m.json> --agent
-cargo run -- analyze --symbol NQ --data-htf <1d.json> --data-mtf <1h.json> --data-ltf <15m.json> --human
+cargo run -- analyze --symbol <SYM> --data-htf <1d.json> --data-mtf <1h.json> --data-ltf <15m.json> --state-dir /tmp/ict-engine-output-modes --output-format json
+cargo run -- analyze --symbol <SYM> --data-htf <1d.json> --data-mtf <1h.json> --data-ltf <15m.json> --state-dir /tmp/ict-engine-output-modes --compact
+cargo run -- analyze --symbol <SYM> --data-htf <1d.json> --data-mtf <1h.json> --data-ltf <15m.json> --state-dir /tmp/ict-engine-output-modes --agent
+cargo run -- analyze --symbol <SYM> --data-htf <1d.json> --data-mtf <1h.json> --data-ltf <15m.json> --state-dir /tmp/ict-engine-output-modes --human
 
-cargo run -- workflow-status --symbol NQ --state-dir state --output-format json
-cargo run -- workflow-status --symbol NQ --state-dir state --compact
-cargo run -- workflow-status --symbol NQ --state-dir state --agent
-cargo run -- workflow-status --symbol NQ --state-dir state --human
+cargo run -- workflow-status --symbol <SYM> --state-dir /tmp/ict-engine-output-modes --output-format json
+cargo run -- workflow-status --symbol <SYM> --state-dir /tmp/ict-engine-output-modes --compact
+cargo run -- workflow-status --symbol <SYM> --state-dir /tmp/ict-engine-output-modes --agent
+cargo run -- workflow-status --symbol <SYM> --state-dir /tmp/ict-engine-output-modes --human
 ```
 
 Use:
@@ -130,6 +217,7 @@ Use:
 Notes:
 - `--compact`, `--agent`, and `--human` are sugar for `--output-format <mode>`. Do not combine them with `--output-format`.
 - There is no `--json` alias; JSON is the default, so `workflow-status --output-format json` is the explicit form and plain `workflow-status` already prints JSON.
+- For no-pollution trials, prefer an explicit `--state-dir /tmp/...` instead of relying on the default repo-local `state/`.
 - `backtest` requires roughly 70+ candles (warmup + hold bars). The bundled `examples/demo/demo-15m.json` (~52 candles) is sized for `analyze`/`factor-backtest` and will error out from `backtest`. Point `--data` at a larger cleaned dataset when running `backtest`.
 
 Agent consumers should prefer:
@@ -144,7 +232,7 @@ Agent consumers should prefer:
 `workflow-status --human` prints concise terminal lines, for example:
 
 ```text
-NQ | analyze | action_blocked
+<SYM> | analyze | action_blocked
 Block: user_selected_historical_data_missing
 Latest: analyze | direction=Bull entry=medium gate=observe_only quality=0.244
 Next: Ask the user to choose the historical dataset...
@@ -164,6 +252,13 @@ Rules:
 - `--run` = execute backend
 - `--target` = show backend path
 - `--backend-help` = show non-executing backend summary
+- `--show-config` = print resolved repo/data/bin paths and `cleaned_data_ready`
+- wrappers refuse `--run` when the resolved cleaned-data root is not ready
+
+Important:
+- public wrappers must not assume the maintainer's local Tomac cleaned-data layout exists on another machine
+- inspect `--show-config` first
+- pass `--data-root /path/to/ict-cleaned-mtf` explicitly when you want real execution outside the author's workstation
 
 ## State truth
 
@@ -239,6 +334,12 @@ Then inspect the corresponding JSON artifacts.
 
 They are public wrappers over archived experiment backends. The wrappers are stable; the archived backends are still research-grade.
 
+### Can I assume the wrappers will find usable data on a fresh machine?
+
+No.
+Wrappers now expose `--show-config` and require explicit cleaned-data readiness before `--run`.
+If `cleaned_data_ready=false`, treat that as a setup error and pass `--data-root` explicitly.
+
 ### Can `--backend-help` show every backend argument?
 
 No. It shows a non-executing summary. Archived backends do not yet expose a stable public argparse surface.
@@ -256,6 +357,7 @@ Using the wrong input surface:
 
 ## Public docs
 
+- `docs/ict-engine-docs-catalog-2026-04-25.md` — trust map for canonical, historical, and retained negative-example docs
 - `docs/first-run.md`
 - `docs/research-system-map.md`
 - `docs/autoresearch-derived-surfaces-contract.md`
@@ -266,15 +368,16 @@ Using the wrong input surface:
 ## Internal release/agent docs
 
 - `docs/agent-first-runbook.md`
+- `docs/auto-quant-ictengine-integration-guide.md`
 - `docs/release-notes-draft.md`
 - `docs/release-mirror-runbook.md` — **authoritative release procedure**
 - `docs/external/external-patterns-synthesis-2026-04-23.md` — consolidated external pattern absorb/reject matrix
 
 ### Publishing policy (post-v0.0.1)
 
-- The source repo has no working publishing origin; GitHub rejects pushes because of oversized historical state artifacts.
-- Every external release goes through the private release mirror `Undermybelt/ict-engine-release` via the mirror runbook (`git archive HEAD` export, fresh init, tag, push).
-- Do **not** run `git push origin …` from the source repo and do **not** add a public remote to it. Local commits accumulate on the local clone(s) only.
+- The source-repo oversized-history blocker has been cleared; normal source-repo pushes are available again.
+- The private release mirror `Undermybelt/ict-engine-release` remains the preferred clean tree-state release transport.
+- Treat the source repo as development truth and the mirror repo as the curated release surface.
 - See `docs/release-mirror-runbook.md` for the full flow and version-bump rules.
 
 ## 中文简介

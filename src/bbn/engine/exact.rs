@@ -62,7 +62,17 @@ impl ExactEngine {
                     .stress_score
                     .unwrap_or(0.5)
                     .clamp(0.0, 1.0),
+            uses_soft_evidence: packet.uses_soft_evidence,
             evidence_assignments: packet.evidence_assignments.clone(),
+            soft_market_regime_distribution: packet.soft_market_regime_distribution.clone(),
+            soft_liquidity_context_distribution: packet.soft_liquidity_context_distribution.clone(),
+            soft_factor_alignment_distribution: packet.soft_factor_alignment_distribution.clone(),
+            soft_factor_uncertainty_distribution: packet
+                .soft_factor_uncertainty_distribution
+                .clone(),
+            soft_multi_timeframe_resonance_distribution: packet
+                .soft_multi_timeframe_resonance_distribution
+                .clone(),
             rationale: packet.factor_evidence.clone(),
             ..PreBayesEvidenceFilter::default()
         })

@@ -118,3 +118,13 @@ If implemented, keep the first milestone tiny:
 - one holdout split
 - one artifact report
 - no production wiring
+
+Trial intake extension
+- Normalize `related-stock relative consistency` to the repo's SMT / correlation-consistency lane.
+- Normalize `tiny-leg zigzag regime` to a retrospective segmentation / clustering lane.
+- If a tiny-leg probe is added, keep it research-only:
+  - small zigzag
+  - 5 leg factors
+  - optional `16` raw clusters merged to `6`
+- Do not treat retrospective tiny-leg or zigzag outputs as live regime truth.
+- Any later live promotion requires a separate now-cast branch that is not delayed purely by pivot confirmation.

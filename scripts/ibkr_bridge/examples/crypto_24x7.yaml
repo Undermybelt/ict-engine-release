@@ -1,0 +1,62 @@
+# =============================================================================
+# Crypto 24/7 config — works ANY time of day/week
+# =============================================================================
+# Use this when you want to verify the bridge end-to-end on a weekend or
+# overnight, or when you specifically want crypto factor research.
+#
+# IBKR's PAXOS sub-broker offers BTC/ETH/LTC/BCH against USD with the free
+# "PAXOS IBLLC" market-data subscription that ships with IBKR-PRO. Crypto
+# trades 24/7 so this config will produce non-zero data even at 03:00 UTC
+# Sunday morning.
+#
+# Two wrinkles vs. equities:
+#   * sec_type=CRYPTO (newer ib_async contract; supported by our bridge)
+#   * what_to_show=MIDPOINT for bars_kup; TRADES errors with code 10299 for
+#     crypto, and AGGTRADES is incompatible with keepUpToDate=True
+#
+# Run:
+#   .venv/bin/python -m scripts.ibkr_bridge.bridge \
+#       --config scripts/ibkr_bridge/examples/crypto_24x7.yaml
+# =============================================================================
+
+gateway:
+  host: 127.0.0.1
+  port: 4002
+  client_id: 20
+  market_data_type: 1  # crypto MD is live; PAXOS doesn't have a delayed feed
+
+redis:
+  url: redis://localhost:6379
+
+publishing:
+  stream_maxlen: 50000
+  snapshot_ttl_sec: 0
+
+subscriptions:
+  - symbol: BTC
+    sec_type: CRYPTO
+    exchange: PAXOS
+    currency: USD
+    feed: [bars_kup]
+    bar_size: '5 mins'
+    what_to_show: MIDPOINT
+    duration: '1 D'           # 24h × 12 bars/h = 288 backfill rows
+    use_rth: false
+
+  - symbol: ETH
+    sec_type: CRYPTO
+    exchange: PAXOS
+    currency: USD
+    feed: [bars_kup]
+    bar_size: '5 mins'
+    what_to_show: MIDPOINT
+    duration: '1 D'
+    use_rth: false
+
+  # Live tick stream too — useful for tape-reading / order-flow research.
+  # Comment out if you only need bars.
+  - symbol: BTC
+    sec_type: CRYPTO
+    exchange: PAXOS
+    currency: USD
+    feed: [market_data]

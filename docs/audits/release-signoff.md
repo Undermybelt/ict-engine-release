@@ -1,111 +1,126 @@
 # Release signoff
 
-Date: final signoff after release-hygiene, help audit, agent surface polish, paired-data quality carry-through, release-closure surfaces, and release-closure deepening.
+Date: 2026-05-10
+Status: release mirror target and `v0.1.1` tag selected by operator after whole-repo Rust gate, demo smoke, and release-runbook update.
 
 ## Final verdict
 
-Ready to tag and release from a private release mirror.
+Ready to publish to the `Undermybelt/ict-engine-release` mirror as `v0.1.1`.
 
-No blocking release issues found in the codebase.
+No Rust CI or first-run smoke blocker remains in the current tree. The operator selected the release mirror target, `v0.1.1` tag, and inclusion of the pending research docs/scripts in the release tree.
 
 ## Important release routing decision
 
-Status note (2026-04-24)
+This checkout currently tracks:
 
-The historical oversized-artifact blocker on the source repo has now been cleared by history rewrite.
-Normal pushes to the source repo are available again.
+```text
+origin git@github.com:Undermybelt/givenup-ict-engine.git
+```
 
-Mirror release remains a valid release transport surface for clean tree-state publishing, but it is no longer required by an unsolved source-repo history blocker.
+Release metadata still points at:
+
+```text
+Undermybelt/ict-engine-release
+```
+
+Before publishing, choose one release target:
+- source/development repo only
+- private release mirror only
+- both, in a defined order
 
 ## Signoff checklist
 
 ### Build and test
-- [x] `cargo check`
+- [x] `cargo fmt --check`
+- [x] `cargo check --all-targets`
+- [x] `cargo clippy --all-targets -- -D warnings`
 - [x] `cargo test`
-- [x] worktree clean before signoff
+- [ ] Python pytest suite: blocked in this environment (`No module named pytest`)
+- [x] worktree clean before mirror export signoff
 
 ### CLI quality
-- [x] root help exposes `--version`
-- [x] mechanical help audit passes
-- [x] all current subcommands have option descriptions
-- [x] new release-facing subcommands covered by audit
+- [x] root help smoke passed
+- [x] `analyze --help` smoke passed
+- [x] `factor-research --help` smoke passed
+- [x] `analyze --demo --human` emits compact desk-style summary
+- [x] `factor-research --backend native --human` emits readable summary
 
-### Portability
-- [x] no local path dependency in `Cargo.toml`
-- [x] no release-blocking absolute-path hardcoding in source command paths
-- [x] demo mode exists for first-run verification
-
-### Output surfaces
-- [x] `analyze --agent` exposes structured `next_step`
-- [x] `workflow-status --agent` exposes structured `next_step`
-- [x] `analyze --human` provides readable summary output
-- [x] `workflow-status --human` provides readable summary output
-- [x] local-path redaction exists and is regression-tested
+### Portability and state hygiene
+- [x] `Cargo.toml` has `license`, `repository`, `authors`
+- [x] demo analyze works with explicit `/tmp/...` state dir
+- [x] smoke state writes stayed under `/tmp/ict-engine-first-run-native`
+- [x] Auto-Quant readiness paths stayed under `/tmp/ict-engine-auto-quant-smoke/auto-quant/...`
+- [x] `catboost_info/` added to `.gitignore` as a generated test/training artifact directory
+- [x] no tracked `state*` files detected by `git ls-files 'state*'`
 
 ### Release closure / closed loop
-- [x] `research-verdict` exists
-- [x] `research-verdict` emits contamination signal
-- [x] `evidence-quality-breakdown` exists
-- [x] paired-market quality report is preserved in debug path
-
-### Repo hygiene
-- [x] runtime artifacts ignored
-- [x] no tracked `state*`, `__pycache__`, `.DS_Store`, or `tmp_cycle_seed_spec.json`
-- [x] LICENSE present
-- [x] `Cargo.toml` has `license`, `repository`, `authors`
+- [x] `factor-pipeline-debug` on bundled demo data passed
+- [x] native `factor-research` on bundled demo data passed
+- [x] `auto-quant-status` correctly reports optional dependency readiness and next action
+- [x] workflow analyze snapshots preserve canonical structural regime posterior fields
 
 ## Commands executed for signoff
 
 ```bash
-cargo check
-cargo test
-python3 scripts/help_audit.py
-cargo run --quiet -- research-verdict --symbol DEMO --state-dir state
-cargo run --quiet -- evidence-quality-breakdown --symbol DEMO --state-dir state
-cargo run --quiet -- workflow-status --symbol DEMO --state-dir state --agent
-cargo run --quiet -- analyze --symbol DEMO --demo --agent
+git status --short --branch
+git remote -v
+git tag --list 'v*' --sort=version:refname
+cargo fmt --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml --check
+cargo check --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml --all-targets
+cargo clippy --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- --help
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- analyze --help
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- factor-research --help
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- analyze --symbol DEMO --demo --state-dir /tmp/ict-engine-first-run-native --human
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- factor-pipeline-debug --symbol DEMO --data /Users/thrill3r/projects-ict-engine/ict-engine/examples/demo/demo-15m.json --factor structure_ict --objective expansion_manipulation
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- factor-research --symbol DEMO --data /Users/thrill3r/projects-ict-engine/ict-engine/examples/demo/demo-15m.json --state-dir /tmp/ict-engine-first-run-native --backend native --human
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- auto-quant-status --state-dir /tmp/ict-engine-auto-quant-smoke
+python3 scripts/search_local.py --show-config
+python3 scripts/search_cluster.py --show-config
+python3 scripts/evaluate_bottleneck.py --show-config
+python3 -m pytest scripts/research/tests scripts/auto_quant_external/tests
 ```
 
 ## Decisive outcomes
 
-### Mechanical help audit
-- status: `pass`
-- root version flag: present
-- audited subcommands: `22`
-- commands with missing option descriptions: `0`
+### Rust gates
+- `cargo fmt --check`: passed
+- `cargo check --all-targets`: passed
+- `cargo clippy --all-targets -- -D warnings`: passed
+- `cargo test`: passed
+  - lib tests: 910 passed
+  - bin tests: 235 passed
+  - integration tests: all listed suites passed
 
-### `research-verdict` smoke
-- emitted compact closure verdict successfully
-- emitted contamination fields successfully
+### Python wrapper sanity
+- `scripts/search_local.py --show-config`: passed
+- `scripts/search_cluster.py --show-config`: passed
+- `scripts/evaluate_bottleneck.py --show-config`: passed
+- `python3 -m pytest ...`: blocked because pytest is not installed in the active Python 3.14 environment
 
-### `evidence-quality-breakdown` smoke
-- emitted component breakdown successfully
-- emitted hard/neutralized gaps successfully
+### Demo analyze smoke
+- status: passed
+- output included compact market/execution/ranker summary
+- output included `DEMO | Bull bias | entry=medium | gate=pass_neutralized | quality=0.582`
+- recommended next command preserved `/tmp/ict-engine-first-run-native` and `--backend native`
 
-### `workflow-status --agent` smoke
-- emitted structured `next_step`
-- emitted `user_input_required=true` when historical-data selection gate is active
+### Native factor research smoke
+- status: passed
+- output included `Factor research | objective=expansion_manipulation | best=trend_momentum | return=+0.29%`
+- output stayed human-readable
 
-### `analyze --agent` smoke
-- emitted `decision_hint_raw`
-- emitted `decision_summary`
-- emitted structured `next_step`
+### Auto-Quant status smoke
+- status: passed as readiness report
+- expected readiness: `missing_dependency`, `bootstrap_needed=true`
+- managed path stayed under `/tmp/ict-engine-auto-quant-smoke/auto-quant/...`
 
-## Source repo history status
+## Release caveats
 
-Previously oversized historical state artifacts blocked normal source-repo pushes.
-That blocker was cleared on `2026-04-24` by removing generated `state*` artifacts from history.
-
-## Residual non-blocking debt
-
-Status note (2026-04-24)
-
-Item 4 below is stale after the `main.rs` runtime-hotspot extraction line landed in commits `8ce1024` and `3e45254`.
-Current post-`main.rs` debt inventory now lives in `docs/plans/2026-04-24-post-main-debt-inventory.md`.
-
-1. public experiment wrappers are still preview-grade rather than a stable packaged interface
-2. some experiment flows still assume a Tomac-style cleaned-data layout unless env vars are overridden
+1. Branch is still far ahead of the source remote; this release uses the mirror flow to publish clean tree state without rewriting source history.
+2. Python pytest suite needs either a Python environment with pytest or an explicit waiver for this preview release; the current environment lacks `pytest`.
+3. The release mirror repository is the selected target for `v0.1.1`.
 
 ## Release recommendation
 
-Proceed with source-repo development truth plus mirror tag/release for `v0.1.0`.
+Proceed with `v0.1.1` on `Undermybelt/ict-engine-release` using the mirror release flow.

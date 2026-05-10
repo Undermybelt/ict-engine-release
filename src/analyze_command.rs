@@ -1,4 +1,6 @@
 use super::*;
+use ict_engine::application::regime::consumer_bundle_adapter::RegimeConsumerBundleAdapter;
+use std::path::Path;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn analyze_command(
@@ -10,7 +12,18 @@ pub(crate) fn analyze_command(
     output_format: OutputFormat,
     inline_ledger: bool,
     execution_focus: bool,
+    regime_consumer_bundle: Option<&str>,
+    regime_consumer_bundle_strict: bool,
+    apply_regime_bundle_bbn_soft_evidence: bool,
 ) -> Result<()> {
+    let regime_bundle_adapter = regime_consumer_bundle
+        .map(|bundle_path| {
+            RegimeConsumerBundleAdapter::load_optional(
+                Some(Path::new(bundle_path)),
+                regime_consumer_bundle_strict,
+            )
+        })
+        .transpose()?;
     let _ = migrate_ensemble_executor_scorecards(state_dir, symbol)?;
     let htf = load_candles(data_htf)?;
     let mtf = load_candles(data_mtf)?;
@@ -34,6 +47,11 @@ pub(crate) fn analyze_command(
         .transpose()?;
     let m15_owned = resolved_multi_timeframe_inputs
         .get("15m")
+        .filter(|path| *path != data_htf && *path != data_mtf && *path != data_ltf)
+        .map(load_candles)
+        .transpose()?;
+    let m30_owned = resolved_multi_timeframe_inputs
+        .get("30m")
         .filter(|path| *path != data_htf && *path != data_mtf && *path != data_ltf)
         .map(load_candles)
         .transpose()?;
@@ -101,6 +119,15 @@ pub(crate) fn analyze_command(
                 } else {
                     h1_owned.as_deref()
                 },
+                m30: if infer_interval_for_analyze_frame(data_htf, "1d") == "30m" {
+                    Some(&htf)
+                } else if infer_interval_for_analyze_frame(data_mtf, "1h") == "30m" {
+                    Some(&mtf)
+                } else if infer_interval_for_analyze_frame(data_ltf, "15m") == "30m" {
+                    Some(&ltf)
+                } else {
+                    m30_owned.as_deref()
+                },
                 m15: if infer_interval_for_analyze_frame(data_htf, "1d") == "15m" {
                     Some(&htf)
                 } else if infer_interval_for_analyze_frame(data_mtf, "1h") == "15m" {
@@ -130,6 +157,8 @@ pub(crate) fn analyze_command(
                 },
             },
         },
+        regime_bundle_adapter: regime_bundle_adapter.as_ref(),
+        apply_regime_bundle_bbn_soft_evidence,
         execution_focus,
     })?;
     let mut report = report;
@@ -154,6 +183,23 @@ pub(crate) fn analyze_command(
         &artifact_family_trends,
         &artifact_consumed_impact_summary,
     );
+    if let Some(bundle_path) = regime_consumer_bundle {
+        if let Some(adapter) = regime_bundle_adapter.as_ref() {
+            let trace_entries = adapter.trace_entries(Some(Path::new(bundle_path)));
+            report
+                .supporting
+                .artifact_action_summary
+                .push(format!("regime_bundle_trace:{}", trace_entries.join("|")));
+            report
+                .supporting
+                .artifact_action_summary
+                .extend(trace_entries);
+            adapter.append_read_only_bbn_diagnostics(
+                &mut report.supporting.artifact_action_summary,
+                &mut report.supporting.pre_bayes_evidence_filter,
+            );
+        }
+    }
     if let Ok(artifact) = ict_engine::pda_sequence::load_pda_sequence_analysis(state_dir, symbol) {
         let summary = ict_engine::pda_sequence::summarize_pda_sequence_artifact(&artifact);
         report.supporting.artifact_action_summary.push(format!(

@@ -1,4 +1,4 @@
-use crate::data::realtime::openalice::AuxiliaryMarketEvidence;
+use crate::data::realtime::market_support::AuxiliaryMarketEvidence;
 use crate::state::LearningState;
 use crate::types::Candle;
 
@@ -17,6 +17,7 @@ pub struct AnalyzeNativeFrames<'a> {
     pub d1: Option<&'a [Candle]>,
     pub h4: Option<&'a [Candle]>,
     pub h1: Option<&'a [Candle]>,
+    pub m30: Option<&'a [Candle]>,
     pub m15: Option<&'a [Candle]>,
     pub m5: Option<&'a [Candle]>,
     pub m1: Option<&'a [Candle]>,

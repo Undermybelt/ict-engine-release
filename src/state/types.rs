@@ -2,8 +2,31 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::types::{Direction, FactorIC, Regime};
+use crate::belief_core::beta_dirichlet_update::{
+    beta_posterior_mean, beta_update_factor, weighted_seed_beta_update,
+    weighted_success_credit_beta_update, WeightedSeedBetaUpdateInput,
+};
+use crate::belief_core::changepoint_gate::rebuild_node_duration_priors_from_events;
+use crate::belief_core::regime_filter::rebuild_transition_posteriors_from_events;
+use crate::belief_core::source_reliability::{
+    accumulate_structural_prior_source_summary_delayed_reward_observation,
+    accumulate_structural_prior_stats_delayed_reward_observation,
+    refresh_structural_prior_delayed_reward_metrics,
+    refresh_structural_source_summary_delayed_reward_metrics,
+};
+use crate::types::{Direction, FactorIC, Regime, RegimeProbs};
 
+#[cfg(test)]
+use crate::belief_core::changepoint_gate::{
+    structural_duration_break_hazard, structural_node_bocpd_recursive_run_length_fit,
+};
+
+const STRUCTURAL_IPS_WEIGHT_CLIP: f64 = 5.0;
+const STRUCTURAL_SOURCE_CONFUSION_LAPLACE_ALPHA: f64 = 1.0;
+pub const STRUCTURAL_SOURCE_RELIABILITY_EM_MIN_MULTI_SOURCE_ITEMS: usize = 3;
+pub const STRUCTURAL_SOURCE_RELIABILITY_EM_ITERATIONS: usize = 5;
+pub const STRUCTURAL_SOURCE_RELIABILITY_EM_MIN_CALIBRATION_OBSERVATIONS: usize = 6;
+pub const STRUCTURAL_SOURCE_RELIABILITY_EM_MIN_HOLDOUT_TRAIN_ITEMS: usize = 4;
 pub const LEARNING_STATE_FILE: &str = "learning_state.json";
 pub const TRADE_HISTORY_FILE: &str = "trade_history.json";
 pub const TRAIN_RUNS_FILE: &str = "train_runs.json";
@@ -29,6 +52,7 @@ pub const ENSEMBLE_VOTE_FILE: &str = "ensemble_vote.json";
 pub const ENSEMBLE_VOTE_HISTORY_FILE: &str = "ensemble_vote_history.json";
 pub const ENSEMBLE_EXECUTOR_SCORECARDS_FILE: &str = "ensemble_executor_scorecards.json";
 pub const ARTIFACT_LEDGER_FILE: &str = "artifact_ledger.json";
+pub const BBN_STATE_FILE: &str = "bbn_network.json";
 
 /// State persistence types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +76,942 @@ pub struct LearningState {
     pub factor_profiles: BTreeMap<String, FactorLearningProfile>,
     pub factor_rankings: Vec<PersistedFactorRanking>,
     pub feedback_history: Vec<FeedbackRecord>,
+    #[serde(default)]
+    pub structural_prior_state: StructuralPriorLearningState,
     pub last_updated: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralPriorLearningState {
+    pub nodes: BTreeMap<String, StructuralPriorStats>,
+    pub branches: BTreeMap<String, StructuralPriorStats>,
+    pub scenarios: BTreeMap<String, StructuralPriorStats>,
+    pub paths: BTreeMap<String, StructuralPriorStats>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub node_prior_mass: BTreeMap<String, StructuralPriorMassSnapshot>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub branch_prior_mass: BTreeMap<String, StructuralPriorMassSnapshot>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scenario_prior_mass: BTreeMap<String, StructuralPriorMassSnapshot>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub path_prior_mass: BTreeMap<String, StructuralPriorMassSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_offline_seed_snapshot: Option<StructuralOfflineSeedSnapshot>,
+    #[serde(default)]
+    pub event_ledger: Vec<StructuralPriorEvent>,
+    #[serde(default)]
+    pub node_duration_priors: BTreeMap<String, StructuralNodeDurationPrior>,
+    #[serde(default)]
+    pub branch_transition_priors: BTreeMap<String, StructuralBranchTransitionPrior>,
+    #[serde(default)]
+    pub node_temporal_posteriors: BTreeMap<String, StructuralNodeTemporalPosteriorState>,
+    #[serde(default)]
+    pub node_transition_posteriors: BTreeMap<String, StructuralNodeTransitionPosteriorState>,
+    #[serde(default)]
+    pub branch_temporal_posteriors: BTreeMap<String, StructuralBranchTemporalPosteriorState>,
+    #[serde(default)]
+    pub source_reliability_posteriors: BTreeMap<String, StructuralSourceReliabilityPosterior>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub source_reliability_em_summaries:
+        BTreeMap<String, StructuralSourceReliabilityEmSourceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_reliability_em_calibration: Option<StructuralSourceReliabilityEmCalibrationSummary>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub target_policy_context_posteriors: BTreeMap<String, StructuralTargetPolicyContextPosterior>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralTargetPolicyContextPosterior {
+    pub observations: usize,
+    #[serde(default)]
+    pub weighted_observation_mass: f64,
+    #[serde(default)]
+    pub success_mass: f64,
+    #[serde(default)]
+    pub failure_mass: f64,
+    #[serde(default)]
+    pub behavior_policy_probability: f64,
+    #[serde(default)]
+    pub behavior_policy_probability_squared_mass: f64,
+    #[serde(default)]
+    pub behavior_policy_probability_variance: f64,
+    #[serde(default)]
+    pub learned_target_policy_probability: f64,
+    #[serde(default)]
+    pub learned_target_policy_probability_lower_bound: f64,
+    #[serde(default)]
+    pub learned_target_policy_probability_confidence: f64,
+    #[serde(default)]
+    pub calibrated_target_policy_probability: f64,
+    #[serde(default)]
+    pub calibrated_target_policy_probability_lower_bound: f64,
+    #[serde(default)]
+    pub target_policy_probability_brier_score_mass: f64,
+    #[serde(default)]
+    pub target_policy_probability_calibration_error_mass: f64,
+    #[serde(default)]
+    pub target_policy_probability_brier_score: f64,
+    #[serde(default)]
+    pub target_policy_probability_calibration_error: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recommendation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralPriorStats {
+    pub observations: usize,
+    pub followed_count: usize,
+    pub wins: usize,
+    pub losses: usize,
+    pub breakevens: usize,
+    pub invalidated: usize,
+    pub abandoned: usize,
+    pub not_followed: usize,
+    pub avg_pnl: f64,
+    #[serde(default)]
+    pub weighted_followed_mass: f64,
+    #[serde(default)]
+    pub weighted_success_mass: f64,
+    #[serde(default)]
+    pub weighted_failure_mass: f64,
+    #[serde(default)]
+    pub weighted_invalidation_mass: f64,
+    #[serde(default)]
+    pub weighted_exposure_mass: f64,
+    #[serde(default)]
+    pub weighted_not_followed_mass: f64,
+    pub smoothed_prior: f64,
+    #[serde(default)]
+    pub execution_propensity: f64,
+    #[serde(default)]
+    pub ips_weight: f64,
+    #[serde(default)]
+    pub counterfactual_success_mass: f64,
+    #[serde(default)]
+    pub counterfactual_failure_mass: f64,
+    #[serde(default)]
+    pub counterfactual_reward_prior: f64,
+    #[serde(default)]
+    pub off_policy_adjusted_prior: f64,
+    #[serde(default)]
+    pub policy_weighted_observation_mass: f64,
+    #[serde(default)]
+    pub behavior_policy_probability: f64,
+    #[serde(default)]
+    pub behavior_policy_probability_squared_mass: f64,
+    #[serde(default)]
+    pub behavior_policy_probability_variance: f64,
+    #[serde(default)]
+    pub target_policy_probability_confidence: f64,
+    #[serde(default)]
+    pub target_policy_probability_lower_bound: f64,
+    #[serde(default)]
+    pub target_policy_probability_brier_score_mass: f64,
+    #[serde(default)]
+    pub target_policy_probability_calibration_error_mass: f64,
+    #[serde(default)]
+    pub target_policy_probability_brier_score: f64,
+    #[serde(default)]
+    pub target_policy_probability_calibration_error: f64,
+    #[serde(default)]
+    pub snips_weight_mass: f64,
+    #[serde(default)]
+    pub snips_weight_squared_mass: f64,
+    #[serde(default)]
+    pub snips_effective_sample_size: f64,
+    #[serde(default)]
+    pub snips_reward_mass: f64,
+    #[serde(default)]
+    pub snips_reward_prior: f64,
+    #[serde(default)]
+    pub doubly_robust_reward_mass: f64,
+    #[serde(default)]
+    pub doubly_robust_reward_prior: f64,
+    #[serde(default)]
+    pub target_policy_calibration_weight: f64,
+    #[serde(default)]
+    pub target_policy_reward_prior: f64,
+    #[serde(default)]
+    pub target_policy_variance_penalty: f64,
+    #[serde(default)]
+    pub target_policy_reward_lower_bound: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability: f64,
+    #[serde(default)]
+    pub delayed_reward_censoring_probability: f64,
+    #[serde(default)]
+    pub censoring_adjusted_reward_prior: f64,
+    #[serde(default)]
+    pub censoring_adjusted_reward_lower_bound: f64,
+    #[serde(default)]
+    pub delayed_reward_success_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_failure_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_invalidation_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_abandonment_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_competing_risk_entropy: f64,
+    #[serde(default)]
+    pub delayed_reward_elapsed_feedback_count: usize,
+    #[serde(default)]
+    pub delayed_reward_elapsed_hours_at_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_avg_elapsed_hours: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_expected_resolution_hours: f64,
+    #[serde(default)]
+    pub delayed_reward_survival_probability_1h: f64,
+    #[serde(default)]
+    pub delayed_reward_survival_probability_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_survival_probability_24h: f64,
+    #[serde(default)]
+    pub delayed_reward_success_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_failure_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_invalidation_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_abandonment_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_success_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_failure_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_invalidation_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_abandonment_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_horizon_1h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_within_1h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability_1h: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_horizon_4h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_within_4h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_horizon_24h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_within_24h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability_24h: f64,
+    #[serde(default)]
+    pub source_panel_summaries: BTreeMap<String, StructuralPriorSourceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_offline_seed_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralPriorMassSnapshot {
+    pub entity_id: String,
+    pub entity_kind: String,
+    pub observations: usize,
+    pub followed_count: usize,
+    pub weighted_followed_mass: f64,
+    pub weighted_success_mass: f64,
+    pub weighted_failure_mass: f64,
+    pub weighted_invalidation_mass: f64,
+    pub weighted_exposure_mass: f64,
+    pub weighted_not_followed_mass: f64,
+    pub smoothed_prior: f64,
+    pub execution_propensity: f64,
+    pub off_policy_adjusted_prior: f64,
+    #[serde(default)]
+    pub behavior_policy_probability: f64,
+    #[serde(default)]
+    pub behavior_policy_probability_squared_mass: f64,
+    #[serde(default)]
+    pub behavior_policy_probability_variance: f64,
+    #[serde(default)]
+    pub target_policy_probability_confidence: f64,
+    #[serde(default)]
+    pub target_policy_probability_lower_bound: f64,
+    #[serde(default)]
+    pub target_policy_probability_brier_score: f64,
+    #[serde(default)]
+    pub target_policy_probability_calibration_error: f64,
+    #[serde(default)]
+    pub snips_reward_prior: f64,
+    #[serde(default)]
+    pub doubly_robust_reward_prior: f64,
+    #[serde(default)]
+    pub target_policy_calibration_weight: f64,
+    #[serde(default)]
+    pub target_policy_reward_prior: f64,
+    #[serde(default)]
+    pub target_policy_variance_penalty: f64,
+    #[serde(default)]
+    pub target_policy_reward_lower_bound: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability: f64,
+    #[serde(default)]
+    pub delayed_reward_censoring_probability: f64,
+    #[serde(default)]
+    pub censoring_adjusted_reward_prior: f64,
+    #[serde(default)]
+    pub censoring_adjusted_reward_lower_bound: f64,
+    #[serde(default)]
+    pub delayed_reward_success_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_failure_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_invalidation_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_abandonment_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_competing_risk_entropy: f64,
+    #[serde(default)]
+    pub delayed_reward_elapsed_feedback_count: usize,
+    #[serde(default)]
+    pub delayed_reward_elapsed_hours_at_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_avg_elapsed_hours: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_expected_resolution_hours: f64,
+    #[serde(default)]
+    pub delayed_reward_survival_probability_1h: f64,
+    #[serde(default)]
+    pub delayed_reward_survival_probability_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_survival_probability_24h: f64,
+    #[serde(default)]
+    pub delayed_reward_success_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_failure_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_invalidation_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_abandonment_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_success_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_failure_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_invalidation_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_abandonment_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_horizon_1h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_within_1h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability_1h: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_horizon_4h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_within_4h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_horizon_24h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_within_24h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability_24h: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_offline_seed_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralPriorSeed {
+    #[serde(default)]
+    pub source_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tempering_coefficient: Option<f64>,
+    pub observations: usize,
+    pub followed_count: usize,
+    pub wins: usize,
+    pub losses: usize,
+    pub breakevens: usize,
+    pub invalidated: usize,
+    pub abandoned: usize,
+    pub not_followed: usize,
+    pub avg_pnl: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralPriorSourceSummary {
+    pub observations: usize,
+    pub followed_count: usize,
+    pub wins: usize,
+    pub losses: usize,
+    pub breakevens: usize,
+    pub invalidated: usize,
+    pub abandoned: usize,
+    pub not_followed: usize,
+    pub avg_pnl: f64,
+    #[serde(default)]
+    pub weighted_followed_mass: f64,
+    #[serde(default)]
+    pub weighted_success_mass: f64,
+    #[serde(default)]
+    pub weighted_failure_mass: f64,
+    #[serde(default)]
+    pub weighted_invalidation_mass: f64,
+    #[serde(default)]
+    pub weighted_exposure_mass: f64,
+    #[serde(default)]
+    pub weighted_not_followed_mass: f64,
+    pub smoothed_prior: f64,
+    #[serde(default)]
+    pub execution_propensity: f64,
+    #[serde(default)]
+    pub ips_weight: f64,
+    #[serde(default)]
+    pub counterfactual_success_mass: f64,
+    #[serde(default)]
+    pub counterfactual_failure_mass: f64,
+    #[serde(default)]
+    pub counterfactual_reward_prior: f64,
+    #[serde(default)]
+    pub off_policy_adjusted_prior: f64,
+    #[serde(default)]
+    pub policy_weighted_observation_mass: f64,
+    #[serde(default)]
+    pub behavior_policy_probability: f64,
+    #[serde(default)]
+    pub behavior_policy_probability_squared_mass: f64,
+    #[serde(default)]
+    pub behavior_policy_probability_variance: f64,
+    #[serde(default)]
+    pub target_policy_probability_confidence: f64,
+    #[serde(default)]
+    pub target_policy_probability_lower_bound: f64,
+    #[serde(default)]
+    pub target_policy_probability_brier_score_mass: f64,
+    #[serde(default)]
+    pub target_policy_probability_calibration_error_mass: f64,
+    #[serde(default)]
+    pub target_policy_probability_brier_score: f64,
+    #[serde(default)]
+    pub target_policy_probability_calibration_error: f64,
+    #[serde(default)]
+    pub snips_weight_mass: f64,
+    #[serde(default)]
+    pub snips_weight_squared_mass: f64,
+    #[serde(default)]
+    pub snips_effective_sample_size: f64,
+    #[serde(default)]
+    pub snips_reward_mass: f64,
+    #[serde(default)]
+    pub snips_reward_prior: f64,
+    #[serde(default)]
+    pub doubly_robust_reward_mass: f64,
+    #[serde(default)]
+    pub doubly_robust_reward_prior: f64,
+    #[serde(default)]
+    pub target_policy_calibration_weight: f64,
+    #[serde(default)]
+    pub target_policy_reward_prior: f64,
+    #[serde(default)]
+    pub target_policy_variance_penalty: f64,
+    #[serde(default)]
+    pub target_policy_reward_lower_bound: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability: f64,
+    #[serde(default)]
+    pub delayed_reward_censoring_probability: f64,
+    #[serde(default)]
+    pub censoring_adjusted_reward_prior: f64,
+    #[serde(default)]
+    pub censoring_adjusted_reward_lower_bound: f64,
+    #[serde(default)]
+    pub delayed_reward_success_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_failure_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_invalidation_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_abandonment_competing_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_competing_risk_entropy: f64,
+    #[serde(default)]
+    pub delayed_reward_elapsed_feedback_count: usize,
+    #[serde(default)]
+    pub delayed_reward_elapsed_hours_at_risk: f64,
+    #[serde(default)]
+    pub delayed_reward_avg_elapsed_hours: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_expected_resolution_hours: f64,
+    #[serde(default)]
+    pub delayed_reward_survival_probability_1h: f64,
+    #[serde(default)]
+    pub delayed_reward_survival_probability_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_survival_probability_24h: f64,
+    #[serde(default)]
+    pub delayed_reward_success_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_failure_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_invalidation_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_abandonment_hazard_per_hour: f64,
+    #[serde(default)]
+    pub delayed_reward_success_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_failure_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_invalidation_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_abandonment_cumulative_incidence_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_horizon_1h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_within_1h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability_1h: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_horizon_4h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_within_4h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability_4h: f64,
+    #[serde(default)]
+    pub delayed_reward_resolution_horizon_24h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_within_24h_count: usize,
+    #[serde(default)]
+    pub delayed_reward_resolution_probability_24h: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tempering_coefficient: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_power_prior_contribution: Option<StructuralPowerPriorContribution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recommendation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recommended_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralPowerPriorContribution {
+    pub source_label: String,
+    pub base_source_weight: f64,
+    pub tempering_coefficient: f64,
+    pub entity_mass_scale: f64,
+    pub effective_tau: f64,
+    pub observation_mass: f64,
+    pub success_mass: f64,
+    pub failure_mass: f64,
+    pub invalidation_mass: f64,
+    pub not_followed_mass: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralOfflineSeedSnapshot {
+    pub source_label: String,
+    pub recommendation_id: String,
+    pub recommended_at: String,
+    pub node_id: String,
+    pub branch_id: String,
+    pub scenario_id: String,
+    pub path_id: String,
+    pub followed_path: bool,
+    pub observations: usize,
+    pub followed_count: usize,
+    pub wins: usize,
+    pub losses: usize,
+    pub breakevens: usize,
+    pub invalidated: usize,
+    pub abandoned: usize,
+    pub not_followed: usize,
+    pub avg_pnl: f64,
+    pub node_contribution: StructuralPowerPriorContribution,
+    pub branch_contribution: StructuralPowerPriorContribution,
+    pub scenario_contribution: StructuralPowerPriorContribution,
+    pub path_contribution: StructuralPowerPriorContribution,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralSourceReliabilityPosterior {
+    pub source_label: String,
+    pub observations: usize,
+    #[serde(default)]
+    pub weighted_observation_mass: f64,
+    #[serde(default)]
+    pub weighted_success_mass: f64,
+    #[serde(default)]
+    pub weighted_failure_mass: f64,
+    #[serde(default)]
+    pub weighted_invalidation_mass: f64,
+    #[serde(default)]
+    pub weighted_exposure_mass: f64,
+    #[serde(default)]
+    pub weighted_not_followed_mass: f64,
+    #[serde(default)]
+    pub posterior_reliability: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_tempering_coefficient: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_power_prior_contribution: Option<StructuralPowerPriorContribution>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outcome_confusion: BTreeMap<String, StructuralSourceOutcomeConfusionCell>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralSourceOutcomeConfusionCell {
+    pub observed_outcome: String,
+    pub credit_class: String,
+    pub observations: usize,
+    #[serde(default)]
+    pub weighted_observation_mass: f64,
+    #[serde(default)]
+    pub weighted_success_mass: f64,
+    #[serde(default)]
+    pub weighted_failure_mass: f64,
+    #[serde(default)]
+    pub credit_class_weighted_observation_mass: f64,
+    #[serde(default)]
+    pub credit_class_observed_outcome_count: usize,
+    #[serde(default)]
+    pub observed_given_credit_likelihood: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralSourceReliabilityEmSourceSummary {
+    pub source_label: String,
+    pub iteration_count: usize,
+    pub latent_item_count: usize,
+    pub distinct_label_count: usize,
+    pub confusion_cell_count: usize,
+    #[serde(default)]
+    pub posterior_reliability: f64,
+    #[serde(default)]
+    pub min_diagonal_probability: f64,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub confusion: BTreeMap<String, StructuralSourceReliabilityEmConfusionCell>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralSourceReliabilityEmConfusionCell {
+    pub true_credit_class: String,
+    pub observed_credit_class: String,
+    pub probability: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralSourceReliabilityEmCalibrationSummary {
+    pub status: String,
+    pub observation_count: usize,
+    pub source_count: usize,
+    pub min_observations: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brier_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_loss: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralSourceReliabilityEmHoldoutSummary {
+    pub status: String,
+    pub split_strategy: String,
+    pub training_item_count: usize,
+    pub evaluation_item_count: usize,
+    pub observation_count: usize,
+    pub source_count: usize,
+    pub min_training_items: usize,
+    pub min_observations: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brier_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_loss: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralSourceReliabilityEmReplaySummary {
+    pub status: String,
+    pub split_strategy: String,
+    pub evaluation_item_count: usize,
+    pub observation_count: usize,
+    pub source_count: usize,
+    pub min_training_items: usize,
+    pub min_observations: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brier_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_loss: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StructuralSourceReliabilityEmDiagnostics {
+    pub candidate_item_count: usize,
+    pub labeled_item_count: usize,
+    pub multi_source_item_count: usize,
+    pub distinct_source_count: usize,
+    pub observed_label_count: usize,
+    pub max_sources_per_item: usize,
+    pub consensus_item_count: usize,
+    pub conflict_item_count: usize,
+    pub avg_consensus_confidence: Option<f64>,
+    pub min_consensus_confidence: Option<f64>,
+    pub fit: StructuralSourceReliabilityEmFit,
+    pub persisted_source_summary_count: usize,
+    pub persisted_confusion_cell_count: usize,
+    pub avg_persisted_source_reliability: Option<f64>,
+    pub min_persisted_source_reliability: Option<f64>,
+    pub calibration: Option<StructuralSourceReliabilityEmCalibrationSummary>,
+    pub holdout: Option<StructuralSourceReliabilityEmHoldoutSummary>,
+    pub replay: Option<StructuralSourceReliabilityEmReplaySummary>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StructuralSourceReliabilityEmFit {
+    pub iteration_count: usize,
+    pub latent_item_count: usize,
+    pub distinct_label_count: usize,
+    pub confusion_cell_count: usize,
+    pub source_reliability: BTreeMap<String, f64>,
+    pub avg_latent_confidence: Option<f64>,
+    pub min_latent_confidence: Option<f64>,
+    pub avg_source_reliability: Option<f64>,
+    pub min_source_reliability: Option<f64>,
+    pub(crate) confusion: StructuralSourceReliabilityEmConfusion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralPriorEvent {
+    #[serde(default)]
+    pub source_label: String,
+    #[serde(default)]
+    pub symbol: String,
+    pub recommendation_id: String,
+    pub recommended_at: String,
+    pub node_id: String,
+    pub branch_id: String,
+    pub scenario_id: String,
+    pub path_id: String,
+    pub followed_path: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realized_outcome: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralNodeDurationPrior {
+    pub observations: usize,
+    pub streak_count: usize,
+    #[serde(default)]
+    pub weighted_streak_mass: f64,
+    #[serde(default)]
+    pub weighted_success_mass: f64,
+    #[serde(default)]
+    pub weighted_failure_mass: f64,
+    pub total_streak_length: usize,
+    pub avg_streak_length: f64,
+    pub max_streak_length: usize,
+    pub last_streak_length: usize,
+    pub persistence_prior: f64,
+    #[serde(default)]
+    pub expected_dwell_steps: f64,
+    #[serde(default)]
+    pub remaining_dwell_steps: f64,
+    #[serde(default)]
+    pub break_hazard: f64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub duration_distribution: Vec<StructuralNodeDurationBucket>,
+    #[serde(default)]
+    pub duration_distribution_entropy: f64,
+    #[serde(default)]
+    pub empirical_duration_survival: f64,
+    #[serde(default)]
+    pub empirical_duration_completion_hazard: f64,
+    #[serde(default)]
+    pub bocpd_duration_surprise: f64,
+    #[serde(default)]
+    pub bocpd_evidence_weight: f64,
+    #[serde(default)]
+    pub bocpd_raw_break_probability: f64,
+    #[serde(default)]
+    pub bocpd_break_probability: f64,
+    #[serde(default)]
+    pub bocpd_continue_probability: f64,
+    #[serde(default)]
+    pub bocpd_run_length_mode: usize,
+    #[serde(default)]
+    pub bocpd_run_length_mode_probability: f64,
+    #[serde(default)]
+    pub bocpd_run_length_tail_probability: f64,
+    #[serde(default)]
+    pub bocpd_run_length_observation_mass: f64,
+    #[serde(default)]
+    pub bocpd_recursive_reset_probability: f64,
+    #[serde(default)]
+    pub bocpd_recursive_run_length_mode: usize,
+    #[serde(default)]
+    pub bocpd_recursive_run_length_mode_probability: f64,
+    #[serde(default)]
+    pub bocpd_recursive_run_length_expected_value: f64,
+    #[serde(default)]
+    pub bocpd_recursive_run_length_entropy: f64,
+    #[serde(default)]
+    pub bocpd_sequence_change_intensity: f64,
+    #[serde(default)]
+    pub bocpd_sequence_break_probability: f64,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_reset_probability: f64,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_run_length_mode: usize,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_run_length_mode_probability: f64,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_run_length_expected_value: f64,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_run_length_entropy: f64,
+    #[serde(default)]
+    pub sticky_self_transition_strength: f64,
+    #[serde(default)]
+    pub duration_outcome_support: f64,
+    #[serde(default)]
+    pub temporal_posterior_support: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recommended_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralNodeDurationBucket {
+    pub dwell_steps: usize,
+    pub streak_count: usize,
+    #[serde(default)]
+    pub weighted_streak_mass: f64,
+    #[serde(default)]
+    pub probability: f64,
+    #[serde(default)]
+    pub survival_probability: f64,
+    #[serde(default)]
+    pub completion_hazard: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralBranchTransitionPrior {
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub from_branch_id: String,
+    pub to_branch_id: String,
+    pub observations: usize,
+    pub weighted_observation_mass: f64,
+    pub wins: usize,
+    pub losses: usize,
+    pub invalidated: usize,
+    pub transition_prior: f64,
+    #[serde(default)]
+    pub transition_outcome_support: f64,
+    #[serde(default)]
+    pub temporal_posterior_support: f64,
+    #[serde(default)]
+    pub weighted_success_mass: f64,
+    #[serde(default)]
+    pub weighted_failure_mass: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recommended_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralNodeTemporalPosteriorState {
+    pub node_id: String,
+    pub observations: usize,
+    pub streak_count: usize,
+    pub weighted_streak_mass: f64,
+    #[serde(default)]
+    pub expected_dwell_steps: f64,
+    #[serde(default)]
+    pub remaining_dwell_steps: f64,
+    #[serde(default)]
+    pub break_hazard: f64,
+    #[serde(default)]
+    pub sticky_self_transition_strength: f64,
+    #[serde(default)]
+    pub bocpd_recursive_reset_probability: f64,
+    #[serde(default)]
+    pub bocpd_recursive_run_length_mode: usize,
+    #[serde(default)]
+    pub bocpd_recursive_run_length_mode_probability: f64,
+    #[serde(default)]
+    pub bocpd_recursive_run_length_expected_value: f64,
+    #[serde(default)]
+    pub bocpd_recursive_run_length_entropy: f64,
+    #[serde(default)]
+    pub bocpd_sequence_change_intensity: f64,
+    #[serde(default)]
+    pub bocpd_sequence_break_probability: f64,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_reset_probability: f64,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_run_length_mode: usize,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_run_length_mode_probability: f64,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_run_length_expected_value: f64,
+    #[serde(default)]
+    pub bocpd_sequence_recursive_run_length_entropy: f64,
+    pub duration_outcome_support: f64,
+    pub temporal_posterior_support: f64,
+    #[serde(default)]
+    pub posterior_blend_weight: f64,
+    #[serde(default)]
+    pub summary_line: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recommended_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralBranchTemporalPosteriorState {
+    pub transition_key: String,
+    pub from_branch_id: String,
+    pub to_branch_id: String,
+    pub observations: usize,
+    pub weighted_observation_mass: f64,
+    #[serde(default)]
+    pub transition_prior: f64,
+    pub transition_outcome_support: f64,
+    pub temporal_posterior_support: f64,
+    #[serde(default)]
+    pub posterior_multiplier: f64,
+    #[serde(default)]
+    pub normalized_transition_posterior: f64,
+    #[serde(default)]
+    pub summary_line: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recommended_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralNodeTransitionPosteriorState {
+    pub transition_key: String,
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub observations: usize,
+    pub weighted_observation_mass: f64,
+    #[serde(default)]
+    pub transition_prior: f64,
+    #[serde(default)]
+    pub weighted_success_mass: f64,
+    #[serde(default)]
+    pub weighted_failure_mass: f64,
+    pub transition_outcome_support: f64,
+    pub temporal_posterior_support: f64,
+    #[serde(default)]
+    pub posterior_multiplier: f64,
+    #[serde(default)]
+    pub normalized_transition_posterior: f64,
+    #[serde(default)]
+    pub summary_line: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_recommended_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +1047,10 @@ impl Default for FactorLearningProfile {
 pub struct RegimeFactorStats {
     pub observations: usize,
     pub wins: usize,
+    #[serde(default)]
+    pub weighted_observations: f64,
+    #[serde(default)]
+    pub weighted_successes: f64,
     pub avg_pnl: f64,
     pub multiplier: f64,
 }
@@ -112,6 +1075,245 @@ pub struct FeedbackRecord {
     pub realized_outcome: String,
     pub pnl: f64,
     pub regime_at_entry: Regime,
+    #[serde(default)]
+    pub structural_feedback: Option<StructuralFeedbackRefs>,
+    #[serde(default)]
+    pub reflection_mismatch_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralFeedbackRefs {
+    pub protocol_version: String,
+    pub recommendation_id: String,
+    pub recommended_at: String,
+    pub node_id: String,
+    pub branch_id: String,
+    pub scenario_id: String,
+    pub path_id: String,
+    pub followed_path: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+}
+
+pub fn structural_feedback_outcome_is_unresolved(outcome: &str) -> bool {
+    matches!(
+        outcome.trim().to_ascii_lowercase().as_str(),
+        "pending" | "delayed" | "unresolved" | "awaiting"
+    )
+}
+
+pub fn structural_feedback_counts_as_executed_trade(record: &FeedbackRecord) -> bool {
+    if structural_feedback_outcome_is_unresolved(&record.realized_outcome) {
+        return false;
+    }
+    if record
+        .realized_outcome
+        .trim()
+        .eq_ignore_ascii_case("not_followed")
+    {
+        return false;
+    }
+    record
+        .structural_feedback
+        .as_ref()
+        .map(|refs| refs.followed_path)
+        .unwrap_or(true)
+}
+
+pub fn structural_feedback_trade_outcome_proxy(record: &FeedbackRecord) -> Option<String> {
+    use StructuralFeedbackLearningOutcome::{Negative, Neutral, Positive};
+
+    structural_feedback_learning_outcome(record).map(|outcome| match outcome {
+        Positive => "win".to_string(),
+        Negative => "loss".to_string(),
+        Neutral => "breakeven".to_string(),
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructuralFeedbackLearningOutcome {
+    Positive,
+    Neutral,
+    Negative,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StructuralFeedbackLearningSemantics {
+    pub credit_class: String,
+    pub success_credit: f64,
+    pub observation_weight: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StructuralFeedbackPseudoCounts {
+    pub(crate) success_credit: f64,
+    pub(crate) observation_weight: f64,
+}
+
+pub fn structural_feedback_learning_outcome(
+    record: &FeedbackRecord,
+) -> Option<StructuralFeedbackLearningOutcome> {
+    if !structural_feedback_counts_as_executed_trade(record) {
+        return None;
+    }
+    match record.realized_outcome.trim().to_ascii_lowercase().as_str() {
+        "win" | "profit" | "tp" | "take_profit" => {
+            Some(StructuralFeedbackLearningOutcome::Positive)
+        }
+        "loss" | "lose" | "sl" | "stop" | "stop_loss" | "invalidated" => {
+            Some(StructuralFeedbackLearningOutcome::Negative)
+        }
+        "breakeven" | "abandoned" => Some(StructuralFeedbackLearningOutcome::Neutral),
+        _ if record.pnl > 1e-12 => Some(StructuralFeedbackLearningOutcome::Positive),
+        _ if record.pnl < -1e-12 => Some(StructuralFeedbackLearningOutcome::Negative),
+        _ => Some(StructuralFeedbackLearningOutcome::Neutral),
+    }
+}
+
+pub fn structural_feedback_learning_semantics(
+    record: &FeedbackRecord,
+) -> StructuralFeedbackLearningSemantics {
+    if structural_feedback_outcome_is_unresolved(&record.realized_outcome) {
+        return StructuralFeedbackLearningSemantics {
+            credit_class: "no_credit_unresolved".to_string(),
+            success_credit: 0.0,
+            observation_weight: 0.0,
+        };
+    }
+    if !structural_feedback_counts_as_executed_trade(record) {
+        return StructuralFeedbackLearningSemantics {
+            credit_class: "no_credit_not_followed".to_string(),
+            success_credit: 0.0,
+            observation_weight: 0.0,
+        };
+    }
+    match record.realized_outcome.trim().to_ascii_lowercase().as_str() {
+        "win" | "profit" | "tp" | "take_profit" => StructuralFeedbackLearningSemantics {
+            credit_class: "positive_executed".to_string(),
+            success_credit: 1.0,
+            observation_weight: 1.0,
+        },
+        "loss" | "lose" | "sl" | "stop" | "stop_loss" => StructuralFeedbackLearningSemantics {
+            credit_class: "negative_executed".to_string(),
+            success_credit: 0.0,
+            observation_weight: 1.0,
+        },
+        "invalidated" => StructuralFeedbackLearningSemantics {
+            credit_class: "negative_invalidated".to_string(),
+            success_credit: 0.0,
+            observation_weight: 1.25,
+        },
+        "abandoned" => StructuralFeedbackLearningSemantics {
+            credit_class: "fractional_abandoned".to_string(),
+            success_credit: 0.25,
+            observation_weight: 0.75,
+        },
+        other => match structural_feedback_learning_outcome(record) {
+            Some(StructuralFeedbackLearningOutcome::Positive) => {
+                StructuralFeedbackLearningSemantics {
+                    credit_class: format!("positive_proxy:{other}"),
+                    success_credit: 1.0,
+                    observation_weight: 1.0,
+                }
+            }
+            Some(StructuralFeedbackLearningOutcome::Negative) => {
+                StructuralFeedbackLearningSemantics {
+                    credit_class: format!("negative_proxy:{other}"),
+                    success_credit: 0.0,
+                    observation_weight: 1.0,
+                }
+            }
+            _ => StructuralFeedbackLearningSemantics {
+                credit_class: "fractional_breakeven".to_string(),
+                success_credit: 0.5,
+                observation_weight: 1.0,
+            },
+        },
+    }
+}
+
+fn structural_feedback_pseudo_counts(
+    record: &FeedbackRecord,
+    followed_path: bool,
+) -> Option<StructuralFeedbackPseudoCounts> {
+    if !followed_path || structural_feedback_outcome_is_unresolved(&record.realized_outcome) {
+        return None;
+    }
+    let semantics = structural_feedback_learning_semantics(record);
+    if semantics.observation_weight <= f64::EPSILON {
+        None
+    } else {
+        Some(StructuralFeedbackPseudoCounts {
+            success_credit: semantics.success_credit.clamp(0.0, 1.0),
+            observation_weight: semantics.observation_weight.max(0.0),
+        })
+    }
+}
+
+pub(crate) fn structural_event_outcome_pseudo_counts(
+    outcome: Option<&str>,
+) -> Option<StructuralFeedbackPseudoCounts> {
+    match outcome.map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if matches!(value.as_str(), "win" | "profit" | "tp" | "take_profit") => {
+            Some(StructuralFeedbackPseudoCounts {
+                success_credit: 1.0,
+                observation_weight: 1.0,
+            })
+        }
+        Some(value)
+            if matches!(
+                value.as_str(),
+                "loss" | "lose" | "sl" | "stop" | "stop_loss"
+            ) =>
+        {
+            Some(StructuralFeedbackPseudoCounts {
+                success_credit: 0.0,
+                observation_weight: 1.0,
+            })
+        }
+        Some(value) if value == "invalidated" => Some(StructuralFeedbackPseudoCounts {
+            success_credit: 0.0,
+            observation_weight: 1.25,
+        }),
+        Some(value) if value == "abandoned" => Some(StructuralFeedbackPseudoCounts {
+            success_credit: 0.25,
+            observation_weight: 0.75,
+        }),
+        Some(value) if value == "breakeven" => Some(StructuralFeedbackPseudoCounts {
+            success_credit: 0.5,
+            observation_weight: 1.0,
+        }),
+        _ => None,
+    }
+}
+
+pub fn structural_feedback_counter_outcome(record: &FeedbackRecord) -> Option<&'static str> {
+    match record.realized_outcome.trim().to_ascii_lowercase().as_str() {
+        "win" | "profit" | "tp" | "take_profit" => Some("win"),
+        "loss" | "lose" | "sl" | "stop" | "stop_loss" => Some("loss"),
+        "invalidated" => Some("invalidated"),
+        "abandoned" => Some("abandoned"),
+        "breakeven" => Some("breakeven"),
+        "not_followed" => Some("not_followed"),
+        _ if record.pnl > 1e-12 => Some("win"),
+        _ if record.pnl < -1e-12 => Some("loss"),
+        _ => None,
+    }
+}
+
+pub fn structural_learning_semantics_summary(
+    credit_class: Option<&str>,
+    success_credit: Option<f64>,
+    observation_weight: Option<f64>,
+) -> String {
+    format!(
+        "class={} success_credit={:.3} observation_weight={:.3}",
+        credit_class.unwrap_or("unavailable"),
+        success_credit.unwrap_or_default(),
+        observation_weight.unwrap_or_default()
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +1442,8 @@ impl Default for PendingUpdateArtifact {
                 realized_outcome: String::new(),
                 pnl: 0.0,
                 regime_at_entry: Regime::ManipulationExpansion,
+                structural_feedback: None,
+                reflection_mismatch_tags: Vec::new(),
             },
             diff_from_previous: PendingUpdateArtifactDiff::default(),
             review_decision: PendingUpdateArtifactDecision::default(),
@@ -1254,6 +2458,8 @@ pub struct ResearchRunRecord {
     #[serde(default)]
     pub backtest_trade_count: usize,
     #[serde(default)]
+    pub canonical_structural_regime_posterior: Option<CanonicalStructuralRegimePosterior>,
+    #[serde(default)]
     pub artifact_decision_summary: ArtifactDecisionSummary,
     #[serde(default)]
     pub artifact_decision_section: ArtifactDecisionSection,
@@ -1276,6 +2482,8 @@ pub struct ResearchRunRecord {
     pub execution_gate_status: Option<String>,
     #[serde(default)]
     pub pda_cluster_label: Option<String>,
+    #[serde(default)]
+    pub control_matrix_plan: Option<crate::application::backtest::ControlMatrixPlan>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1429,6 +2637,8 @@ pub struct FactorAutoresearchLiveSnapshot {
     pub kept_attempts: usize,
     pub discarded_attempts: usize,
     #[serde(default)]
+    pub current_stage: String,
+    #[serde(default)]
     pub current_candidate_spec: Option<FactorMutationSpec>,
     #[serde(default)]
     pub latest_attempt_id: Option<String>,
@@ -1444,6 +2654,18 @@ pub struct FactorAutoresearchSummary {
     pub next_mutation_spec_template: Option<FactorMutationSpec>,
     #[serde(default)]
     pub live_snapshot: Option<FactorAutoresearchLiveSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CanonicalStructuralRegimePosterior {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_regime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub probabilities: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1469,6 +2691,12 @@ pub struct AnalyzeRunRecord {
     pub selected_entry_quality: String,
     pub decision_hint: String,
     #[serde(default)]
+    pub regime_probs: Option<RegimeProbs>,
+    #[serde(default)]
+    pub market_state_evidence: Vec<String>,
+    #[serde(default)]
+    pub entry_model_packets: crate::application::entry_models::EntryModelPacketStore,
+    #[serde(default)]
     pub hybrid_regime_label: Option<String>,
     #[serde(default)]
     pub hybrid_regime_age_bars: Option<usize>,
@@ -1480,6 +2708,8 @@ pub struct AnalyzeRunRecord {
     pub pre_bayes_evidence_filter: PreBayesEvidenceFilter,
     #[serde(default)]
     pub pre_bayes_entry_quality_bridge: PreBayesEntryQualityBridge,
+    #[serde(default)]
+    pub canonical_structural_regime_posterior: Option<CanonicalStructuralRegimePosterior>,
     pub factor_family_decisions: Vec<FactorFamilyDecision>,
     pub factor_family_outcomes: Vec<FactorFamilyOutcome>,
     pub factor_family_diffs: Vec<FactorFamilyDiff>,
@@ -1539,12 +2769,16 @@ impl Default for AnalyzeRunRecord {
             selected_direction: Direction::Neutral,
             selected_entry_quality: String::new(),
             decision_hint: String::new(),
+            regime_probs: None,
+            market_state_evidence: Vec::new(),
+            entry_model_packets: crate::application::entry_models::EntryModelPacketStore::default(),
             hybrid_regime_label: None,
             hybrid_regime_age_bars: None,
             hybrid_duration_model: None,
             hybrid_remaining_expected_bars: None,
             pre_bayes_evidence_filter: PreBayesEvidenceFilter::default(),
             pre_bayes_entry_quality_bridge: PreBayesEntryQualityBridge::default(),
+            canonical_structural_regime_posterior: None,
             factor_family_decisions: Vec::new(),
             factor_family_outcomes: Vec::new(),
             factor_family_diffs: Vec::new(),
@@ -1591,6 +2825,12 @@ pub struct UpdateRunRecord {
     pub factor_alignment: String,
     pub factor_uncertainty: String,
     pub realized_outcome: String,
+    #[serde(default)]
+    pub structural_learning_credit_class: Option<String>,
+    #[serde(default)]
+    pub structural_learning_success_credit: Option<f64>,
+    #[serde(default)]
+    pub structural_learning_observation_weight: Option<f64>,
     pub feedback_records_applied: usize,
     pub duplicate_feedback_skipped: bool,
     #[serde(default)]
@@ -1606,7 +2846,11 @@ pub struct UpdateRunRecord {
     #[serde(default)]
     pub consumed_pre_bayes_entry_quality_bridge: Option<PreBayesEntryQualityBridge>,
     #[serde(default)]
+    pub consumed_canonical_structural_regime_posterior: Option<CanonicalStructuralRegimePosterior>,
+    #[serde(default)]
     pub consumed_multi_timeframe_summary: Vec<String>,
+    #[serde(default)]
+    pub structural_feedback: Option<StructuralFeedbackRefs>,
     pub trade_outcome_deltas: Vec<ProbabilityDiff>,
     pub factor_score_deltas: Vec<RankingDiffItem>,
     pub factor_family_decisions: Vec<FactorFamilyDecision>,
@@ -1771,6 +3015,8 @@ pub struct BacktestRunRecord {
     #[serde(default)]
     pub objective_market_credibility_shrink:
         Option<crate::domain::belief::ObjectiveMarketCredibilityShrink>,
+    #[serde(default)]
+    pub canonical_structural_regime_posterior: Option<CanonicalStructuralRegimePosterior>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2083,6 +3329,14 @@ pub struct WorkflowPhaseSnapshot {
     #[serde(default)]
     pub pre_bayes_soft_evidence: BTreeMap<String, BTreeMap<String, f64>>,
     #[serde(default)]
+    pub market_state_evidence: Vec<String>,
+    #[serde(default)]
+    pub canonical_structural_active_regime: Option<String>,
+    #[serde(default)]
+    pub canonical_structural_confidence: Option<f64>,
+    #[serde(default)]
+    pub canonical_structural_probabilities: BTreeMap<String, f64>,
+    #[serde(default)]
     pub pre_bayes_long_signal_probability: Option<f64>,
     #[serde(default)]
     pub pre_bayes_short_signal_probability: Option<f64>,
@@ -2103,11 +3357,19 @@ pub struct WorkflowPhaseSnapshot {
     #[serde(default)]
     pub realized_outcome: Option<String>,
     #[serde(default)]
+    pub structural_learning_credit_class: Option<String>,
+    #[serde(default)]
+    pub structural_learning_success_credit: Option<f64>,
+    #[serde(default)]
+    pub structural_learning_observation_weight: Option<f64>,
+    #[serde(default)]
     pub family_states: Vec<String>,
     #[serde(default)]
     pub factor_actions: Vec<String>,
     #[serde(default)]
     pub multi_timeframe_summary: Vec<String>,
+    #[serde(default)]
+    pub structural_feedback: Option<StructuralFeedbackRefs>,
     #[serde(default)]
     pub family_score_map: BTreeMap<String, f64>,
     #[serde(default)]
@@ -2171,6 +3433,10 @@ impl Default for WorkflowPhaseSnapshot {
             pre_bayes_conflict_flags: Vec::new(),
             pre_bayes_filtered_assignments: BTreeMap::new(),
             pre_bayes_soft_evidence: BTreeMap::new(),
+            market_state_evidence: Vec::new(),
+            canonical_structural_active_regime: None,
+            canonical_structural_confidence: None,
+            canonical_structural_probabilities: BTreeMap::new(),
             pre_bayes_long_signal_probability: None,
             pre_bayes_short_signal_probability: None,
             pre_bayes_selected_entry_quality_probability: None,
@@ -2181,9 +3447,13 @@ impl Default for WorkflowPhaseSnapshot {
             pre_bayes_multi_timeframe_alignment_score: None,
             pre_bayes_multi_timeframe_entry_alignment_score: None,
             realized_outcome: None,
+            structural_learning_credit_class: None,
+            structural_learning_success_credit: None,
+            structural_learning_observation_weight: None,
             family_states: Vec::new(),
             factor_actions: Vec::new(),
             multi_timeframe_summary: Vec::new(),
+            structural_feedback: None,
             family_score_map: BTreeMap::new(),
             factor_score_map: BTreeMap::new(),
             objective_market_credibility_shrink: None,
@@ -2529,7 +3799,7 @@ impl LearningState {
             .join("|");
 
         format!(
-            "{}|{}|{}|{:?}|{}|{:.8}|{}|{:?}|{:?}|{:.6}|{:.6}|{}",
+            "{}|{}|{}|{:?}|{}|{:.8}|{}|{:?}|{:?}|{:.6}|{:.6}|{}|{}",
             record.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true),
             record.symbol,
             record.source,
@@ -2544,7 +3814,23 @@ impl LearningState {
                 .to_bits(),
             record.model_probabilities_before_trade.long_score,
             record.model_probabilities_before_trade.short_score,
-            factors
+            factors,
+            record
+                .structural_feedback
+                .as_ref()
+                .map(|refs| {
+                    format!(
+                        "{}|{}|{}|{}|{}|{}|{:?}",
+                        refs.protocol_version,
+                        refs.recommendation_id,
+                        refs.node_id,
+                        refs.branch_id,
+                        refs.scenario_id,
+                        refs.path_id,
+                        refs.followed_path
+                    )
+                })
+                .unwrap_or_else(|| "no_structural_feedback".to_string())
         )
     }
 
@@ -2558,7 +3844,42 @@ impl LearningState {
 
         for record in feedback {
             let key = Self::feedback_key(record);
-            if existing.insert(key) {
+            if existing.insert(key.clone()) {
+                let resolution_key = feedback_resolution_key(record);
+                let unresolved_outcome =
+                    structural_feedback_outcome_is_unresolved(&record.realized_outcome);
+                if !unresolved_outcome {
+                    if let Some(resolution_key) = resolution_key.as_deref() {
+                        if let Some((index, old_key)) =
+                            self.feedback_history.iter().enumerate().find_map(
+                                |(index, existing_record)| {
+                                    (structural_feedback_outcome_is_unresolved(
+                                        &existing_record.realized_outcome,
+                                    ) && feedback_resolution_key(existing_record).as_deref()
+                                        == Some(resolution_key))
+                                    .then(|| (index, Self::feedback_key(existing_record)))
+                                },
+                            )
+                        {
+                            self.feedback_history[index] = record.clone();
+                            existing.remove(&old_key);
+                            existing.insert(Self::feedback_key(record));
+                            inserted.push(record.clone());
+                            continue;
+                        }
+                    }
+                } else if let Some(resolution_key) = resolution_key.as_deref() {
+                    let resolved_exists = self.feedback_history.iter().any(|existing_record| {
+                        !structural_feedback_outcome_is_unresolved(
+                            &existing_record.realized_outcome,
+                        ) && feedback_resolution_key(existing_record).as_deref()
+                            == Some(resolution_key)
+                    });
+                    if resolved_exists {
+                        existing.remove(&key);
+                        continue;
+                    }
+                }
                 self.feedback_history.push(record.clone());
                 inserted.push(record.clone());
             }
@@ -2576,6 +3897,155 @@ impl LearningState {
             if let Some(replacement) = replacements.get(&Self::feedback_key(existing)) {
                 *existing = replacement.clone();
             }
+        }
+    }
+
+    pub fn apply_structural_feedback(&mut self, feedback: &[FeedbackRecord]) {
+        let mut appended = false;
+        for record in feedback {
+            if structural_feedback_outcome_is_unresolved(&record.realized_outcome) {
+                continue;
+            }
+            let Some(refs) = record.structural_feedback.as_ref() else {
+                continue;
+            };
+            update_structural_source_reliability_from_feedback(
+                &mut self.structural_prior_state,
+                record,
+                refs.followed_path,
+            );
+            update_structural_target_policy_context_posterior(
+                &mut self.structural_prior_state,
+                record,
+                refs.followed_path,
+            );
+            update_structural_prior_stats(
+                self.structural_prior_state
+                    .nodes
+                    .entry(refs.node_id.clone())
+                    .or_default(),
+                record,
+                refs.followed_path,
+                StructuralPriorEntityKind::Node,
+            );
+            update_structural_prior_stats(
+                self.structural_prior_state
+                    .branches
+                    .entry(refs.branch_id.clone())
+                    .or_default(),
+                record,
+                refs.followed_path,
+                StructuralPriorEntityKind::Branch,
+            );
+            update_structural_prior_stats(
+                self.structural_prior_state
+                    .scenarios
+                    .entry(refs.scenario_id.clone())
+                    .or_default(),
+                record,
+                refs.followed_path,
+                StructuralPriorEntityKind::Scenario,
+            );
+            update_structural_prior_stats(
+                self.structural_prior_state
+                    .paths
+                    .entry(refs.path_id.clone())
+                    .or_default(),
+                record,
+                refs.followed_path,
+                StructuralPriorEntityKind::Path,
+            );
+            refresh_structural_prior_mass_snapshots_for_refs(
+                &mut self.structural_prior_state,
+                refs,
+            );
+            appended |= append_structural_prior_event(
+                &mut self.structural_prior_state,
+                StructuralPriorEvent {
+                    source_label: record.source.clone(),
+                    symbol: record.symbol.clone(),
+                    recommendation_id: refs.recommendation_id.clone(),
+                    recommended_at: refs.recommended_at.clone(),
+                    node_id: refs.node_id.clone(),
+                    branch_id: refs.branch_id.clone(),
+                    scenario_id: refs.scenario_id.clone(),
+                    path_id: refs.path_id.clone(),
+                    followed_path: refs.followed_path,
+                    realized_outcome: Some(record.realized_outcome.clone()),
+                },
+            );
+        }
+        if appended {
+            rebuild_structural_sequence_priors(&mut self.structural_prior_state);
+        }
+    }
+
+    pub fn apply_structural_prior_seed(
+        &mut self,
+        refs: &StructuralFeedbackRefs,
+        seed: &StructuralPriorSeed,
+    ) {
+        apply_structural_prior_seed_to_source_reliability(&mut self.structural_prior_state, seed);
+        apply_structural_prior_seed_to_stats(
+            self.structural_prior_state
+                .nodes
+                .entry(refs.node_id.clone())
+                .or_default(),
+            refs,
+            seed,
+            StructuralPriorEntityKind::Node,
+        );
+        apply_structural_prior_seed_to_stats(
+            self.structural_prior_state
+                .branches
+                .entry(refs.branch_id.clone())
+                .or_default(),
+            refs,
+            seed,
+            StructuralPriorEntityKind::Branch,
+        );
+        apply_structural_prior_seed_to_stats(
+            self.structural_prior_state
+                .scenarios
+                .entry(refs.scenario_id.clone())
+                .or_default(),
+            refs,
+            seed,
+            StructuralPriorEntityKind::Scenario,
+        );
+        apply_structural_prior_seed_to_stats(
+            self.structural_prior_state
+                .paths
+                .entry(refs.path_id.clone())
+                .or_default(),
+            refs,
+            seed,
+            StructuralPriorEntityKind::Path,
+        );
+        if seed.observations > 0 {
+            self.structural_prior_state.last_offline_seed_snapshot =
+                Some(structural_offline_seed_snapshot(refs, seed));
+            refresh_structural_prior_mass_snapshots_for_refs(
+                &mut self.structural_prior_state,
+                refs,
+            );
+        }
+        if append_structural_prior_event(
+            &mut self.structural_prior_state,
+            StructuralPriorEvent {
+                source_label: seed.source_label.clone(),
+                symbol: structural_prior_symbol_from_node_id(&refs.node_id),
+                recommendation_id: refs.recommendation_id.clone(),
+                recommended_at: refs.recommended_at.clone(),
+                node_id: refs.node_id.clone(),
+                branch_id: refs.branch_id.clone(),
+                scenario_id: refs.scenario_id.clone(),
+                path_id: refs.path_id.clone(),
+                followed_path: refs.followed_path,
+                realized_outcome: structural_prior_seed_representative_outcome(seed),
+            },
+        ) {
+            rebuild_structural_sequence_priors(&mut self.structural_prior_state);
         }
     }
 
@@ -2950,6 +4420,1562 @@ fn iteration_priority(action: &str) -> u8 {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum StructuralPriorEntityKind {
+    Node,
+    Branch,
+    Scenario,
+    Path,
+}
+
+fn structural_prior_entity_mass_scale(kind: StructuralPriorEntityKind) -> f64 {
+    match kind {
+        StructuralPriorEntityKind::Node => 0.50,
+        StructuralPriorEntityKind::Branch => 0.75,
+        StructuralPriorEntityKind::Scenario => 0.90,
+        StructuralPriorEntityKind::Path => 1.0,
+    }
+}
+
+fn structural_prior_entity_kind_label(kind: StructuralPriorEntityKind) -> &'static str {
+    match kind {
+        StructuralPriorEntityKind::Node => "node",
+        StructuralPriorEntityKind::Branch => "branch",
+        StructuralPriorEntityKind::Scenario => "scenario",
+        StructuralPriorEntityKind::Path => "path",
+    }
+}
+
+fn structural_prior_mass_snapshot(
+    entity_id: &str,
+    kind: StructuralPriorEntityKind,
+    stats: &StructuralPriorStats,
+) -> StructuralPriorMassSnapshot {
+    StructuralPriorMassSnapshot {
+        entity_id: entity_id.to_string(),
+        entity_kind: structural_prior_entity_kind_label(kind).to_string(),
+        observations: stats.observations,
+        followed_count: stats.followed_count,
+        weighted_followed_mass: stats.weighted_followed_mass,
+        weighted_success_mass: stats.weighted_success_mass,
+        weighted_failure_mass: stats.weighted_failure_mass,
+        weighted_invalidation_mass: stats.weighted_invalidation_mass,
+        weighted_exposure_mass: stats.weighted_exposure_mass,
+        weighted_not_followed_mass: stats.weighted_not_followed_mass,
+        smoothed_prior: stats.smoothed_prior,
+        execution_propensity: stats.execution_propensity,
+        off_policy_adjusted_prior: stats.off_policy_adjusted_prior,
+        behavior_policy_probability: stats.behavior_policy_probability,
+        behavior_policy_probability_squared_mass: stats.behavior_policy_probability_squared_mass,
+        behavior_policy_probability_variance: stats.behavior_policy_probability_variance,
+        target_policy_probability_confidence: stats.target_policy_probability_confidence,
+        target_policy_probability_lower_bound: stats.target_policy_probability_lower_bound,
+        target_policy_probability_brier_score: stats.target_policy_probability_brier_score,
+        target_policy_probability_calibration_error: stats
+            .target_policy_probability_calibration_error,
+        snips_reward_prior: stats.snips_reward_prior,
+        doubly_robust_reward_prior: stats.doubly_robust_reward_prior,
+        target_policy_calibration_weight: stats.target_policy_calibration_weight,
+        target_policy_reward_prior: stats.target_policy_reward_prior,
+        target_policy_variance_penalty: stats.target_policy_variance_penalty,
+        target_policy_reward_lower_bound: stats.target_policy_reward_lower_bound,
+        delayed_reward_resolution_probability: stats.delayed_reward_resolution_probability,
+        delayed_reward_censoring_probability: stats.delayed_reward_censoring_probability,
+        censoring_adjusted_reward_prior: stats.censoring_adjusted_reward_prior,
+        censoring_adjusted_reward_lower_bound: stats.censoring_adjusted_reward_lower_bound,
+        delayed_reward_success_competing_risk: stats.delayed_reward_success_competing_risk,
+        delayed_reward_failure_competing_risk: stats.delayed_reward_failure_competing_risk,
+        delayed_reward_invalidation_competing_risk: stats
+            .delayed_reward_invalidation_competing_risk,
+        delayed_reward_abandonment_competing_risk: stats.delayed_reward_abandonment_competing_risk,
+        delayed_reward_competing_risk_entropy: stats.delayed_reward_competing_risk_entropy,
+        delayed_reward_elapsed_feedback_count: stats.delayed_reward_elapsed_feedback_count,
+        delayed_reward_elapsed_hours_at_risk: stats.delayed_reward_elapsed_hours_at_risk,
+        delayed_reward_avg_elapsed_hours: stats.delayed_reward_avg_elapsed_hours,
+        delayed_reward_resolution_hazard_per_hour: stats.delayed_reward_resolution_hazard_per_hour,
+        delayed_reward_expected_resolution_hours: stats.delayed_reward_expected_resolution_hours,
+        delayed_reward_survival_probability_1h: stats.delayed_reward_survival_probability_1h,
+        delayed_reward_survival_probability_4h: stats.delayed_reward_survival_probability_4h,
+        delayed_reward_survival_probability_24h: stats.delayed_reward_survival_probability_24h,
+        delayed_reward_success_hazard_per_hour: stats.delayed_reward_success_hazard_per_hour,
+        delayed_reward_failure_hazard_per_hour: stats.delayed_reward_failure_hazard_per_hour,
+        delayed_reward_invalidation_hazard_per_hour: stats
+            .delayed_reward_invalidation_hazard_per_hour,
+        delayed_reward_abandonment_hazard_per_hour: stats
+            .delayed_reward_abandonment_hazard_per_hour,
+        delayed_reward_success_cumulative_incidence_4h: stats
+            .delayed_reward_success_cumulative_incidence_4h,
+        delayed_reward_failure_cumulative_incidence_4h: stats
+            .delayed_reward_failure_cumulative_incidence_4h,
+        delayed_reward_invalidation_cumulative_incidence_4h: stats
+            .delayed_reward_invalidation_cumulative_incidence_4h,
+        delayed_reward_abandonment_cumulative_incidence_4h: stats
+            .delayed_reward_abandonment_cumulative_incidence_4h,
+        delayed_reward_resolution_horizon_1h_count: stats
+            .delayed_reward_resolution_horizon_1h_count,
+        delayed_reward_resolution_within_1h_count: stats.delayed_reward_resolution_within_1h_count,
+        delayed_reward_resolution_probability_1h: stats.delayed_reward_resolution_probability_1h,
+        delayed_reward_resolution_horizon_4h_count: stats
+            .delayed_reward_resolution_horizon_4h_count,
+        delayed_reward_resolution_within_4h_count: stats.delayed_reward_resolution_within_4h_count,
+        delayed_reward_resolution_probability_4h: stats.delayed_reward_resolution_probability_4h,
+        delayed_reward_resolution_horizon_24h_count: stats
+            .delayed_reward_resolution_horizon_24h_count,
+        delayed_reward_resolution_within_24h_count: stats
+            .delayed_reward_resolution_within_24h_count,
+        delayed_reward_resolution_probability_24h: stats.delayed_reward_resolution_probability_24h,
+        last_offline_seed_source: stats.last_offline_seed_source.clone(),
+    }
+}
+
+fn refresh_structural_prior_mass_snapshots_for_refs(
+    state: &mut StructuralPriorLearningState,
+    refs: &StructuralFeedbackRefs,
+) {
+    if let Some(snapshot) = state.nodes.get(&refs.node_id).map(|stats| {
+        structural_prior_mass_snapshot(&refs.node_id, StructuralPriorEntityKind::Node, stats)
+    }) {
+        state.node_prior_mass.insert(refs.node_id.clone(), snapshot);
+    }
+    if let Some(snapshot) = state.branches.get(&refs.branch_id).map(|stats| {
+        structural_prior_mass_snapshot(&refs.branch_id, StructuralPriorEntityKind::Branch, stats)
+    }) {
+        state
+            .branch_prior_mass
+            .insert(refs.branch_id.clone(), snapshot);
+    }
+    if let Some(snapshot) = state.scenarios.get(&refs.scenario_id).map(|stats| {
+        structural_prior_mass_snapshot(
+            &refs.scenario_id,
+            StructuralPriorEntityKind::Scenario,
+            stats,
+        )
+    }) {
+        state
+            .scenario_prior_mass
+            .insert(refs.scenario_id.clone(), snapshot);
+    }
+    if let Some(snapshot) = state.paths.get(&refs.path_id).map(|stats| {
+        structural_prior_mass_snapshot(&refs.path_id, StructuralPriorEntityKind::Path, stats)
+    }) {
+        state.path_prior_mass.insert(refs.path_id.clone(), snapshot);
+    }
+}
+
+fn update_structural_prior_stats(
+    stats: &mut StructuralPriorStats,
+    record: &FeedbackRecord,
+    followed_path: bool,
+    kind: StructuralPriorEntityKind,
+) {
+    let source_weight =
+        structural_prior_source_weight(&record.source) * structural_prior_entity_mass_scale(kind);
+    let not_followed_path = !followed_path
+        || record
+            .realized_outcome
+            .trim()
+            .eq_ignore_ascii_case("not_followed");
+    stats.observations += 1;
+    stats.weighted_exposure_mass += source_weight;
+    if stats.observations == 1 {
+        stats.avg_pnl = record.pnl;
+    } else {
+        let previous = stats.observations - 1;
+        stats.avg_pnl =
+            ((stats.avg_pnl * previous as f64) + record.pnl) / stats.observations as f64;
+    }
+    if followed_path {
+        stats.followed_count += 1;
+    }
+    if not_followed_path {
+        stats.not_followed += 1;
+        stats.weighted_not_followed_mass += source_weight;
+    }
+    accumulate_structural_prior_stats_delayed_reward_observation(stats, record, followed_path);
+    if let Some(pseudo_counts) = structural_feedback_pseudo_counts(record, followed_path) {
+        let mass_update = weighted_success_credit_beta_update(
+            pseudo_counts.success_credit,
+            source_weight,
+            pseudo_counts.observation_weight,
+            1.0,
+        );
+        let weighted_observation = mass_update.observation_mass;
+        mass_update.apply_to(
+            &mut stats.weighted_followed_mass,
+            &mut stats.weighted_success_mass,
+            &mut stats.weighted_failure_mass,
+        );
+        if matches!(
+            structural_feedback_counter_outcome(record),
+            Some("invalidated")
+        ) {
+            stats.weighted_invalidation_mass += weighted_observation;
+        }
+        if let Some(contribution) =
+            structural_policy_correction_contribution(record, pseudo_counts, weighted_observation)
+        {
+            update_structural_policy_correction_stats(
+                StructuralPolicyCorrectionStatsAccumulator {
+                    policy_weighted_observation_mass: &mut stats.policy_weighted_observation_mass,
+                    behavior_policy_probability: &mut stats.behavior_policy_probability,
+                    behavior_policy_probability_squared_mass: &mut stats
+                        .behavior_policy_probability_squared_mass,
+                    target_policy_probability_brier_score_mass: &mut stats
+                        .target_policy_probability_brier_score_mass,
+                    target_policy_probability_calibration_error_mass: &mut stats
+                        .target_policy_probability_calibration_error_mass,
+                    snips_weight_mass: &mut stats.snips_weight_mass,
+                    snips_weight_squared_mass: &mut stats.snips_weight_squared_mass,
+                    snips_reward_mass: &mut stats.snips_reward_mass,
+                    doubly_robust_reward_mass: &mut stats.doubly_robust_reward_mass,
+                },
+                contribution,
+            );
+        }
+    }
+    let source_summary = stats
+        .source_panel_summaries
+        .entry(record.source.clone())
+        .or_default();
+    update_structural_prior_source_summary_from_feedback(
+        source_summary,
+        record,
+        followed_path,
+        kind,
+    );
+    refresh_structural_smoothed_prior(stats);
+}
+
+fn apply_structural_prior_seed_to_stats(
+    stats: &mut StructuralPriorStats,
+    refs: &StructuralFeedbackRefs,
+    seed: &StructuralPriorSeed,
+    kind: StructuralPriorEntityKind,
+) {
+    if seed.observations == 0 {
+        return;
+    }
+    let source_weight =
+        structural_prior_seed_effective_weight(seed) * structural_prior_entity_mass_scale(kind);
+    let previous_observations = stats.observations;
+    stats.observations += seed.observations;
+    stats.followed_count += seed.followed_count;
+    stats.wins += seed.wins;
+    stats.losses += seed.losses;
+    stats.breakevens += seed.breakevens;
+    stats.invalidated += seed.invalidated;
+    stats.abandoned += seed.abandoned;
+    stats.not_followed += seed.not_followed;
+    let mass_update = weighted_seed_beta_update(WeightedSeedBetaUpdateInput {
+        followed_observation_count: seed.followed_count,
+        wins: seed.wins,
+        losses: seed.losses,
+        breakevens: seed.breakevens,
+        invalidated: seed.invalidated,
+        abandoned: seed.abandoned,
+        source_weight,
+        quality_weight: 1.0,
+        recency_weight: 1.0,
+    });
+    mass_update.apply_to(
+        &mut stats.weighted_followed_mass,
+        &mut stats.weighted_success_mass,
+        &mut stats.weighted_failure_mass,
+    );
+    stats.weighted_invalidation_mass += source_weight * seed.invalidated as f64;
+    stats.weighted_exposure_mass += source_weight * seed.observations as f64;
+    stats.weighted_not_followed_mass += source_weight * seed.not_followed as f64;
+    let new_total = previous_observations + seed.observations;
+    stats.avg_pnl = if new_total == 0 {
+        0.0
+    } else {
+        ((stats.avg_pnl * previous_observations as f64) + (seed.avg_pnl * seed.observations as f64))
+            / new_total as f64
+    };
+    stats.last_offline_seed_source = Some(seed.source_label.clone());
+    let source_summary = stats
+        .source_panel_summaries
+        .entry(seed.source_label.clone())
+        .or_default();
+    apply_structural_prior_seed_to_source_summary(source_summary, refs, seed, kind);
+    refresh_structural_smoothed_prior(stats);
+}
+
+pub(crate) fn structural_prior_source_weight(source: &str) -> f64 {
+    match source.trim() {
+        "structural_feedback_submission" | "update_structural_feedback" | "live_feedback" => 1.0,
+        "artifact_validation" => 0.90,
+        "backtest" | "backtest_run_structural_prior_seed" => 0.75,
+        "research" | "research_run_structural_prior_seed" => 0.55,
+        "factor_mutation_structural_prior_seed" | "factor_mutation" => 0.40,
+        "analyze" | "analyze_run_structural_prior_seed" => 0.30,
+        _ => 0.50,
+    }
+}
+
+fn structural_prior_seed_tempering_coefficient(seed: &StructuralPriorSeed) -> f64 {
+    seed.tempering_coefficient.unwrap_or(1.0).clamp(0.0, 1.0)
+}
+
+fn structural_prior_seed_effective_weight(seed: &StructuralPriorSeed) -> f64 {
+    beta_update_factor(
+        structural_prior_source_weight(&seed.source_label),
+        structural_prior_seed_tempering_coefficient(seed),
+        1.0,
+    )
+    .clamp(0.0, 1.0)
+}
+
+fn structural_power_prior_contribution(
+    seed: &StructuralPriorSeed,
+    kind: StructuralPriorEntityKind,
+) -> StructuralPowerPriorContribution {
+    structural_power_prior_contribution_with_entity_scale(
+        seed,
+        structural_prior_entity_mass_scale(kind),
+    )
+}
+
+fn structural_power_prior_contribution_with_entity_scale(
+    seed: &StructuralPriorSeed,
+    entity_mass_scale: f64,
+) -> StructuralPowerPriorContribution {
+    let base_source_weight = structural_prior_source_weight(&seed.source_label);
+    let tempering_coefficient = structural_prior_seed_tempering_coefficient(seed);
+    let effective_tau =
+        beta_update_factor(base_source_weight, tempering_coefficient, entity_mass_scale);
+    let mass_update = weighted_seed_beta_update(WeightedSeedBetaUpdateInput {
+        followed_observation_count: seed.followed_count,
+        wins: seed.wins,
+        losses: seed.losses,
+        breakevens: seed.breakevens,
+        invalidated: seed.invalidated,
+        abandoned: seed.abandoned,
+        source_weight: base_source_weight,
+        quality_weight: tempering_coefficient,
+        recency_weight: entity_mass_scale,
+    });
+    StructuralPowerPriorContribution {
+        source_label: seed.source_label.clone(),
+        base_source_weight,
+        tempering_coefficient,
+        entity_mass_scale,
+        effective_tau,
+        observation_mass: effective_tau * seed.observations as f64,
+        success_mass: mass_update.success_mass,
+        failure_mass: mass_update.failure_mass,
+        invalidation_mass: effective_tau * seed.invalidated as f64,
+        not_followed_mass: effective_tau * seed.not_followed as f64,
+    }
+}
+
+fn structural_offline_seed_snapshot(
+    refs: &StructuralFeedbackRefs,
+    seed: &StructuralPriorSeed,
+) -> StructuralOfflineSeedSnapshot {
+    StructuralOfflineSeedSnapshot {
+        source_label: seed.source_label.clone(),
+        recommendation_id: refs.recommendation_id.clone(),
+        recommended_at: refs.recommended_at.clone(),
+        node_id: refs.node_id.clone(),
+        branch_id: refs.branch_id.clone(),
+        scenario_id: refs.scenario_id.clone(),
+        path_id: refs.path_id.clone(),
+        followed_path: refs.followed_path,
+        observations: seed.observations,
+        followed_count: seed.followed_count,
+        wins: seed.wins,
+        losses: seed.losses,
+        breakevens: seed.breakevens,
+        invalidated: seed.invalidated,
+        abandoned: seed.abandoned,
+        not_followed: seed.not_followed,
+        avg_pnl: seed.avg_pnl,
+        node_contribution: structural_power_prior_contribution(
+            seed,
+            StructuralPriorEntityKind::Node,
+        ),
+        branch_contribution: structural_power_prior_contribution(
+            seed,
+            StructuralPriorEntityKind::Branch,
+        ),
+        scenario_contribution: structural_power_prior_contribution(
+            seed,
+            StructuralPriorEntityKind::Scenario,
+        ),
+        path_contribution: structural_power_prior_contribution(
+            seed,
+            StructuralPriorEntityKind::Path,
+        ),
+    }
+}
+
+fn structural_followed_exposure_mass(
+    weighted_exposure_mass: f64,
+    weighted_not_followed_mass: f64,
+    followed_count: usize,
+) -> f64 {
+    if weighted_exposure_mass > f64::EPSILON {
+        (weighted_exposure_mass - weighted_not_followed_mass.max(0.0)).max(0.0)
+    } else {
+        followed_count as f64
+    }
+}
+
+fn structural_not_followed_exposure_mass(
+    weighted_exposure_mass: f64,
+    weighted_not_followed_mass: f64,
+    not_followed: usize,
+) -> f64 {
+    if weighted_exposure_mass > f64::EPSILON {
+        weighted_not_followed_mass.max(0.0)
+    } else {
+        not_followed as f64
+    }
+}
+
+fn structural_propensity_estimate(followed_exposure_mass: f64, not_followed_mass: f64) -> f64 {
+    let followed = followed_exposure_mass.max(0.0);
+    let not_followed = not_followed_mass.max(0.0);
+    let exposure = followed + not_followed;
+    if exposure <= f64::EPSILON {
+        0.5
+    } else {
+        ((1.0 + followed) / (2.0 + exposure)).clamp(0.0, 1.0)
+    }
+}
+
+fn structural_ips_weight(execution_propensity: f64) -> f64 {
+    if execution_propensity <= f64::EPSILON {
+        0.0
+    } else {
+        (1.0 / execution_propensity).min(STRUCTURAL_IPS_WEIGHT_CLIP)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StructuralPolicyCorrectionContribution {
+    weighted_observation: f64,
+    behavior_policy_probability: f64,
+    behavior_policy_probability_squared_mass: f64,
+    target_policy_probability_brier_score_mass: f64,
+    target_policy_probability_calibration_error_mass: f64,
+    snips_weighted_mass: f64,
+    snips_weighted_squared_mass: f64,
+    snips_reward_mass: f64,
+    doubly_robust_reward: f64,
+}
+
+fn structural_feedback_behavior_policy_probability(record: &FeedbackRecord) -> Option<f64> {
+    let probability = record
+        .model_probabilities_before_trade
+        .selected_probability
+        .clamp(0.0, 1.0);
+    (probability > f64::EPSILON).then_some(probability)
+}
+
+fn structural_feedback_reward_baseline(record: &FeedbackRecord) -> f64 {
+    let probabilities = &record.model_probabilities_before_trade;
+    match probabilities.selected_direction {
+        Direction::Bull => probabilities.win_prob_long,
+        Direction::Bear => probabilities.win_prob_short,
+        Direction::Neutral => probabilities.selected_probability,
+    }
+    .clamp(0.0, 1.0)
+}
+
+fn structural_policy_correction_contribution(
+    record: &FeedbackRecord,
+    pseudo_counts: StructuralFeedbackPseudoCounts,
+    weighted_observation: f64,
+) -> Option<StructuralPolicyCorrectionContribution> {
+    if weighted_observation <= f64::EPSILON {
+        return None;
+    }
+    let behavior_policy_probability = structural_feedback_behavior_policy_probability(record)?;
+    let snips_weight = structural_ips_weight(behavior_policy_probability);
+    if snips_weight <= f64::EPSILON {
+        return None;
+    }
+    let reward = pseudo_counts.success_credit.clamp(0.0, 1.0);
+    let baseline = structural_feedback_reward_baseline(record);
+    let doubly_robust_reward = (baseline + snips_weight * (reward - baseline)).clamp(0.0, 1.0);
+    let snips_weighted_mass = weighted_observation * snips_weight;
+    Some(StructuralPolicyCorrectionContribution {
+        weighted_observation,
+        behavior_policy_probability,
+        behavior_policy_probability_squared_mass: weighted_observation
+            * behavior_policy_probability
+            * behavior_policy_probability,
+        target_policy_probability_brier_score_mass: weighted_observation
+            * (behavior_policy_probability - reward).powi(2),
+        target_policy_probability_calibration_error_mass: weighted_observation
+            * (behavior_policy_probability - reward).abs(),
+        snips_weighted_mass,
+        snips_weighted_squared_mass: snips_weighted_mass * snips_weighted_mass,
+        snips_reward_mass: snips_weighted_mass * reward,
+        doubly_robust_reward,
+    })
+}
+
+struct StructuralPolicyCorrectionStatsAccumulator<'a> {
+    policy_weighted_observation_mass: &'a mut f64,
+    behavior_policy_probability: &'a mut f64,
+    behavior_policy_probability_squared_mass: &'a mut f64,
+    target_policy_probability_brier_score_mass: &'a mut f64,
+    target_policy_probability_calibration_error_mass: &'a mut f64,
+    snips_weight_mass: &'a mut f64,
+    snips_weight_squared_mass: &'a mut f64,
+    snips_reward_mass: &'a mut f64,
+    doubly_robust_reward_mass: &'a mut f64,
+}
+
+fn update_structural_policy_correction_stats(
+    stats: StructuralPolicyCorrectionStatsAccumulator<'_>,
+    contribution: StructuralPolicyCorrectionContribution,
+) {
+    let StructuralPolicyCorrectionStatsAccumulator {
+        policy_weighted_observation_mass,
+        behavior_policy_probability,
+        behavior_policy_probability_squared_mass,
+        target_policy_probability_brier_score_mass,
+        target_policy_probability_calibration_error_mass,
+        snips_weight_mass,
+        snips_weight_squared_mass,
+        snips_reward_mass,
+        doubly_robust_reward_mass,
+    } = stats;
+    let previous_mass = (*policy_weighted_observation_mass).max(0.0);
+    let next_mass = previous_mass + contribution.weighted_observation;
+    if next_mass > f64::EPSILON {
+        *behavior_policy_probability = ((*behavior_policy_probability * previous_mass)
+            + contribution.behavior_policy_probability * contribution.weighted_observation)
+            / next_mass;
+    }
+    *policy_weighted_observation_mass = next_mass;
+    *behavior_policy_probability_squared_mass +=
+        contribution.behavior_policy_probability_squared_mass;
+    *target_policy_probability_brier_score_mass +=
+        contribution.target_policy_probability_brier_score_mass;
+    *target_policy_probability_calibration_error_mass +=
+        contribution.target_policy_probability_calibration_error_mass;
+    *snips_weight_mass += contribution.snips_weighted_mass;
+    *snips_weight_squared_mass += contribution.snips_weighted_squared_mass;
+    *snips_reward_mass += contribution.snips_reward_mass;
+    *doubly_robust_reward_mass +=
+        contribution.weighted_observation * contribution.doubly_robust_reward;
+}
+
+fn structural_target_policy_context_key(record: &FeedbackRecord) -> String {
+    let symbol = record.symbol.trim();
+    let symbol = if symbol.is_empty() { "unknown" } else { symbol };
+    format!(
+        "{}:{}:{}",
+        symbol,
+        structural_regime_context_label(record.regime_at_entry),
+        structural_direction_context_label(
+            record.model_probabilities_before_trade.selected_direction,
+        )
+    )
+}
+
+fn structural_regime_context_label(regime: Regime) -> &'static str {
+    match regime {
+        Regime::Accumulation => "accumulation",
+        Regime::ManipulationExpansion => "manipulation_expansion",
+        Regime::Distribution => "distribution",
+    }
+}
+
+fn structural_direction_context_label(direction: Direction) -> &'static str {
+    match direction {
+        Direction::Bull => "bull",
+        Direction::Bear => "bear",
+        Direction::Neutral => "neutral",
+    }
+}
+
+fn update_structural_target_policy_context_posterior(
+    state: &mut StructuralPriorLearningState,
+    record: &FeedbackRecord,
+    followed_path: bool,
+) {
+    let Some(pseudo_counts) = structural_feedback_pseudo_counts(record, followed_path) else {
+        return;
+    };
+    let mass_update = weighted_success_credit_beta_update(
+        pseudo_counts.success_credit,
+        structural_prior_source_weight(&record.source),
+        pseudo_counts.observation_weight,
+        1.0,
+    );
+    let weighted_observation = mass_update.observation_mass;
+    let Some(contribution) =
+        structural_policy_correction_contribution(record, pseudo_counts, weighted_observation)
+    else {
+        return;
+    };
+    let key = structural_target_policy_context_key(record);
+    let posterior = state
+        .target_policy_context_posteriors
+        .entry(key)
+        .or_default();
+    let previous_mass = posterior.weighted_observation_mass.max(0.0);
+    let next_mass = previous_mass + contribution.weighted_observation;
+    if next_mass > f64::EPSILON {
+        posterior.behavior_policy_probability = ((posterior.behavior_policy_probability
+            * previous_mass)
+            + contribution.behavior_policy_probability * contribution.weighted_observation)
+            / next_mass;
+    }
+    posterior.observations += 1;
+    posterior.weighted_observation_mass = next_mass;
+    posterior.success_mass += mass_update.success_mass;
+    posterior.failure_mass += mass_update.failure_mass;
+    posterior.behavior_policy_probability_squared_mass +=
+        contribution.behavior_policy_probability_squared_mass;
+    posterior.target_policy_probability_brier_score_mass +=
+        contribution.target_policy_probability_brier_score_mass;
+    posterior.target_policy_probability_calibration_error_mass +=
+        contribution.target_policy_probability_calibration_error_mass;
+    posterior.last_updated_at = Some(record.timestamp.to_rfc3339_opts(SecondsFormat::Secs, true));
+    posterior.last_recommendation_id = record
+        .structural_feedback
+        .as_ref()
+        .map(|refs| refs.recommendation_id.clone());
+    refresh_structural_target_policy_context_posterior(posterior);
+}
+
+fn refresh_structural_target_policy_context_posterior(
+    posterior: &mut StructuralTargetPolicyContextPosterior,
+) {
+    posterior.behavior_policy_probability = posterior.behavior_policy_probability.clamp(0.0, 1.0);
+    posterior.behavior_policy_probability_variance =
+        structural_behavior_policy_probability_variance(
+            posterior.weighted_observation_mass,
+            posterior.behavior_policy_probability,
+            posterior.behavior_policy_probability_squared_mass,
+        );
+    posterior.target_policy_probability_brier_score = structural_policy_probability_average_error(
+        posterior.weighted_observation_mass,
+        posterior.target_policy_probability_brier_score_mass,
+    );
+    posterior.target_policy_probability_calibration_error =
+        structural_policy_probability_average_error(
+            posterior.weighted_observation_mass,
+            posterior.target_policy_probability_calibration_error_mass,
+        );
+    posterior.learned_target_policy_probability =
+        structural_beta_mean(posterior.success_mass, posterior.failure_mass);
+    posterior.learned_target_policy_probability_lower_bound =
+        structural_learned_target_policy_probability_lower_bound(
+            posterior.learned_target_policy_probability,
+            posterior.weighted_observation_mass,
+        );
+    posterior.learned_target_policy_probability_confidence =
+        structural_learned_target_policy_probability_confidence(
+            posterior.weighted_observation_mass,
+            posterior.target_policy_probability_brier_score,
+        );
+    posterior.calibrated_target_policy_probability =
+        structural_calibrated_target_policy_probability(
+            posterior.behavior_policy_probability,
+            posterior.learned_target_policy_probability,
+            posterior.learned_target_policy_probability_confidence,
+        );
+    posterior.calibrated_target_policy_probability_lower_bound =
+        structural_calibrated_target_policy_probability_lower_bound(
+            posterior.behavior_policy_probability,
+            posterior.behavior_policy_probability_variance,
+            posterior.weighted_observation_mass,
+            posterior.learned_target_policy_probability_lower_bound,
+            posterior.learned_target_policy_probability_confidence,
+        );
+}
+
+fn structural_learned_target_policy_probability_lower_bound(probability: f64, mass: f64) -> f64 {
+    if mass <= f64::EPSILON {
+        return 0.0;
+    }
+    let probability = probability.clamp(0.0, 1.0);
+    let penalty = ((probability * (1.0 - probability)) / (1.0 + mass.max(0.0)))
+        .sqrt()
+        .clamp(0.0, 1.0);
+    (probability - penalty).clamp(0.0, 1.0)
+}
+
+fn structural_learned_target_policy_probability_confidence(mass: f64, brier_score: f64) -> f64 {
+    if mass <= f64::EPSILON {
+        return 0.0;
+    }
+    let mass_confidence = (mass / (1.0 + mass)).clamp(0.0, 1.0);
+    let calibration_confidence = (1.0 - brier_score.clamp(0.0, 1.0).sqrt()).clamp(0.0, 1.0);
+    (mass_confidence * calibration_confidence).clamp(0.0, 1.0)
+}
+
+fn structural_calibrated_target_policy_probability(
+    behavior_policy_probability: f64,
+    learned_target_policy_probability: f64,
+    learned_target_policy_probability_confidence: f64,
+) -> f64 {
+    let confidence = learned_target_policy_probability_confidence.clamp(0.0, 1.0);
+    (learned_target_policy_probability.clamp(0.0, 1.0) * confidence
+        + behavior_policy_probability.clamp(0.0, 1.0) * (1.0 - confidence))
+        .clamp(0.0, 1.0)
+}
+
+fn structural_calibrated_target_policy_probability_lower_bound(
+    behavior_policy_probability: f64,
+    behavior_policy_probability_variance: f64,
+    weighted_observation_mass: f64,
+    learned_target_policy_probability_lower_bound: f64,
+    learned_target_policy_probability_confidence: f64,
+) -> f64 {
+    let behavior_lower_bound = structural_target_policy_probability_lower_bound(
+        behavior_policy_probability,
+        weighted_observation_mass,
+        behavior_policy_probability_variance,
+    );
+    structural_calibrated_target_policy_probability(
+        behavior_lower_bound,
+        learned_target_policy_probability_lower_bound,
+        learned_target_policy_probability_confidence,
+    )
+}
+
+fn structural_snips_effective_sample_size(
+    snips_weight_mass: f64,
+    snips_weight_squared_mass: f64,
+) -> f64 {
+    if snips_weight_mass <= f64::EPSILON || snips_weight_squared_mass <= f64::EPSILON {
+        0.0
+    } else {
+        ((snips_weight_mass * snips_weight_mass) / snips_weight_squared_mass).max(0.0)
+    }
+}
+
+fn structural_target_policy_calibration_weight(snips_effective_sample_size: f64) -> f64 {
+    let effective_sample_size = snips_effective_sample_size.max(0.0);
+    if effective_sample_size <= f64::EPSILON {
+        0.0
+    } else {
+        (effective_sample_size / (1.0 + effective_sample_size)).clamp(0.0, 1.0)
+    }
+}
+
+fn structural_behavior_policy_probability_variance(
+    policy_weighted_observation_mass: f64,
+    behavior_policy_probability: f64,
+    behavior_policy_probability_squared_mass: f64,
+) -> f64 {
+    if policy_weighted_observation_mass <= f64::EPSILON {
+        return 0.0;
+    }
+    let mean = behavior_policy_probability.clamp(0.0, 1.0);
+    let mean_square = (behavior_policy_probability_squared_mass.max(0.0)
+        / policy_weighted_observation_mass)
+        .clamp(0.0, 1.0);
+    (mean_square - mean * mean).max(0.0).clamp(0.0, 1.0)
+}
+
+fn structural_target_policy_probability_penalty(
+    policy_weighted_observation_mass: f64,
+    behavior_policy_probability_variance: f64,
+) -> f64 {
+    if policy_weighted_observation_mass <= f64::EPSILON {
+        return 0.0;
+    }
+    (behavior_policy_probability_variance.clamp(0.0, 1.0)
+        / (1.0 + policy_weighted_observation_mass.max(0.0)))
+    .sqrt()
+    .clamp(0.0, 1.0)
+}
+
+fn structural_target_policy_probability_confidence(
+    policy_weighted_observation_mass: f64,
+    behavior_policy_probability_variance: f64,
+) -> f64 {
+    if policy_weighted_observation_mass <= f64::EPSILON {
+        return 0.0;
+    }
+    let mass_confidence = (policy_weighted_observation_mass
+        / (1.0 + policy_weighted_observation_mass))
+        .clamp(0.0, 1.0);
+    let dispersion_confidence =
+        (1.0 - behavior_policy_probability_variance.clamp(0.0, 1.0).sqrt()).clamp(0.0, 1.0);
+    (mass_confidence * dispersion_confidence).clamp(0.0, 1.0)
+}
+
+fn structural_target_policy_probability_lower_bound(
+    behavior_policy_probability: f64,
+    policy_weighted_observation_mass: f64,
+    behavior_policy_probability_variance: f64,
+) -> f64 {
+    let penalty = structural_target_policy_probability_penalty(
+        policy_weighted_observation_mass,
+        behavior_policy_probability_variance,
+    );
+    (behavior_policy_probability.clamp(0.0, 1.0) - penalty).clamp(0.0, 1.0)
+}
+
+fn structural_policy_probability_average_error(
+    policy_weighted_observation_mass: f64,
+    error_mass: f64,
+) -> f64 {
+    if policy_weighted_observation_mass <= f64::EPSILON {
+        0.0
+    } else {
+        (error_mass.max(0.0) / policy_weighted_observation_mass).clamp(0.0, 1.0)
+    }
+}
+
+fn structural_target_policy_variance_penalty(
+    reward_prior: f64,
+    snips_effective_sample_size: f64,
+) -> f64 {
+    if snips_effective_sample_size <= f64::EPSILON {
+        return 0.0;
+    }
+    let reward_prior = reward_prior.clamp(0.0, 1.0);
+    ((reward_prior * (1.0 - reward_prior)) / (1.0 + snips_effective_sample_size))
+        .sqrt()
+        .clamp(0.0, 1.0)
+}
+
+fn structural_target_policy_reward_prior(
+    smoothed_prior: f64,
+    doubly_robust_reward_prior: f64,
+    target_policy_calibration_weight: f64,
+) -> f64 {
+    if target_policy_calibration_weight <= f64::EPSILON {
+        0.0
+    } else {
+        ((doubly_robust_reward_prior.clamp(0.0, 1.0) * target_policy_calibration_weight)
+            + (smoothed_prior.clamp(0.0, 1.0) * (1.0 - target_policy_calibration_weight)))
+            .clamp(0.0, 1.0)
+    }
+}
+
+fn structural_beta_mean(success_mass: f64, failure_mass: f64) -> f64 {
+    beta_posterior_mean(success_mass, failure_mass)
+}
+
+fn refresh_structural_smoothed_prior(stats: &mut StructuralPriorStats) {
+    stats.smoothed_prior = if stats.weighted_followed_mass <= f64::EPSILON {
+        0.5
+    } else {
+        structural_beta_mean(stats.weighted_success_mass, stats.weighted_failure_mass)
+    };
+    let followed_exposure_mass = structural_followed_exposure_mass(
+        stats.weighted_exposure_mass,
+        stats.weighted_not_followed_mass,
+        stats.followed_count,
+    );
+    let not_followed_mass = structural_not_followed_exposure_mass(
+        stats.weighted_exposure_mass,
+        stats.weighted_not_followed_mass,
+        stats.not_followed,
+    );
+    stats.execution_propensity =
+        structural_propensity_estimate(followed_exposure_mass, not_followed_mass);
+    stats.ips_weight = structural_ips_weight(stats.execution_propensity);
+    stats.counterfactual_success_mass = stats.weighted_success_mass * stats.ips_weight;
+    stats.counterfactual_failure_mass = stats.weighted_failure_mass * stats.ips_weight;
+    stats.counterfactual_reward_prior = structural_beta_mean(
+        stats.counterfactual_success_mass,
+        stats.counterfactual_failure_mass,
+    );
+    stats.off_policy_adjusted_prior =
+        (stats.counterfactual_reward_prior * stats.execution_propensity).clamp(0.0, 1.0);
+    stats.behavior_policy_probability = stats.behavior_policy_probability.clamp(0.0, 1.0);
+    stats.behavior_policy_probability_variance = structural_behavior_policy_probability_variance(
+        stats.policy_weighted_observation_mass,
+        stats.behavior_policy_probability,
+        stats.behavior_policy_probability_squared_mass,
+    );
+    stats.target_policy_probability_confidence = structural_target_policy_probability_confidence(
+        stats.policy_weighted_observation_mass,
+        stats.behavior_policy_probability_variance,
+    );
+    stats.target_policy_probability_lower_bound = structural_target_policy_probability_lower_bound(
+        stats.behavior_policy_probability,
+        stats.policy_weighted_observation_mass,
+        stats.behavior_policy_probability_variance,
+    );
+    stats.target_policy_probability_brier_score = structural_policy_probability_average_error(
+        stats.policy_weighted_observation_mass,
+        stats.target_policy_probability_brier_score_mass,
+    );
+    stats.target_policy_probability_calibration_error = structural_policy_probability_average_error(
+        stats.policy_weighted_observation_mass,
+        stats.target_policy_probability_calibration_error_mass,
+    );
+    stats.snips_reward_prior = if stats.snips_weight_mass > f64::EPSILON {
+        (stats.snips_reward_mass / stats.snips_weight_mass).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    stats.snips_effective_sample_size = structural_snips_effective_sample_size(
+        stats.snips_weight_mass,
+        stats.snips_weight_squared_mass,
+    );
+    stats.doubly_robust_reward_prior = if stats.policy_weighted_observation_mass > f64::EPSILON {
+        (stats.doubly_robust_reward_mass / stats.policy_weighted_observation_mass).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    stats.target_policy_calibration_weight =
+        structural_target_policy_calibration_weight(stats.snips_effective_sample_size);
+    stats.target_policy_reward_prior = structural_target_policy_reward_prior(
+        stats.smoothed_prior,
+        stats.doubly_robust_reward_prior,
+        stats.target_policy_calibration_weight,
+    );
+    stats.target_policy_variance_penalty = structural_target_policy_variance_penalty(
+        stats.target_policy_reward_prior,
+        stats.snips_effective_sample_size,
+    );
+    stats.target_policy_reward_lower_bound =
+        (stats.target_policy_reward_prior - stats.target_policy_variance_penalty).clamp(0.0, 1.0);
+    refresh_structural_prior_delayed_reward_metrics(stats);
+}
+
+fn update_structural_prior_source_summary_from_feedback(
+    summary: &mut StructuralPriorSourceSummary,
+    record: &FeedbackRecord,
+    followed_path: bool,
+    kind: StructuralPriorEntityKind,
+) {
+    let source_weight =
+        structural_prior_source_weight(&record.source) * structural_prior_entity_mass_scale(kind);
+    let not_followed_path = !followed_path
+        || record
+            .realized_outcome
+            .trim()
+            .eq_ignore_ascii_case("not_followed");
+    summary.last_tempering_coefficient = Some(1.0);
+    summary.observations += 1;
+    summary.weighted_exposure_mass += source_weight;
+    if summary.observations == 1 {
+        summary.avg_pnl = record.pnl;
+    } else {
+        let previous = summary.observations - 1;
+        summary.avg_pnl =
+            ((summary.avg_pnl * previous as f64) + record.pnl) / summary.observations as f64;
+    }
+    if followed_path {
+        summary.followed_count += 1;
+    }
+    if not_followed_path {
+        summary.not_followed += 1;
+        summary.weighted_not_followed_mass += source_weight;
+    }
+    accumulate_structural_prior_source_summary_delayed_reward_observation(
+        summary,
+        record,
+        followed_path,
+    );
+    if let Some(pseudo_counts) = structural_feedback_pseudo_counts(record, followed_path) {
+        let mass_update = weighted_success_credit_beta_update(
+            pseudo_counts.success_credit,
+            source_weight,
+            pseudo_counts.observation_weight,
+            1.0,
+        );
+        let weighted_observation = mass_update.observation_mass;
+        mass_update.apply_to(
+            &mut summary.weighted_followed_mass,
+            &mut summary.weighted_success_mass,
+            &mut summary.weighted_failure_mass,
+        );
+        if matches!(
+            structural_feedback_counter_outcome(record),
+            Some("invalidated")
+        ) {
+            summary.weighted_invalidation_mass += weighted_observation;
+        }
+        if let Some(contribution) =
+            structural_policy_correction_contribution(record, pseudo_counts, weighted_observation)
+        {
+            update_structural_policy_correction_stats(
+                StructuralPolicyCorrectionStatsAccumulator {
+                    policy_weighted_observation_mass: &mut summary.policy_weighted_observation_mass,
+                    behavior_policy_probability: &mut summary.behavior_policy_probability,
+                    behavior_policy_probability_squared_mass: &mut summary
+                        .behavior_policy_probability_squared_mass,
+                    target_policy_probability_brier_score_mass: &mut summary
+                        .target_policy_probability_brier_score_mass,
+                    target_policy_probability_calibration_error_mass: &mut summary
+                        .target_policy_probability_calibration_error_mass,
+                    snips_weight_mass: &mut summary.snips_weight_mass,
+                    snips_weight_squared_mass: &mut summary.snips_weight_squared_mass,
+                    snips_reward_mass: &mut summary.snips_reward_mass,
+                    doubly_robust_reward_mass: &mut summary.doubly_robust_reward_mass,
+                },
+                contribution,
+            );
+        }
+    }
+    if let Some(refs) = record.structural_feedback.as_ref() {
+        summary.last_recommendation_id = Some(refs.recommendation_id.clone());
+        summary.last_recommended_at = Some(refs.recommended_at.clone());
+        summary.last_note = refs.notes.clone();
+    }
+    refresh_structural_prior_source_summary(summary);
+}
+
+fn apply_structural_prior_seed_to_source_summary(
+    summary: &mut StructuralPriorSourceSummary,
+    refs: &StructuralFeedbackRefs,
+    seed: &StructuralPriorSeed,
+    kind: StructuralPriorEntityKind,
+) {
+    if seed.observations == 0 {
+        return;
+    }
+    let source_weight =
+        structural_prior_seed_effective_weight(seed) * structural_prior_entity_mass_scale(kind);
+    summary.last_tempering_coefficient = Some(structural_prior_seed_tempering_coefficient(seed));
+    summary.last_power_prior_contribution = Some(structural_power_prior_contribution(seed, kind));
+    let previous_observations = summary.observations;
+    summary.observations += seed.observations;
+    summary.followed_count += seed.followed_count;
+    summary.wins += seed.wins;
+    summary.losses += seed.losses;
+    summary.breakevens += seed.breakevens;
+    summary.invalidated += seed.invalidated;
+    summary.abandoned += seed.abandoned;
+    summary.not_followed += seed.not_followed;
+    let mass_update = weighted_seed_beta_update(WeightedSeedBetaUpdateInput {
+        followed_observation_count: seed.followed_count,
+        wins: seed.wins,
+        losses: seed.losses,
+        breakevens: seed.breakevens,
+        invalidated: seed.invalidated,
+        abandoned: seed.abandoned,
+        source_weight,
+        quality_weight: 1.0,
+        recency_weight: 1.0,
+    });
+    mass_update.apply_to(
+        &mut summary.weighted_followed_mass,
+        &mut summary.weighted_success_mass,
+        &mut summary.weighted_failure_mass,
+    );
+    summary.weighted_invalidation_mass += source_weight * seed.invalidated as f64;
+    summary.weighted_exposure_mass += source_weight * seed.observations as f64;
+    summary.weighted_not_followed_mass += source_weight * seed.not_followed as f64;
+    let new_total = previous_observations + seed.observations;
+    summary.avg_pnl = if new_total == 0 {
+        0.0
+    } else {
+        ((summary.avg_pnl * previous_observations as f64)
+            + (seed.avg_pnl * seed.observations as f64))
+            / new_total as f64
+    };
+    summary.last_recommendation_id = Some(refs.recommendation_id.clone());
+    summary.last_recommended_at = Some(refs.recommended_at.clone());
+    summary.last_note = refs.notes.clone();
+    refresh_structural_prior_source_summary(summary);
+}
+
+fn refresh_structural_prior_source_summary(summary: &mut StructuralPriorSourceSummary) {
+    summary.smoothed_prior = if summary.weighted_followed_mass <= f64::EPSILON {
+        0.5
+    } else {
+        structural_beta_mean(summary.weighted_success_mass, summary.weighted_failure_mass)
+    };
+    let followed_exposure_mass = structural_followed_exposure_mass(
+        summary.weighted_exposure_mass,
+        summary.weighted_not_followed_mass,
+        summary.followed_count,
+    );
+    let not_followed_mass = structural_not_followed_exposure_mass(
+        summary.weighted_exposure_mass,
+        summary.weighted_not_followed_mass,
+        summary.not_followed,
+    );
+    summary.execution_propensity =
+        structural_propensity_estimate(followed_exposure_mass, not_followed_mass);
+    summary.ips_weight = structural_ips_weight(summary.execution_propensity);
+    summary.counterfactual_success_mass = summary.weighted_success_mass * summary.ips_weight;
+    summary.counterfactual_failure_mass = summary.weighted_failure_mass * summary.ips_weight;
+    summary.counterfactual_reward_prior = structural_beta_mean(
+        summary.counterfactual_success_mass,
+        summary.counterfactual_failure_mass,
+    );
+    summary.off_policy_adjusted_prior =
+        (summary.counterfactual_reward_prior * summary.execution_propensity).clamp(0.0, 1.0);
+    summary.behavior_policy_probability = summary.behavior_policy_probability.clamp(0.0, 1.0);
+    summary.behavior_policy_probability_variance = structural_behavior_policy_probability_variance(
+        summary.policy_weighted_observation_mass,
+        summary.behavior_policy_probability,
+        summary.behavior_policy_probability_squared_mass,
+    );
+    summary.target_policy_probability_confidence = structural_target_policy_probability_confidence(
+        summary.policy_weighted_observation_mass,
+        summary.behavior_policy_probability_variance,
+    );
+    summary.target_policy_probability_lower_bound =
+        structural_target_policy_probability_lower_bound(
+            summary.behavior_policy_probability,
+            summary.policy_weighted_observation_mass,
+            summary.behavior_policy_probability_variance,
+        );
+    summary.target_policy_probability_brier_score = structural_policy_probability_average_error(
+        summary.policy_weighted_observation_mass,
+        summary.target_policy_probability_brier_score_mass,
+    );
+    summary.target_policy_probability_calibration_error =
+        structural_policy_probability_average_error(
+            summary.policy_weighted_observation_mass,
+            summary.target_policy_probability_calibration_error_mass,
+        );
+    summary.snips_reward_prior = if summary.snips_weight_mass > f64::EPSILON {
+        (summary.snips_reward_mass / summary.snips_weight_mass).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    summary.snips_effective_sample_size = structural_snips_effective_sample_size(
+        summary.snips_weight_mass,
+        summary.snips_weight_squared_mass,
+    );
+    summary.doubly_robust_reward_prior = if summary.policy_weighted_observation_mass > f64::EPSILON
+    {
+        (summary.doubly_robust_reward_mass / summary.policy_weighted_observation_mass)
+            .clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    summary.target_policy_calibration_weight =
+        structural_target_policy_calibration_weight(summary.snips_effective_sample_size);
+    summary.target_policy_reward_prior = structural_target_policy_reward_prior(
+        summary.smoothed_prior,
+        summary.doubly_robust_reward_prior,
+        summary.target_policy_calibration_weight,
+    );
+    summary.target_policy_variance_penalty = structural_target_policy_variance_penalty(
+        summary.target_policy_reward_prior,
+        summary.snips_effective_sample_size,
+    );
+    summary.target_policy_reward_lower_bound = (summary.target_policy_reward_prior
+        - summary.target_policy_variance_penalty)
+        .clamp(0.0, 1.0);
+    refresh_structural_source_summary_delayed_reward_metrics(summary);
+}
+
+fn update_structural_source_reliability_from_feedback(
+    state: &mut StructuralPriorLearningState,
+    record: &FeedbackRecord,
+    followed_path: bool,
+) {
+    let source_weight = structural_prior_source_weight(&record.source);
+    let not_followed_path = !followed_path
+        || record
+            .realized_outcome
+            .trim()
+            .eq_ignore_ascii_case("not_followed");
+    let posterior = state
+        .source_reliability_posteriors
+        .entry(record.source.clone())
+        .or_insert_with(|| StructuralSourceReliabilityPosterior {
+            source_label: record.source.clone(),
+            ..StructuralSourceReliabilityPosterior::default()
+        });
+    posterior.observations += 1;
+    posterior.weighted_exposure_mass += source_weight;
+    if not_followed_path {
+        posterior.weighted_not_followed_mass += source_weight;
+    }
+    if let Some(pseudo_counts) = structural_feedback_pseudo_counts(record, followed_path) {
+        let mass_update = weighted_success_credit_beta_update(
+            pseudo_counts.success_credit,
+            source_weight,
+            pseudo_counts.observation_weight,
+            1.0,
+        );
+        let weighted_observation = mass_update.observation_mass;
+        mass_update.apply_to(
+            &mut posterior.weighted_observation_mass,
+            &mut posterior.weighted_success_mass,
+            &mut posterior.weighted_failure_mass,
+        );
+        if matches!(
+            structural_feedback_counter_outcome(record),
+            Some("invalidated")
+        ) {
+            posterior.weighted_invalidation_mass += weighted_observation;
+        }
+    }
+    let semantics = structural_feedback_learning_semantics(record);
+    update_structural_source_outcome_confusion(
+        posterior,
+        &record.realized_outcome,
+        &semantics.credit_class,
+        source_weight * semantics.observation_weight.max(0.0),
+        semantics.success_credit,
+    );
+    refresh_structural_source_reliability_posterior(posterior);
+}
+
+fn apply_structural_prior_seed_to_source_reliability(
+    state: &mut StructuralPriorLearningState,
+    seed: &StructuralPriorSeed,
+) {
+    if seed.observations == 0 {
+        return;
+    }
+    let source_weight = structural_prior_seed_effective_weight(seed);
+    let posterior = state
+        .source_reliability_posteriors
+        .entry(seed.source_label.clone())
+        .or_insert_with(|| StructuralSourceReliabilityPosterior {
+            source_label: seed.source_label.clone(),
+            ..StructuralSourceReliabilityPosterior::default()
+        });
+    posterior.observations += seed.observations;
+    let mass_update = weighted_seed_beta_update(WeightedSeedBetaUpdateInput {
+        followed_observation_count: seed.followed_count,
+        wins: seed.wins,
+        losses: seed.losses,
+        breakevens: seed.breakevens,
+        invalidated: seed.invalidated,
+        abandoned: seed.abandoned,
+        source_weight,
+        quality_weight: 1.0,
+        recency_weight: 1.0,
+    });
+    mass_update.apply_to(
+        &mut posterior.weighted_observation_mass,
+        &mut posterior.weighted_success_mass,
+        &mut posterior.weighted_failure_mass,
+    );
+    posterior.weighted_invalidation_mass += source_weight * seed.invalidated as f64;
+    posterior.weighted_exposure_mass += source_weight * seed.observations as f64;
+    posterior.weighted_not_followed_mass += source_weight * seed.not_followed as f64;
+    posterior.last_tempering_coefficient = Some(structural_prior_seed_tempering_coefficient(seed));
+    posterior.last_power_prior_contribution = Some(
+        structural_power_prior_contribution_with_entity_scale(seed, 1.0),
+    );
+    update_structural_source_outcome_confusion_from_seed(posterior, seed, source_weight);
+    refresh_structural_source_reliability_posterior(posterior);
+}
+
+fn update_structural_source_outcome_confusion_from_seed(
+    posterior: &mut StructuralSourceReliabilityPosterior,
+    seed: &StructuralPriorSeed,
+    source_weight: f64,
+) {
+    for (observed_outcome, count, success_credit, observation_weight) in [
+        ("win", seed.wins, 1.0, 1.0),
+        ("loss", seed.losses, 0.0, 1.0),
+        ("breakeven", seed.breakevens, 0.5, 1.0),
+        ("invalidated", seed.invalidated, 0.0, 1.25),
+        ("abandoned", seed.abandoned, 0.25, 0.75),
+        ("not_followed", seed.not_followed, 0.0, 0.0),
+    ] {
+        if count == 0 {
+            continue;
+        }
+        let credit_class = structural_source_credit_class(observed_outcome, success_credit);
+        update_structural_source_outcome_confusion_with_count(
+            posterior,
+            observed_outcome,
+            &credit_class,
+            count,
+            source_weight * observation_weight * count as f64,
+            success_credit,
+        );
+    }
+}
+
+fn update_structural_source_outcome_confusion(
+    posterior: &mut StructuralSourceReliabilityPosterior,
+    observed_outcome: &str,
+    credit_class: &str,
+    weighted_observation: f64,
+    success_credit: f64,
+) {
+    update_structural_source_outcome_confusion_with_count(
+        posterior,
+        observed_outcome,
+        credit_class,
+        1,
+        weighted_observation,
+        success_credit,
+    );
+}
+
+fn update_structural_source_outcome_confusion_with_count(
+    posterior: &mut StructuralSourceReliabilityPosterior,
+    observed_outcome: &str,
+    credit_class: &str,
+    observations: usize,
+    weighted_observation: f64,
+    success_credit: f64,
+) {
+    let observed_outcome = structural_source_observed_outcome_label(observed_outcome);
+    let credit_class = credit_class.trim().to_string();
+    let key = format!("{observed_outcome}->{credit_class}");
+    let entry = posterior.outcome_confusion.entry(key).or_insert_with(|| {
+        StructuralSourceOutcomeConfusionCell {
+            observed_outcome,
+            credit_class,
+            ..StructuralSourceOutcomeConfusionCell::default()
+        }
+    });
+    entry.observations += observations;
+    let weighted_observation = weighted_observation.max(0.0);
+    entry.weighted_observation_mass += weighted_observation;
+    entry.weighted_success_mass += weighted_observation * success_credit.clamp(0.0, 1.0);
+    entry.weighted_failure_mass += weighted_observation * (1.0 - success_credit.clamp(0.0, 1.0));
+}
+
+fn structural_source_observed_outcome_label(observed_outcome: &str) -> String {
+    let normalized = observed_outcome.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        "unknown".to_string()
+    } else {
+        normalized
+    }
+}
+
+pub fn structural_source_observed_outcome_likelihood(
+    posterior: &StructuralSourceReliabilityPosterior,
+    credit_class: &str,
+    observed_outcome: &str,
+) -> f64 {
+    let observed_outcome = structural_source_observed_outcome_label(observed_outcome);
+    let credit_class = credit_class.trim();
+    let key = format!("{observed_outcome}->{credit_class}");
+    let (row_mass, row_count) = structural_source_confusion_row_stats(posterior, credit_class);
+    if let Some(cell) = posterior.outcome_confusion.get(&key) {
+        if row_mass <= f64::EPSILON {
+            return cell
+                .observed_given_credit_likelihood
+                .clamp(0.0, 1.0)
+                .max(0.5);
+        }
+        let denominator =
+            row_mass + STRUCTURAL_SOURCE_CONFUSION_LAPLACE_ALPHA * row_count.max(1) as f64;
+        return ((cell.weighted_observation_mass.max(0.0)
+            + STRUCTURAL_SOURCE_CONFUSION_LAPLACE_ALPHA)
+            / denominator)
+            .clamp(0.0, 1.0);
+    }
+
+    if row_mass <= f64::EPSILON {
+        return 0.5;
+    }
+    let denominator =
+        row_mass + STRUCTURAL_SOURCE_CONFUSION_LAPLACE_ALPHA * (row_count.saturating_add(1) as f64);
+    if denominator <= f64::EPSILON {
+        0.5
+    } else {
+        (STRUCTURAL_SOURCE_CONFUSION_LAPLACE_ALPHA / denominator).clamp(0.0, 1.0)
+    }
+}
+
+fn structural_source_credit_class(observed_outcome: &str, success_credit: f64) -> String {
+    match observed_outcome {
+        "win" => "positive_executed".to_string(),
+        "loss" => "negative_executed".to_string(),
+        "breakeven" => "fractional_breakeven".to_string(),
+        "invalidated" => "negative_invalidated".to_string(),
+        "abandoned" => "fractional_abandoned".to_string(),
+        "not_followed" => "no_credit_not_followed".to_string(),
+        _ if success_credit >= 0.999 => "positive_proxy".to_string(),
+        _ if success_credit <= 0.001 => "negative_proxy".to_string(),
+        _ => "fractional_proxy".to_string(),
+    }
+}
+
+fn refresh_structural_source_reliability_posterior(
+    posterior: &mut StructuralSourceReliabilityPosterior,
+) {
+    posterior.posterior_reliability = if posterior.weighted_observation_mass <= f64::EPSILON {
+        0.5
+    } else {
+        structural_beta_mean(
+            posterior.weighted_success_mass,
+            posterior.weighted_failure_mass,
+        )
+    };
+    refresh_structural_source_outcome_likelihoods(posterior);
+}
+
+fn refresh_structural_source_outcome_likelihoods(
+    posterior: &mut StructuralSourceReliabilityPosterior,
+) {
+    let mut row_stats = BTreeMap::<String, (f64, usize)>::new();
+    for cell in posterior.outcome_confusion.values() {
+        let entry = row_stats.entry(cell.credit_class.clone()).or_default();
+        entry.0 += cell.weighted_observation_mass.max(0.0);
+        if cell.weighted_observation_mass > f64::EPSILON || cell.observations > 0 {
+            entry.1 += 1;
+        }
+    }
+
+    for cell in posterior.outcome_confusion.values_mut() {
+        let (row_mass, row_count) = row_stats
+            .get(&cell.credit_class)
+            .copied()
+            .unwrap_or((0.0, 0));
+        let row_count = row_count.max(1);
+        cell.credit_class_weighted_observation_mass = row_mass;
+        cell.credit_class_observed_outcome_count = row_count;
+        let denominator = row_mass + STRUCTURAL_SOURCE_CONFUSION_LAPLACE_ALPHA * row_count as f64;
+        cell.observed_given_credit_likelihood = if denominator <= f64::EPSILON {
+            1.0 / row_count as f64
+        } else {
+            ((cell.weighted_observation_mass.max(0.0) + STRUCTURAL_SOURCE_CONFUSION_LAPLACE_ALPHA)
+                / denominator)
+                .clamp(0.0, 1.0)
+        };
+    }
+}
+
+fn structural_source_confusion_row_stats(
+    posterior: &StructuralSourceReliabilityPosterior,
+    credit_class: &str,
+) -> (f64, usize) {
+    let mut row_mass = 0.0;
+    let mut row_count = 0;
+    for cell in posterior.outcome_confusion.values() {
+        if cell.credit_class == credit_class {
+            row_mass += cell.weighted_observation_mass.max(0.0);
+            if cell.weighted_observation_mass > f64::EPSILON || cell.observations > 0 {
+                row_count += 1;
+            }
+        }
+    }
+    (row_mass, row_count)
+}
+
+type StructuralSourceReliabilityEmConfusion =
+    BTreeMap<String, BTreeMap<String, BTreeMap<String, f64>>>;
+
+pub fn structural_source_reliability_em_diagnostics(
+    structural_prior_state: &StructuralPriorLearningState,
+) -> StructuralSourceReliabilityEmDiagnostics {
+    crate::belief_core::source_reliability::structural_source_reliability_em_diagnostics(
+        structural_prior_state,
+    )
+}
+
+pub fn structural_source_reliability_em_fit_from_state(
+    structural_prior_state: &StructuralPriorLearningState,
+) -> StructuralSourceReliabilityEmFit {
+    crate::belief_core::source_reliability::structural_source_reliability_em_fit_from_state(
+        structural_prior_state,
+    )
+}
+
+pub fn refresh_structural_source_reliability_em_state(
+    structural_prior_state: &mut StructuralPriorLearningState,
+) {
+    crate::belief_core::source_reliability::refresh_structural_source_reliability_em_state(
+        structural_prior_state,
+    )
+}
+
+fn structural_prior_symbol_from_node_id(node_id: &str) -> String {
+    node_id.split(':').next().unwrap_or_default().to_string()
+}
+
+fn feedback_resolution_key(record: &FeedbackRecord) -> Option<String> {
+    record
+        .trade_id
+        .as_ref()
+        .map(|trade_id| format!("trade:{trade_id}"))
+        .or_else(|| {
+            record.structural_feedback.as_ref().map(|refs| {
+                format!(
+                    "structural:{}:{}:{}",
+                    refs.recommendation_id, refs.path_id, refs.followed_path
+                )
+            })
+        })
+        .or_else(|| record.run_id.as_ref().map(|run_id| format!("run:{run_id}")))
+}
+
+fn structural_prior_seed_representative_outcome(seed: &StructuralPriorSeed) -> Option<String> {
+    if seed.invalidated > 0 {
+        Some("invalidated".to_string())
+    } else if seed.losses > 0 {
+        Some("loss".to_string())
+    } else if seed.abandoned > 0 {
+        Some("abandoned".to_string())
+    } else if seed.wins > 0 {
+        Some("win".to_string())
+    } else if seed.breakevens > 0 {
+        Some("breakeven".to_string())
+    } else if seed.not_followed > 0 {
+        Some("not_followed".to_string())
+    } else {
+        None
+    }
+}
+
+fn structural_prior_event_key(event: &StructuralPriorEvent) -> String {
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        event.source_label,
+        event.symbol,
+        event.recommendation_id,
+        event.recommended_at,
+        event.node_id,
+        event.branch_id,
+        event.path_id
+    )
+}
+
+fn append_structural_prior_event(
+    state: &mut StructuralPriorLearningState,
+    event: StructuralPriorEvent,
+) -> bool {
+    let key = structural_prior_event_key(&event);
+    if state
+        .event_ledger
+        .iter()
+        .any(|existing| structural_prior_event_key(existing) == key)
+    {
+        return false;
+    }
+    state.event_ledger.push(event);
+    true
+}
+
+pub(crate) fn structural_sorted_prior_events(
+    event_ledger: &[StructuralPriorEvent],
+) -> Vec<StructuralPriorEvent> {
+    let mut events = event_ledger.to_vec();
+    events.sort_by(|left, right| {
+        left.symbol
+            .cmp(&right.symbol)
+            .then_with(|| left.recommended_at.cmp(&right.recommended_at))
+            .then_with(|| left.recommendation_id.cmp(&right.recommendation_id))
+            .then_with(|| left.branch_id.cmp(&right.branch_id))
+    });
+    events
+}
+
+fn rebuild_structural_sequence_priors(state: &mut StructuralPriorLearningState) {
+    state.source_reliability_em_summaries.clear();
+    rebuild_node_duration_priors_from_events(
+        &mut state.node_duration_priors,
+        &mut state.node_temporal_posteriors,
+        &state.event_ledger,
+    );
+    rebuild_transition_posteriors_from_events(
+        &mut state.branch_transition_priors,
+        &mut state.branch_temporal_posteriors,
+        &mut state.node_transition_posteriors,
+        &state.event_ledger,
+    );
+    refresh_structural_source_reliability_em_state(state);
+}
+
 fn family_dominant_action(items: &[&PersistedFactorRanking]) -> &'static str {
     if items.iter().any(|item| item.iteration_action == "replace") {
         "replace"
@@ -3044,6 +6070,20 @@ pub fn regime_key(regime: Regime) -> &'static str {
     }
 }
 
+/// RegimeV2 key for extended 8-state regime system
+pub fn regime_v2_key(regime: crate::types::RegimeV2) -> &'static str {
+    match regime {
+        crate::types::RegimeV2::TrendUpStrong => "trend_up_strong",
+        crate::types::RegimeV2::TrendUpWeak => "trend_up_weak",
+        crate::types::RegimeV2::RangeVolatile => "range_volatile",
+        crate::types::RegimeV2::RangeQuiet => "range_quiet",
+        crate::types::RegimeV2::TrendDownWeak => "trend_down_weak",
+        crate::types::RegimeV2::TrendDownStrong => "trend_down_strong",
+        crate::types::RegimeV2::Transition => "transition",
+        crate::types::RegimeV2::CrashRecovery => "crash_recovery",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3113,6 +6153,8 @@ mod tests {
             realized_outcome: "win".to_string(),
             pnl: 0.02,
             regime_at_entry: Regime::ManipulationExpansion,
+            structural_feedback: None,
+            reflection_mismatch_tags: Vec::new(),
         }
     }
 
@@ -3127,6 +6169,2171 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert!(second.is_empty());
         assert_eq!(state.feedback_history.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_feedback_records_keeps_distinct_structural_refs() {
+        let mut first = sample_feedback();
+        first.structural_feedback = Some(StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-1".to_string(),
+            recommended_at: "2026-04-29T00:00:00Z".to_string(),
+            node_id: "node-1".to_string(),
+            branch_id: "branch-1".to_string(),
+            scenario_id: "scenario-1".to_string(),
+            path_id: "path-1".to_string(),
+            followed_path: true,
+            exit_reason: Some("target_hit".to_string()),
+            notes: None,
+        });
+        let mut second = first.clone();
+        second.structural_feedback = Some(StructuralFeedbackRefs {
+            path_id: "path-2".to_string(),
+            recommendation_id: "rec-2".to_string(),
+            ..first.structural_feedback.clone().unwrap()
+        });
+
+        let mut state = LearningState::default();
+        let inserted = state.merge_feedback_records(&[first, second]);
+
+        assert_eq!(inserted.len(), 2);
+        assert_eq!(state.feedback_history.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_feedback_records_replaces_pending_structural_feedback_with_resolved_outcome() {
+        let mut pending = sample_feedback();
+        pending.realized_outcome = "pending".to_string();
+        pending.pnl = 0.0;
+        pending.structural_feedback = Some(StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-pending".to_string(),
+            recommended_at: "2026-04-29T00:00:00Z".to_string(),
+            node_id: "node-1".to_string(),
+            branch_id: "branch-1".to_string(),
+            scenario_id: "scenario-1".to_string(),
+            path_id: "path-1".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        });
+        let mut resolved = pending.clone();
+        resolved.realized_outcome = "win".to_string();
+        resolved.pnl = 0.02;
+
+        let mut state = LearningState::default();
+        let first = state.merge_feedback_records(&[pending]);
+        let second = state.merge_feedback_records(&[resolved.clone()]);
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(state.feedback_history.len(), 1);
+        assert_eq!(state.feedback_history[0].realized_outcome, "win");
+        assert_eq!(state.feedback_history[0].pnl, 0.02);
+    }
+
+    #[test]
+    fn test_structural_prior_seed_source_weight_affects_smoothed_prior() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-1".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-1".to_string(),
+            branch_id: "branch-1".to_string(),
+            scenario_id: "scenario-1".to_string(),
+            path_id: "path-1".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        };
+        let analyze_seed = StructuralPriorSeed {
+            source_label: "analyze".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.01,
+        };
+        let backtest_seed = StructuralPriorSeed {
+            source_label: "backtest".to_string(),
+            ..analyze_seed.clone()
+        };
+
+        let mut analyze_state = LearningState::default();
+        analyze_state.apply_structural_prior_seed(&refs, &analyze_seed);
+        let mut backtest_state = LearningState::default();
+        backtest_state.apply_structural_prior_seed(&refs, &backtest_seed);
+
+        assert!(
+            backtest_state
+                .structural_prior_state
+                .paths
+                .get("path-1")
+                .unwrap()
+                .smoothed_prior
+                > analyze_state
+                    .structural_prior_state
+                    .paths
+                    .get("path-1")
+                    .unwrap()
+                    .smoothed_prior
+        );
+    }
+
+    #[test]
+    fn test_structural_prior_seed_tempering_coefficient_affects_smoothed_prior() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-temper".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-temper".to_string(),
+            branch_id: "branch-temper".to_string(),
+            scenario_id: "scenario-temper".to_string(),
+            path_id: "path-temper".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        };
+        let weak_seed = StructuralPriorSeed {
+            source_label: "research".to_string(),
+            tempering_coefficient: Some(0.25),
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.01,
+        };
+        let strong_seed = StructuralPriorSeed {
+            tempering_coefficient: Some(0.90),
+            ..weak_seed.clone()
+        };
+
+        let mut weak_state = LearningState::default();
+        weak_state.apply_structural_prior_seed(&refs, &weak_seed);
+        let mut strong_state = LearningState::default();
+        strong_state.apply_structural_prior_seed(&refs, &strong_seed);
+
+        let weak_path = weak_state
+            .structural_prior_state
+            .paths
+            .get("path-temper")
+            .expect("weak path prior state");
+        let strong_path = strong_state
+            .structural_prior_state
+            .paths
+            .get("path-temper")
+            .expect("strong path prior state");
+
+        assert!(strong_path.weighted_success_mass > weak_path.weighted_success_mass);
+        assert!(strong_path.smoothed_prior > weak_path.smoothed_prior);
+        assert_eq!(
+            strong_path.source_panel_summaries["research"].last_tempering_coefficient,
+            Some(0.90)
+        );
+    }
+
+    #[test]
+    fn test_apply_structural_feedback_skips_unresolved_outcomes() {
+        let mut feedback = sample_feedback();
+        feedback.source = "structural_feedback_submission".to_string();
+        feedback.realized_outcome = "pending".to_string();
+        feedback.pnl = 0.0;
+        feedback.structural_feedback = Some(StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-pending".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-pending".to_string(),
+            branch_id: "branch-pending".to_string(),
+            scenario_id: "scenario-pending".to_string(),
+            path_id: "path-pending".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        });
+
+        let mut state = LearningState::default();
+        state.apply_structural_feedback(&[feedback]);
+
+        assert!(state.structural_prior_state.paths.is_empty());
+        assert!(state.structural_prior_state.nodes.is_empty());
+        assert!(state.structural_prior_state.event_ledger.is_empty());
+    }
+
+    #[test]
+    fn test_delayed_structural_feedback_resolution_applies_only_resolved_pseudo_count() {
+        let mut pending = sample_feedback();
+        pending.source = "structural_feedback_submission".to_string();
+        pending.realized_outcome = "delayed".to_string();
+        pending.pnl = 0.0;
+        pending.structural_feedback = Some(StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-delayed".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-delayed".to_string(),
+            branch_id: "branch-delayed".to_string(),
+            scenario_id: "scenario-delayed".to_string(),
+            path_id: "path-delayed".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        });
+        let mut resolved = pending.clone();
+        resolved.realized_outcome = "win".to_string();
+        resolved.pnl = 0.03;
+
+        let mut state = LearningState::default();
+        let first = state.merge_feedback_records(&[pending]);
+        state.apply_structural_feedback(&first);
+        let second = state.merge_feedback_records(&[resolved]);
+        state.apply_structural_feedback(&second);
+
+        assert_eq!(state.feedback_history.len(), 1);
+        assert_eq!(state.feedback_history[0].realized_outcome, "win");
+        let path = state
+            .structural_prior_state
+            .paths
+            .get("path-delayed")
+            .expect("resolved path prior state");
+        assert_eq!(path.observations, 1);
+        assert_eq!(path.wins, 1);
+        assert_eq!(path.weighted_failure_mass, 0.0);
+        assert!(path.weighted_success_mass > 0.0);
+        assert_eq!(state.structural_prior_state.event_ledger.len(), 1);
+        assert_eq!(
+            state.structural_prior_state.event_ledger[0]
+                .realized_outcome
+                .as_deref(),
+            Some("win")
+        );
+    }
+
+    #[test]
+    fn test_live_structural_feedback_weights_more_than_analyze_seed() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-1".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-1".to_string(),
+            branch_id: "branch-1".to_string(),
+            scenario_id: "scenario-1".to_string(),
+            path_id: "path-1".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        };
+        let analyze_seed = StructuralPriorSeed {
+            source_label: "analyze".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.01,
+        };
+        let mut live_feedback = sample_feedback();
+        live_feedback.source = "structural_feedback_submission".to_string();
+        live_feedback.structural_feedback = Some(refs.clone());
+
+        let mut analyze_state = LearningState::default();
+        analyze_state.apply_structural_prior_seed(&refs, &analyze_seed);
+        let mut live_state = LearningState::default();
+        live_state.apply_structural_feedback(&[live_feedback]);
+
+        assert!(
+            live_state
+                .structural_prior_state
+                .paths
+                .get("path-1")
+                .unwrap()
+                .smoothed_prior
+                > analyze_state
+                    .structural_prior_state
+                    .paths
+                    .get("path-1")
+                    .unwrap()
+                    .smoothed_prior
+        );
+    }
+
+    #[test]
+    fn test_live_structural_feedback_loss_adds_failure_mass_and_pushes_prior_below_neutral() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-loss".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-loss".to_string(),
+            branch_id: "branch-loss".to_string(),
+            scenario_id: "scenario-loss".to_string(),
+            path_id: "path-loss".to_string(),
+            followed_path: true,
+            exit_reason: Some("stop_hit".to_string()),
+            notes: None,
+        };
+        let mut feedback = sample_feedback();
+        feedback.source = "structural_feedback_submission".to_string();
+        feedback.realized_outcome = "loss".to_string();
+        feedback.pnl = -0.02;
+        feedback.structural_feedback = Some(refs);
+
+        let mut state = LearningState::default();
+        state.apply_structural_feedback(&[feedback]);
+
+        let path = state
+            .structural_prior_state
+            .paths
+            .get("path-loss")
+            .expect("path prior state");
+        assert!(path.weighted_failure_mass > 0.0);
+        assert!(path.smoothed_prior < 0.5);
+    }
+
+    #[test]
+    fn test_structural_feedback_node_mass_updates_less_than_path_mass() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-scale".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-scale".to_string(),
+            branch_id: "branch-scale".to_string(),
+            scenario_id: "scenario-scale".to_string(),
+            path_id: "path-scale".to_string(),
+            followed_path: true,
+            exit_reason: Some("target_hit".to_string()),
+            notes: None,
+        };
+        let mut feedback = sample_feedback();
+        feedback.source = "structural_feedback_submission".to_string();
+        feedback.structural_feedback = Some(refs);
+
+        let mut state = LearningState::default();
+        state.apply_structural_feedback(&[feedback]);
+
+        let node = state
+            .structural_prior_state
+            .nodes
+            .get("node-scale")
+            .expect("node prior state");
+        let branch = state
+            .structural_prior_state
+            .branches
+            .get("branch-scale")
+            .expect("branch prior state");
+        let scenario = state
+            .structural_prior_state
+            .scenarios
+            .get("scenario-scale")
+            .expect("scenario prior state");
+        let path = state
+            .structural_prior_state
+            .paths
+            .get("path-scale")
+            .expect("path prior state");
+
+        assert!(node.weighted_success_mass < branch.weighted_success_mass);
+        assert!(branch.weighted_success_mass < scenario.weighted_success_mass);
+        assert!(scenario.weighted_success_mass < path.weighted_success_mass);
+    }
+
+    #[test]
+    fn test_invalidated_feedback_counts_more_failure_mass_than_plain_loss() {
+        let mut invalidated_feedback = sample_feedback();
+        invalidated_feedback.source = "structural_feedback_submission".to_string();
+        invalidated_feedback.realized_outcome = "invalidated".to_string();
+        invalidated_feedback.pnl = -0.01;
+        invalidated_feedback.structural_feedback = Some(StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-invalidated".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-invalidated".to_string(),
+            branch_id: "branch-invalidated".to_string(),
+            scenario_id: "scenario-invalidated".to_string(),
+            path_id: "path-invalidated".to_string(),
+            followed_path: true,
+            exit_reason: Some("invalidation".to_string()),
+            notes: None,
+        });
+        let mut loss_feedback = invalidated_feedback.clone();
+        if let Some(refs) = loss_feedback.structural_feedback.as_mut() {
+            refs.recommendation_id = "rec-loss".to_string();
+            refs.node_id = "node-loss".to_string();
+            refs.branch_id = "branch-loss".to_string();
+            refs.scenario_id = "scenario-loss".to_string();
+            refs.path_id = "path-loss".to_string();
+        }
+        loss_feedback.realized_outcome = "loss".to_string();
+
+        let mut invalidated_state = LearningState::default();
+        invalidated_state.apply_structural_feedback(&[invalidated_feedback]);
+        let mut loss_state = LearningState::default();
+        loss_state.apply_structural_feedback(&[loss_feedback]);
+
+        let invalidated_path = invalidated_state
+            .structural_prior_state
+            .paths
+            .get("path-invalidated")
+            .expect("invalidated path prior state");
+        let loss_path = loss_state
+            .structural_prior_state
+            .paths
+            .get("path-loss")
+            .expect("loss path prior state");
+        assert!(invalidated_path.weighted_failure_mass > loss_path.weighted_failure_mass);
+        assert!(invalidated_path.smoothed_prior < loss_path.smoothed_prior);
+    }
+
+    #[test]
+    fn test_abandoned_feedback_uses_fractional_pseudo_counts_in_structural_prior() {
+        let mut feedback = sample_feedback();
+        feedback.source = "structural_feedback_submission".to_string();
+        feedback.realized_outcome = "abandoned".to_string();
+        feedback.pnl = 0.0;
+        feedback.structural_feedback = Some(StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-abandoned".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-abandoned".to_string(),
+            branch_id: "branch-abandoned".to_string(),
+            scenario_id: "scenario-abandoned".to_string(),
+            path_id: "path-abandoned".to_string(),
+            followed_path: true,
+            exit_reason: Some("manual_exit".to_string()),
+            notes: None,
+        });
+
+        let mut state = LearningState::default();
+        state.apply_structural_feedback(&[feedback]);
+
+        let path = state
+            .structural_prior_state
+            .paths
+            .get("path-abandoned")
+            .expect("path prior state");
+        assert_eq!(path.abandoned, 1);
+        assert_eq!(path.followed_count, 1);
+        assert!((path.weighted_followed_mass - 0.75).abs() < 1e-9);
+        assert!((path.weighted_success_mass - 0.1875).abs() < 1e-9);
+        assert!((path.weighted_failure_mass - 0.5625).abs() < 1e-9);
+        assert!(path.smoothed_prior > 0.40);
+        assert!(path.smoothed_prior < 0.50);
+    }
+
+    #[test]
+    fn test_not_followed_feedback_updates_propensity_without_reward_credit() {
+        let mut followed = sample_feedback();
+        followed.source = "structural_feedback_submission".to_string();
+        followed.realized_outcome = "win".to_string();
+        followed.pnl = 0.02;
+        followed.structural_feedback = Some(StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-followed".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-propensity".to_string(),
+            branch_id: "branch-propensity".to_string(),
+            scenario_id: "scenario-propensity".to_string(),
+            path_id: "path-propensity".to_string(),
+            followed_path: true,
+            exit_reason: Some("target_hit".to_string()),
+            notes: None,
+        });
+
+        let mut not_followed = followed.clone();
+        not_followed.realized_outcome = "not_followed".to_string();
+        not_followed.pnl = 0.0;
+        if let Some(refs) = not_followed.structural_feedback.as_mut() {
+            refs.recommendation_id = "rec-not-followed".to_string();
+            refs.recommended_at = "2026-04-30T00:05:00Z".to_string();
+            refs.followed_path = false;
+            refs.exit_reason = Some("skipped".to_string());
+        }
+
+        let mut state = LearningState::default();
+        state.apply_structural_feedback(&[followed]);
+        let prior_after_followed = state
+            .structural_prior_state
+            .paths
+            .get("path-propensity")
+            .expect("path prior state")
+            .smoothed_prior;
+        state.apply_structural_feedback(&[not_followed]);
+
+        let path = state
+            .structural_prior_state
+            .paths
+            .get("path-propensity")
+            .expect("path prior state");
+        assert_eq!(path.observations, 2);
+        assert_eq!(path.followed_count, 1);
+        assert_eq!(path.not_followed, 1);
+        assert!((path.weighted_followed_mass - 1.0).abs() < 1e-9);
+        assert!((path.weighted_exposure_mass - 2.0).abs() < 1e-9);
+        assert!((path.weighted_not_followed_mass - 1.0).abs() < 1e-9);
+        assert!((path.smoothed_prior - prior_after_followed).abs() < 1e-9);
+        assert!((path.execution_propensity - 0.5).abs() < 1e-9);
+        assert!((path.ips_weight - 2.0).abs() < 1e-9);
+        assert!((path.counterfactual_success_mass - 2.0).abs() < 1e-9);
+        assert!(path.counterfactual_failure_mass.abs() < 1e-9);
+        assert!((path.counterfactual_reward_prior - 0.75).abs() < 1e-9);
+        assert!((path.off_policy_adjusted_prior - 0.375).abs() < 1e-9);
+        let posterior = state
+            .structural_prior_state
+            .source_reliability_posteriors
+            .get("structural_feedback_submission")
+            .expect("live feedback source reliability posterior");
+        assert_eq!(posterior.observations, 2);
+        assert!((posterior.weighted_exposure_mass - 2.0).abs() < 1e-9);
+        assert!((posterior.weighted_not_followed_mass - 1.0).abs() < 1e-9);
+        assert!((posterior.weighted_success_mass - 1.0).abs() < 1e-9);
+        assert!((posterior.posterior_reliability - (2.0 / 3.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_structural_feedback_records_snips_and_dr_policy_priors() {
+        let mut win = sample_feedback();
+        win.timestamp = DateTime::parse_from_rfc3339("2026-04-30T00:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        win.source = "structural_feedback_submission".to_string();
+        win.realized_outcome = "win".to_string();
+        win.model_probabilities_before_trade.selected_probability = 0.50;
+        win.model_probabilities_before_trade.win_prob_long = 0.60;
+        win.structural_feedback = Some(StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-policy-win".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-policy".to_string(),
+            branch_id: "branch-policy".to_string(),
+            scenario_id: "scenario-policy".to_string(),
+            path_id: "path-policy".to_string(),
+            followed_path: true,
+            exit_reason: Some("target_hit".to_string()),
+            notes: None,
+        });
+
+        let mut loss = win.clone();
+        loss.timestamp = DateTime::parse_from_rfc3339("2026-04-30T01:05:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        loss.realized_outcome = "loss".to_string();
+        loss.pnl = -0.01;
+        loss.model_probabilities_before_trade.selected_probability = 0.25;
+        if let Some(refs) = loss.structural_feedback.as_mut() {
+            refs.recommendation_id = "rec-policy-loss".to_string();
+            refs.recommended_at = "2026-04-30T00:05:00Z".to_string();
+            refs.exit_reason = Some("stop_loss".to_string());
+        }
+
+        let mut state = LearningState::default();
+        state.apply_structural_feedback(&[win, loss]);
+
+        let path = state
+            .structural_prior_state
+            .paths
+            .get("path-policy")
+            .expect("path policy correction stats");
+        assert!((path.policy_weighted_observation_mass - 2.0).abs() < 1e-9);
+        assert!((path.behavior_policy_probability - 0.375).abs() < 1e-9);
+        assert!((path.behavior_policy_probability_squared_mass - 0.3125).abs() < 1e-9);
+        assert!((path.behavior_policy_probability_variance - 0.015625).abs() < 1e-9);
+        let expected_probability_confidence = (2.0 / 3.0) * (1.0 - 0.015625_f64.sqrt());
+        let expected_probability_lower_bound = 0.375 - (0.015625_f64 / 3.0).sqrt();
+        assert!(
+            (path.target_policy_probability_confidence - expected_probability_confidence).abs()
+                < 1e-9
+        );
+        assert!(
+            (path.target_policy_probability_lower_bound - expected_probability_lower_bound).abs()
+                < 1e-9
+        );
+        assert!((path.target_policy_probability_brier_score_mass - 0.3125).abs() < 1e-9);
+        assert!((path.target_policy_probability_calibration_error_mass - 0.75).abs() < 1e-9);
+        assert!((path.target_policy_probability_brier_score - 0.15625).abs() < 1e-9);
+        assert!((path.target_policy_probability_calibration_error - 0.375).abs() < 1e-9);
+        assert!((path.snips_weight_mass - 6.0).abs() < 1e-9);
+        assert!((path.snips_weight_squared_mass - 20.0).abs() < 1e-9);
+        assert!((path.snips_effective_sample_size - 1.8).abs() < 1e-9);
+        assert!((path.snips_reward_mass - 2.0).abs() < 1e-9);
+        assert!((path.snips_reward_prior - (1.0 / 3.0)).abs() < 1e-9);
+        assert!((path.doubly_robust_reward_mass - 1.0).abs() < 1e-9);
+        assert!((path.doubly_robust_reward_prior - 0.5).abs() < 1e-9);
+        let expected_target_policy_weight = 1.8 / 2.8;
+        let expected_target_policy_variance_penalty = (0.25_f64 / 2.8).sqrt();
+        assert!(
+            (path.target_policy_calibration_weight - expected_target_policy_weight).abs() < 1e-9
+        );
+        assert!((path.target_policy_reward_prior - 0.5).abs() < 1e-9);
+        assert!(
+            (path.target_policy_variance_penalty - expected_target_policy_variance_penalty).abs()
+                < 1e-9
+        );
+        assert!(
+            (path.target_policy_reward_lower_bound
+                - (0.5 - expected_target_policy_variance_penalty))
+                .abs()
+                < 1e-9
+        );
+        assert!((path.delayed_reward_resolution_probability - 0.75).abs() < 1e-9);
+        assert!((path.delayed_reward_censoring_probability - 0.25).abs() < 1e-9);
+        assert!((path.censoring_adjusted_reward_prior - 0.5).abs() < 1e-9);
+        assert!(
+            (path.censoring_adjusted_reward_lower_bound
+                - ((0.5 - expected_target_policy_variance_penalty) * 0.75 + 0.0625))
+                .abs()
+                < 1e-9
+        );
+        let expected_competing_risks: [f64; 4] = [2.0 / 6.0, 2.0 / 6.0, 1.0 / 6.0, 1.0 / 6.0];
+        let expected_competing_risk_entropy: f64 = expected_competing_risks
+            .iter()
+            .map(|risk| -*risk * (*risk).ln())
+            .sum();
+        assert!(
+            (path.delayed_reward_success_competing_risk - expected_competing_risks[0]).abs() < 1e-9
+        );
+        assert!(
+            (path.delayed_reward_failure_competing_risk - expected_competing_risks[1]).abs() < 1e-9
+        );
+        assert!(
+            (path.delayed_reward_invalidation_competing_risk - expected_competing_risks[2]).abs()
+                < 1e-9
+        );
+        assert!(
+            (path.delayed_reward_abandonment_competing_risk - expected_competing_risks[3]).abs()
+                < 1e-9
+        );
+        assert!(
+            (path.delayed_reward_competing_risk_entropy - expected_competing_risk_entropy).abs()
+                < 1e-9
+        );
+        assert_eq!(path.delayed_reward_elapsed_feedback_count, 2);
+        assert!((path.delayed_reward_elapsed_hours_at_risk - 1.5).abs() < 1e-9);
+        assert!((path.delayed_reward_avg_elapsed_hours - 0.75).abs() < 1e-9);
+        let expected_resolution_hazard = 2.0 / 1.5;
+        assert!(
+            (path.delayed_reward_resolution_hazard_per_hour - expected_resolution_hazard).abs()
+                < 1e-9
+        );
+        assert!((path.delayed_reward_expected_resolution_hours - 0.75).abs() < 1e-9);
+        assert!(
+            (path.delayed_reward_survival_probability_1h
+                - (-expected_resolution_hazard * 1.0).exp())
+            .abs()
+                < 1e-9
+        );
+        assert!(
+            (path.delayed_reward_survival_probability_4h
+                - (-expected_resolution_hazard * 4.0).exp())
+            .abs()
+                < 1e-9
+        );
+        assert!(
+            (path.delayed_reward_survival_probability_24h
+                - (-expected_resolution_hazard * 24.0).exp())
+            .abs()
+                < 1e-9
+        );
+        assert!((path.delayed_reward_success_hazard_per_hour - (1.0 / 1.5)).abs() < 1e-9);
+        assert!((path.delayed_reward_failure_hazard_per_hour - (1.0 / 1.5)).abs() < 1e-9);
+        assert!(path.delayed_reward_invalidation_hazard_per_hour.abs() < 1e-9);
+        assert!(path.delayed_reward_abandonment_hazard_per_hour.abs() < 1e-9);
+        let expected_total_incidence_4h = 1.0 - (-expected_resolution_hazard * 4.0).exp();
+        assert!(
+            (path.delayed_reward_success_cumulative_incidence_4h
+                - expected_total_incidence_4h * 0.5)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (path.delayed_reward_failure_cumulative_incidence_4h
+                - expected_total_incidence_4h * 0.5)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            path.delayed_reward_invalidation_cumulative_incidence_4h
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            path.delayed_reward_abandonment_cumulative_incidence_4h
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(path.delayed_reward_resolution_horizon_1h_count, 2);
+        assert_eq!(path.delayed_reward_resolution_within_1h_count, 2);
+        assert!((path.delayed_reward_resolution_probability_1h - 0.75).abs() < 1e-9);
+        assert_eq!(path.delayed_reward_resolution_horizon_4h_count, 2);
+        assert_eq!(path.delayed_reward_resolution_within_4h_count, 2);
+        assert!((path.delayed_reward_resolution_probability_4h - 0.75).abs() < 1e-9);
+        assert_eq!(path.delayed_reward_resolution_horizon_24h_count, 2);
+        assert_eq!(path.delayed_reward_resolution_within_24h_count, 2);
+        assert!((path.delayed_reward_resolution_probability_24h - 0.75).abs() < 1e-9);
+        let context = state
+            .structural_prior_state
+            .target_policy_context_posteriors
+            .get("NQ:manipulation_expansion:bull")
+            .expect("contextual target-policy probability posterior");
+        assert_eq!(context.observations, 2);
+        assert!((context.weighted_observation_mass - 2.0).abs() < 1e-9);
+        assert!((context.success_mass - 1.0).abs() < 1e-9);
+        assert!((context.failure_mass - 1.0).abs() < 1e-9);
+        assert!((context.behavior_policy_probability - 0.375).abs() < 1e-9);
+        assert!((context.behavior_policy_probability_variance - 0.015625).abs() < 1e-9);
+        assert!((context.learned_target_policy_probability - 0.5).abs() < 1e-9);
+        let expected_context_lower_bound = 0.5 - (0.25_f64 / 3.0).sqrt();
+        assert!(
+            (context.learned_target_policy_probability_lower_bound - expected_context_lower_bound)
+                .abs()
+                < 1e-9
+        );
+        let expected_context_confidence =
+            (2.0 / 3.0) * (1.0 - context.target_policy_probability_brier_score.sqrt());
+        assert!(
+            (context.learned_target_policy_probability_confidence - expected_context_confidence)
+                .abs()
+                < 1e-9
+        );
+        let expected_calibrated_context_probability =
+            0.5 * expected_context_confidence + 0.375 * (1.0 - expected_context_confidence);
+        assert!(
+            (context.calibrated_target_policy_probability
+                - expected_calibrated_context_probability)
+                .abs()
+                < 1e-9
+        );
+        let expected_calibrated_context_lower_bound = expected_context_lower_bound
+            * expected_context_confidence
+            + expected_probability_lower_bound * (1.0 - expected_context_confidence);
+        assert!(
+            (context.calibrated_target_policy_probability_lower_bound
+                - expected_calibrated_context_lower_bound)
+                .abs()
+                < 1e-9
+        );
+        assert!((context.target_policy_probability_brier_score - 0.15625).abs() < 1e-9);
+        assert!((context.target_policy_probability_calibration_error - 0.375).abs() < 1e-9);
+        assert_eq!(
+            context.last_recommendation_id.as_deref(),
+            Some("rec-policy-loss")
+        );
+        assert_eq!(
+            context.last_updated_at.as_deref(),
+            Some("2026-04-30T01:05:00Z")
+        );
+        let source_summary = path
+            .source_panel_summaries
+            .get("structural_feedback_submission")
+            .expect("path source policy correction stats");
+        assert!((source_summary.behavior_policy_probability - 0.375).abs() < 1e-9);
+        assert!((source_summary.behavior_policy_probability_squared_mass - 0.3125).abs() < 1e-9);
+        assert!((source_summary.behavior_policy_probability_variance - 0.015625).abs() < 1e-9);
+        assert!(
+            (source_summary.target_policy_probability_confidence - expected_probability_confidence)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.target_policy_probability_lower_bound
+                - expected_probability_lower_bound)
+                .abs()
+                < 1e-9
+        );
+        assert!((source_summary.target_policy_probability_brier_score - 0.15625).abs() < 1e-9);
+        assert!((source_summary.target_policy_probability_calibration_error - 0.375).abs() < 1e-9);
+        assert!((source_summary.snips_weight_squared_mass - 20.0).abs() < 1e-9);
+        assert!((source_summary.snips_effective_sample_size - 1.8).abs() < 1e-9);
+        assert!((source_summary.snips_reward_prior - (1.0 / 3.0)).abs() < 1e-9);
+        assert!((source_summary.doubly_robust_reward_prior - 0.5).abs() < 1e-9);
+        assert!(
+            (source_summary.target_policy_calibration_weight - expected_target_policy_weight).abs()
+                < 1e-9
+        );
+        assert!((source_summary.target_policy_reward_prior - 0.5).abs() < 1e-9);
+        assert!(
+            (source_summary.target_policy_variance_penalty
+                - expected_target_policy_variance_penalty)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.target_policy_reward_lower_bound
+                - (0.5 - expected_target_policy_variance_penalty))
+                .abs()
+                < 1e-9
+        );
+        assert!((source_summary.delayed_reward_resolution_probability - 0.75).abs() < 1e-9);
+        assert!((source_summary.delayed_reward_censoring_probability - 0.25).abs() < 1e-9);
+        assert!((source_summary.censoring_adjusted_reward_prior - 0.5).abs() < 1e-9);
+        assert!(
+            (source_summary.censoring_adjusted_reward_lower_bound
+                - ((0.5 - expected_target_policy_variance_penalty) * 0.75 + 0.0625))
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.delayed_reward_success_competing_risk - expected_competing_risks[0])
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.delayed_reward_failure_competing_risk - expected_competing_risks[1])
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.delayed_reward_invalidation_competing_risk
+                - expected_competing_risks[2])
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.delayed_reward_abandonment_competing_risk
+                - expected_competing_risks[3])
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.delayed_reward_competing_risk_entropy
+                - expected_competing_risk_entropy)
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(source_summary.delayed_reward_elapsed_feedback_count, 2);
+        assert!((source_summary.delayed_reward_elapsed_hours_at_risk - 1.5).abs() < 1e-9);
+        assert!((source_summary.delayed_reward_avg_elapsed_hours - 0.75).abs() < 1e-9);
+        assert!(
+            (source_summary.delayed_reward_resolution_hazard_per_hour - expected_resolution_hazard)
+                .abs()
+                < 1e-9
+        );
+        assert!((source_summary.delayed_reward_expected_resolution_hours - 0.75).abs() < 1e-9);
+        assert!(
+            (source_summary.delayed_reward_survival_probability_1h
+                - (-expected_resolution_hazard * 1.0).exp())
+            .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.delayed_reward_survival_probability_4h
+                - (-expected_resolution_hazard * 4.0).exp())
+            .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.delayed_reward_survival_probability_24h
+                - (-expected_resolution_hazard * 24.0).exp())
+            .abs()
+                < 1e-9
+        );
+        assert!((source_summary.delayed_reward_success_hazard_per_hour - (1.0 / 1.5)).abs() < 1e-9);
+        assert!((source_summary.delayed_reward_failure_hazard_per_hour - (1.0 / 1.5)).abs() < 1e-9);
+        assert!(
+            source_summary
+                .delayed_reward_invalidation_hazard_per_hour
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            source_summary
+                .delayed_reward_abandonment_hazard_per_hour
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.delayed_reward_success_cumulative_incidence_4h
+                - expected_total_incidence_4h * 0.5)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (source_summary.delayed_reward_failure_cumulative_incidence_4h
+                - expected_total_incidence_4h * 0.5)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            source_summary
+                .delayed_reward_invalidation_cumulative_incidence_4h
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            source_summary
+                .delayed_reward_abandonment_cumulative_incidence_4h
+                .abs()
+                < 1e-9
+        );
+        assert_eq!(source_summary.delayed_reward_resolution_horizon_1h_count, 2);
+        assert_eq!(source_summary.delayed_reward_resolution_within_1h_count, 2);
+        assert!((source_summary.delayed_reward_resolution_probability_1h - 0.75).abs() < 1e-9);
+        assert_eq!(source_summary.delayed_reward_resolution_horizon_4h_count, 2);
+        assert_eq!(source_summary.delayed_reward_resolution_within_4h_count, 2);
+        assert!((source_summary.delayed_reward_resolution_probability_4h - 0.75).abs() < 1e-9);
+        assert_eq!(
+            source_summary.delayed_reward_resolution_horizon_24h_count,
+            2
+        );
+        assert_eq!(source_summary.delayed_reward_resolution_within_24h_count, 2);
+        assert!((source_summary.delayed_reward_resolution_probability_24h - 0.75).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_structural_prior_seed_records_source_panel_summary() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-panel".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-panel".to_string(),
+            branch_id: "branch-panel".to_string(),
+            scenario_id: "scenario-panel".to_string(),
+            path_id: "path-panel".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        };
+        let analyze_seed = StructuralPriorSeed {
+            source_label: "analyze".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.01,
+        };
+        let backtest_seed = StructuralPriorSeed {
+            source_label: "backtest".to_string(),
+            tempering_coefficient: None,
+            observations: 2,
+            followed_count: 2,
+            wins: 1,
+            losses: 1,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.015,
+        };
+
+        let mut state = LearningState::default();
+        state.apply_structural_prior_seed(&refs, &analyze_seed);
+        state.apply_structural_prior_seed(&refs, &backtest_seed);
+
+        let path = state
+            .structural_prior_state
+            .paths
+            .get("path-panel")
+            .expect("path prior state");
+        let analyze_panel = path
+            .source_panel_summaries
+            .get("analyze")
+            .expect("analyze source panel");
+        let backtest_panel = path
+            .source_panel_summaries
+            .get("backtest")
+            .expect("backtest source panel");
+
+        assert_eq!(analyze_panel.observations, 1);
+        assert_eq!(analyze_panel.wins, 1);
+        assert_eq!(backtest_panel.observations, 2);
+        assert_eq!(backtest_panel.losses, 1);
+        let backtest_power_prior = backtest_panel
+            .last_power_prior_contribution
+            .as_ref()
+            .expect("backtest power-prior contribution");
+        assert_eq!(backtest_power_prior.source_label, "backtest");
+        assert!((backtest_power_prior.base_source_weight - 0.75).abs() < 1e-9);
+        assert!((backtest_power_prior.tempering_coefficient - 1.0).abs() < 1e-9);
+        assert!((backtest_power_prior.entity_mass_scale - 1.0).abs() < 1e-9);
+        assert!((backtest_power_prior.effective_tau - 0.75).abs() < 1e-9);
+        assert!((backtest_power_prior.observation_mass - 1.5).abs() < 1e-9);
+        assert!((backtest_power_prior.success_mass - 0.75).abs() < 1e-9);
+        assert!((backtest_power_prior.failure_mass - 0.75).abs() < 1e-9);
+        assert_eq!(path.last_offline_seed_source.as_deref(), Some("backtest"));
+    }
+
+    #[test]
+    fn test_structural_prior_seed_updates_reusable_source_reliability_posterior() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-source-reliability".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-source-reliability".to_string(),
+            branch_id: "branch-source-reliability".to_string(),
+            scenario_id: "scenario-source-reliability".to_string(),
+            path_id: "path-source-reliability".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        };
+        let seed = StructuralPriorSeed {
+            source_label: "backtest".to_string(),
+            tempering_coefficient: None,
+            observations: 2,
+            followed_count: 2,
+            wins: 1,
+            losses: 1,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.015,
+        };
+
+        let mut state = LearningState::default();
+        state.apply_structural_prior_seed(&refs, &seed);
+
+        let posterior = state
+            .structural_prior_state
+            .source_reliability_posteriors
+            .get("backtest")
+            .expect("backtest source reliability posterior");
+        assert_eq!(posterior.source_label, "backtest");
+        assert_eq!(posterior.observations, 2);
+        assert!((posterior.weighted_observation_mass - 1.5).abs() < 1e-9);
+        assert!((posterior.weighted_success_mass - 0.75).abs() < 1e-9);
+        assert!((posterior.weighted_failure_mass - 0.75).abs() < 1e-9);
+        assert!((posterior.posterior_reliability - 0.5).abs() < 1e-9);
+        let win_cell = posterior
+            .outcome_confusion
+            .get("win->positive_executed")
+            .expect("win confusion cell");
+        let loss_cell = posterior
+            .outcome_confusion
+            .get("loss->negative_executed")
+            .expect("loss confusion cell");
+        assert_eq!(win_cell.observations, 1);
+        assert!((win_cell.weighted_success_mass - 0.75).abs() < 1e-9);
+        assert_eq!(loss_cell.observations, 1);
+        assert!((loss_cell.weighted_failure_mass - 0.75).abs() < 1e-9);
+        assert!(posterior.last_power_prior_contribution.is_some());
+    }
+
+    #[test]
+    fn test_source_outcome_confusion_derives_smoothed_likelihoods() {
+        let mut posterior = StructuralSourceReliabilityPosterior {
+            source_label: "backtest".to_string(),
+            ..StructuralSourceReliabilityPosterior::default()
+        };
+
+        update_structural_source_outcome_confusion_with_count(
+            &mut posterior,
+            "tp",
+            "positive_executed",
+            2,
+            2.0,
+            1.0,
+        );
+        update_structural_source_outcome_confusion_with_count(
+            &mut posterior,
+            "take_profit",
+            "positive_executed",
+            1,
+            1.0,
+            1.0,
+        );
+        refresh_structural_source_reliability_posterior(&mut posterior);
+
+        let tp_cell = posterior
+            .outcome_confusion
+            .get("tp->positive_executed")
+            .expect("tp confusion cell");
+        let take_profit_cell = posterior
+            .outcome_confusion
+            .get("take_profit->positive_executed")
+            .expect("take-profit confusion cell");
+
+        assert!((tp_cell.credit_class_weighted_observation_mass - 3.0).abs() < 1e-9);
+        assert_eq!(tp_cell.credit_class_observed_outcome_count, 2);
+        assert!((tp_cell.observed_given_credit_likelihood - 0.6).abs() < 1e-9);
+        assert!((take_profit_cell.observed_given_credit_likelihood - 0.4).abs() < 1e-9);
+        assert!(
+            (structural_source_observed_outcome_likelihood(&posterior, "positive_executed", "tp")
+                - 0.6)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (structural_source_observed_outcome_likelihood(
+                &posterior,
+                "negative_executed",
+                "loss"
+            ) - 0.5)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn test_structural_prior_seed_persists_source_reliability_em_summaries() {
+        fn seed_with_outcome(source_label: &str, outcome: &str) -> StructuralPriorSeed {
+            let mut seed = StructuralPriorSeed {
+                source_label: source_label.to_string(),
+                observations: 1,
+                followed_count: 1,
+                avg_pnl: 0.01,
+                ..StructuralPriorSeed::default()
+            };
+            match outcome {
+                "win" => seed.wins = 1,
+                "loss" => seed.losses = 1,
+                _ => seed.breakevens = 1,
+            }
+            seed
+        }
+
+        fn refs_for_rec(recommendation_id: &str) -> StructuralFeedbackRefs {
+            StructuralFeedbackRefs {
+                protocol_version: "structural-feedback-v1".to_string(),
+                recommendation_id: recommendation_id.to_string(),
+                recommended_at: format!("2026-05-02T00:00:0{}Z", &recommendation_id[4..]),
+                node_id: "NQ:belief_regime_node:trend".to_string(),
+                branch_id: "NQ:belief_regime_node:trend:trend_follow_through".to_string(),
+                scenario_id: "scenario-em".to_string(),
+                path_id: format!("path-{recommendation_id}"),
+                followed_path: true,
+                exit_reason: None,
+                notes: None,
+            }
+        }
+
+        let mut state = LearningState::default();
+        for (
+            recommendation_id,
+            backtest_outcome,
+            live_outcome,
+            research_outcome,
+            analyze_outcome,
+        ) in [
+            ("rec-1", "win", "win", "win", "loss"),
+            ("rec-2", "loss", "loss", "loss", "win"),
+            ("rec-3", "win", "win", "win", "loss"),
+        ] {
+            let refs = refs_for_rec(recommendation_id);
+            state.apply_structural_prior_seed(
+                &refs,
+                &seed_with_outcome("backtest", backtest_outcome),
+            );
+            state.apply_structural_prior_seed(&refs, &seed_with_outcome("live", live_outcome));
+            state.apply_structural_prior_seed(
+                &refs,
+                &seed_with_outcome("research", research_outcome),
+            );
+            state
+                .apply_structural_prior_seed(&refs, &seed_with_outcome("analyze", analyze_outcome));
+        }
+
+        let summaries = &state.structural_prior_state.source_reliability_em_summaries;
+        assert_eq!(summaries.len(), 4);
+        let backtest = summaries
+            .get("backtest")
+            .expect("backtest persisted EM summary");
+        let live = summaries.get("live").expect("live persisted EM summary");
+        let analyze = summaries
+            .get("analyze")
+            .expect("analyze persisted EM summary");
+        assert_eq!(
+            backtest.iteration_count,
+            STRUCTURAL_SOURCE_RELIABILITY_EM_ITERATIONS
+        );
+        assert_eq!(backtest.latent_item_count, 3);
+        assert_eq!(backtest.distinct_label_count, 2);
+        assert_eq!(backtest.confusion_cell_count, 4);
+        assert!(backtest.posterior_reliability > analyze.posterior_reliability);
+        assert!(live.posterior_reliability > analyze.posterior_reliability);
+        assert!(backtest.confusion["positive_executed->positive_executed"].probability > 0.5);
+        assert!(analyze.confusion["positive_executed->negative_executed"].probability > 0.5);
+        let calibration = state
+            .structural_prior_state
+            .source_reliability_em_calibration
+            .as_ref()
+            .expect("persisted EM calibration summary");
+        assert_eq!(calibration.status, "ready");
+        assert_eq!(calibration.observation_count, 12);
+        assert_eq!(calibration.source_count, 4);
+        assert_eq!(
+            calibration.min_observations,
+            STRUCTURAL_SOURCE_RELIABILITY_EM_MIN_CALIBRATION_OBSERVATIONS
+        );
+        assert!(calibration.brier_score.unwrap() < 0.6);
+        assert!(calibration.log_loss.unwrap() < 0.8);
+        let diagnostics =
+            structural_source_reliability_em_diagnostics(&state.structural_prior_state);
+        let holdout = diagnostics
+            .holdout
+            .as_ref()
+            .expect("holdout diagnostics summary");
+        assert!(holdout.training_item_count > 0);
+        assert!(holdout.evaluation_item_count <= holdout.training_item_count);
+        assert_eq!(
+            holdout.min_training_items,
+            STRUCTURAL_SOURCE_RELIABILITY_EM_MIN_HOLDOUT_TRAIN_ITEMS
+        );
+        assert!(matches!(
+            holdout.status.as_str(),
+            "ready" | "needs_larger_panel" | "needs_more_items"
+        ));
+    }
+
+    #[test]
+    fn test_structural_source_reliability_em_holdout_prefers_chronological_split() {
+        let mut state = StructuralPriorLearningState::default();
+        for idx in 0..6 {
+            let recommendation_id = format!("rec-{idx}");
+            for (source_label, realized_outcome) in [("backtest", "win"), ("live", "loss")] {
+                state.event_ledger.push(StructuralPriorEvent {
+                    source_label: source_label.to_string(),
+                    symbol: "NQ".to_string(),
+                    recommendation_id: recommendation_id.clone(),
+                    recommended_at: format!("2026-05-0{}T00:00:00Z", idx + 1),
+                    node_id: "node-em".to_string(),
+                    branch_id: "branch-em".to_string(),
+                    scenario_id: "scenario-em".to_string(),
+                    path_id: format!("path-{recommendation_id}"),
+                    followed_path: true,
+                    realized_outcome: Some(realized_outcome.to_string()),
+                });
+            }
+        }
+
+        let summary = structural_source_reliability_em_diagnostics(&state)
+            .holdout
+            .expect("chronological holdout summary");
+        assert_eq!(summary.split_strategy, "chronological_recommended_at");
+        assert_eq!(summary.training_item_count, 4);
+        assert_eq!(summary.evaluation_item_count, 2);
+        assert!(matches!(
+            summary.status.as_str(),
+            "ready" | "needs_larger_panel" | "needs_multiple_sources"
+        ));
+    }
+
+    #[test]
+    fn test_structural_prior_seed_node_mass_updates_less_than_path_mass() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-seed-scale".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-seed-scale".to_string(),
+            branch_id: "branch-seed-scale".to_string(),
+            scenario_id: "scenario-seed-scale".to_string(),
+            path_id: "path-seed-scale".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        };
+        let seed = StructuralPriorSeed {
+            source_label: "backtest".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.02,
+        };
+
+        let mut state = LearningState::default();
+        state.apply_structural_prior_seed(&refs, &seed);
+
+        let node = state
+            .structural_prior_state
+            .nodes
+            .get("node-seed-scale")
+            .expect("node prior state");
+        let branch = state
+            .structural_prior_state
+            .branches
+            .get("branch-seed-scale")
+            .expect("branch prior state");
+        let scenario = state
+            .structural_prior_state
+            .scenarios
+            .get("scenario-seed-scale")
+            .expect("scenario prior state");
+        let path = state
+            .structural_prior_state
+            .paths
+            .get("path-seed-scale")
+            .expect("path prior state");
+
+        assert!(node.weighted_success_mass < branch.weighted_success_mass);
+        assert!(branch.weighted_success_mass < scenario.weighted_success_mass);
+        assert!(scenario.weighted_success_mass < path.weighted_success_mass);
+    }
+
+    #[test]
+    fn test_structural_prior_seed_persists_separated_mass_snapshot() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-seed-snapshot".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-seed-snapshot".to_string(),
+            branch_id: "branch-seed-snapshot".to_string(),
+            scenario_id: "scenario-seed-snapshot".to_string(),
+            path_id: "path-seed-snapshot".to_string(),
+            followed_path: true,
+            exit_reason: None,
+            notes: None,
+        };
+        let seed = StructuralPriorSeed {
+            source_label: "backtest".to_string(),
+            tempering_coefficient: None,
+            observations: 2,
+            followed_count: 2,
+            wins: 1,
+            losses: 1,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.015,
+        };
+
+        let mut state = LearningState::default();
+        state.apply_structural_prior_seed(&refs, &seed);
+
+        let structural_state = &state.structural_prior_state;
+        let node_mass = structural_state
+            .node_prior_mass
+            .get("node-seed-snapshot")
+            .expect("node prior mass");
+        let path_mass = structural_state
+            .path_prior_mass
+            .get("path-seed-snapshot")
+            .expect("path prior mass");
+
+        assert_eq!(node_mass.entity_kind, "node");
+        assert_eq!(path_mass.entity_kind, "path");
+        assert!((node_mass.weighted_success_mass - 0.375).abs() < 1e-9);
+        assert!((path_mass.weighted_success_mass - 0.75).abs() < 1e-9);
+        assert!(node_mass.weighted_success_mass < path_mass.weighted_success_mass);
+
+        let snapshot = structural_state
+            .last_offline_seed_snapshot
+            .as_ref()
+            .expect("last offline seed snapshot");
+        assert_eq!(snapshot.source_label, "backtest");
+        assert_eq!(snapshot.recommendation_id, "rec-seed-snapshot");
+        assert_eq!(snapshot.node_id, "node-seed-snapshot");
+        assert_eq!(snapshot.path_id, "path-seed-snapshot");
+        assert!((snapshot.node_contribution.effective_tau - 0.375).abs() < 1e-9);
+        assert!((snapshot.branch_contribution.effective_tau - 0.5625).abs() < 1e-9);
+        assert!((snapshot.scenario_contribution.effective_tau - 0.675).abs() < 1e-9);
+        assert!((snapshot.path_contribution.effective_tau - 0.75).abs() < 1e-9);
+
+        let serialized = serde_json::to_string(&structural_state).expect("serialize state");
+        assert!(serialized.contains("last_offline_seed_snapshot"));
+        let round_tripped: StructuralPriorLearningState =
+            serde_json::from_str(&serialized).expect("deserialize state");
+        assert!(round_tripped.last_offline_seed_snapshot.is_some());
+        assert!(round_tripped
+            .node_prior_mass
+            .contains_key("node-seed-snapshot"));
+    }
+
+    #[test]
+    fn test_live_feedback_records_separate_source_panel_summary() {
+        let refs = StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: "rec-live".to_string(),
+            recommended_at: "2026-04-30T00:00:00Z".to_string(),
+            node_id: "node-live".to_string(),
+            branch_id: "branch-live".to_string(),
+            scenario_id: "scenario-live".to_string(),
+            path_id: "path-live".to_string(),
+            followed_path: true,
+            exit_reason: Some("target_hit".to_string()),
+            notes: None,
+        };
+        let analyze_seed = StructuralPriorSeed {
+            source_label: "analyze".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.01,
+        };
+        let mut feedback = sample_feedback();
+        feedback.source = "structural_feedback_submission".to_string();
+        feedback.structural_feedback = Some(refs.clone());
+
+        let mut state = LearningState::default();
+        state.apply_structural_prior_seed(&refs, &analyze_seed);
+        state.apply_structural_feedback(&[feedback]);
+
+        let path = state
+            .structural_prior_state
+            .paths
+            .get("path-live")
+            .expect("path prior state");
+        assert!(path.source_panel_summaries.contains_key("analyze"));
+        assert!(path
+            .source_panel_summaries
+            .contains_key("structural_feedback_submission"));
+        assert_eq!(
+            path.source_panel_summaries["structural_feedback_submission"].wins,
+            1
+        );
+        let posterior = state
+            .structural_prior_state
+            .source_reliability_posteriors
+            .get("structural_feedback_submission")
+            .expect("live source reliability posterior");
+        let cell = posterior
+            .outcome_confusion
+            .get("win->positive_executed")
+            .expect("live win confusion cell");
+        assert_eq!(cell.observations, 1);
+        assert!((cell.weighted_success_mass - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_structural_prior_seed_rebuilds_node_duration_priors() {
+        let mut state = LearningState::default();
+        let seed = StructuralPriorSeed {
+            source_label: "analyze".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.01,
+        };
+
+        for (recommendation_id, recommended_at, node_id, branch_id) in [
+            (
+                "rec-1",
+                "2026-04-30T00:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-2",
+                "2026-04-30T01:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-3",
+                "2026-04-30T02:00:00Z",
+                "NQ:belief_regime_node:range",
+                "NQ:belief_regime_node:range:range_mean_reversion",
+            ),
+            (
+                "rec-4",
+                "2026-04-30T03:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+        ] {
+            state.apply_structural_prior_seed(
+                &StructuralFeedbackRefs {
+                    protocol_version: "structural-prior-seed-v1".to_string(),
+                    recommendation_id: recommendation_id.to_string(),
+                    recommended_at: recommended_at.to_string(),
+                    node_id: node_id.to_string(),
+                    branch_id: branch_id.to_string(),
+                    scenario_id: format!("scenario:{branch_id}"),
+                    path_id: format!("path:scenario:{branch_id}:primary"),
+                    followed_path: true,
+                    exit_reason: None,
+                    notes: None,
+                },
+                &seed,
+            );
+        }
+
+        let trend = state
+            .structural_prior_state
+            .node_duration_priors
+            .get("NQ:belief_regime_node:trend")
+            .expect("trend duration prior");
+        let range = state
+            .structural_prior_state
+            .node_duration_priors
+            .get("NQ:belief_regime_node:range")
+            .expect("range duration prior");
+
+        assert_eq!(trend.observations, 3);
+        assert_eq!(trend.streak_count, 2);
+        assert!(trend.weighted_streak_mass > range.weighted_streak_mass);
+        assert_eq!(trend.max_streak_length, 2);
+        assert!((trend.avg_streak_length - 1.5).abs() < 1e-9);
+        assert!(trend.expected_dwell_steps > range.expected_dwell_steps);
+        assert!(trend.remaining_dwell_steps >= 0.0);
+        assert!(trend.break_hazard > 0.0);
+        assert_eq!(trend.duration_distribution.len(), 2);
+        assert_eq!(trend.duration_distribution[0].dwell_steps, 1);
+        assert_eq!(trend.duration_distribution[0].streak_count, 1);
+        assert!((trend.duration_distribution[0].probability - (1.0 / 1.85)).abs() < 1e-9);
+        assert_eq!(trend.duration_distribution[1].dwell_steps, 2);
+        assert!((trend.duration_distribution[1].probability - (0.85 / 1.85)).abs() < 1e-9);
+        assert!(trend.duration_distribution_entropy > 0.0);
+        assert!((trend.empirical_duration_survival - 1.0).abs() < 1e-9);
+        assert!((trend.empirical_duration_completion_hazard - (1.0 / 1.85)).abs() < 1e-9);
+        assert!(trend.bocpd_evidence_weight > 0.0);
+        assert!(trend.bocpd_evidence_weight < 1.0);
+        assert!(trend.bocpd_raw_break_probability > 0.0);
+        assert_eq!(trend.bocpd_run_length_mode, 1);
+        assert!((trend.bocpd_run_length_mode_probability - (1.0 / 1.85)).abs() < 1e-9);
+        assert!((trend.bocpd_run_length_tail_probability - 1.0).abs() < 1e-9);
+        assert!((trend.bocpd_run_length_observation_mass - 1.85).abs() < 1e-9);
+        assert!(trend.bocpd_recursive_reset_probability > trend.bocpd_break_probability);
+        assert_eq!(trend.bocpd_recursive_run_length_mode, 0);
+        let expected_recursive_fit = structural_node_bocpd_recursive_run_length_fit(
+            &trend.duration_distribution,
+            trend.bocpd_evidence_weight,
+            trend.bocpd_break_probability,
+        );
+        assert_eq!(
+            trend.bocpd_recursive_run_length_mode,
+            expected_recursive_fit.run_length_mode
+        );
+        assert!(
+            (trend.bocpd_recursive_run_length_mode_probability
+                - expected_recursive_fit.run_length_mode_probability)
+                .abs()
+                < 1e-9
+        );
+        assert!(trend.bocpd_recursive_run_length_expected_value > 0.0);
+        assert!(trend.bocpd_recursive_run_length_entropy > 0.0);
+        assert!(trend.bocpd_sequence_change_intensity > 0.0);
+        assert!(trend.bocpd_sequence_break_probability > 0.0);
+        assert!(trend.bocpd_sequence_recursive_reset_probability > 0.0);
+        assert!(trend.bocpd_sequence_recursive_run_length_mode_probability > 0.0);
+        assert!(trend.bocpd_sequence_recursive_run_length_expected_value >= 0.0);
+        assert!(trend.bocpd_sequence_recursive_run_length_entropy >= 0.0);
+        let parametric_break_hazard =
+            structural_duration_break_hazard(trend.last_streak_length, trend.expected_dwell_steps);
+        assert!(trend.bocpd_break_probability > 0.0);
+        assert!(trend.bocpd_break_probability < 1.0);
+        assert!(
+            trend.bocpd_break_probability
+                > parametric_break_hazard.min(trend.bocpd_raw_break_probability)
+        );
+        assert!(
+            trend.bocpd_break_probability
+                < parametric_break_hazard.max(trend.bocpd_raw_break_probability)
+                || (trend.bocpd_break_probability
+                    - parametric_break_hazard.max(trend.bocpd_raw_break_probability))
+                .abs()
+                    < 1e-9
+        );
+        assert!(
+            (trend.bocpd_continue_probability - (1.0 - trend.bocpd_break_probability)).abs() < 1e-9
+        );
+        assert!(trend.sticky_self_transition_strength > 0.0);
+        assert!(trend.persistence_prior > range.persistence_prior);
+        assert_eq!(range.observations, 1);
+        assert_eq!(range.streak_count, 1);
+        let temporal = state
+            .structural_prior_state
+            .node_temporal_posteriors
+            .get("NQ:belief_regime_node:trend")
+            .expect("trend temporal posterior");
+        assert_eq!(temporal.node_id, "NQ:belief_regime_node:trend");
+        assert_eq!(temporal.streak_count, 2);
+        assert_eq!(temporal.weighted_streak_mass, trend.weighted_streak_mass);
+        assert_eq!(temporal.expected_dwell_steps, trend.expected_dwell_steps);
+        assert_eq!(temporal.break_hazard, trend.break_hazard);
+        assert_eq!(
+            temporal.sticky_self_transition_strength,
+            trend.sticky_self_transition_strength
+        );
+        assert_eq!(
+            temporal.bocpd_recursive_reset_probability,
+            trend.bocpd_recursive_reset_probability
+        );
+        assert_eq!(
+            temporal.bocpd_recursive_run_length_mode,
+            trend.bocpd_recursive_run_length_mode
+        );
+        assert_eq!(
+            temporal.bocpd_recursive_run_length_expected_value,
+            trend.bocpd_recursive_run_length_expected_value
+        );
+        assert_eq!(
+            temporal.bocpd_sequence_change_intensity,
+            trend.bocpd_sequence_change_intensity
+        );
+        assert_eq!(
+            temporal.bocpd_sequence_break_probability,
+            trend.bocpd_sequence_break_probability
+        );
+        assert_eq!(
+            temporal.bocpd_sequence_recursive_reset_probability,
+            trend.bocpd_sequence_recursive_reset_probability
+        );
+        assert_eq!(
+            temporal.bocpd_sequence_recursive_run_length_mode,
+            trend.bocpd_sequence_recursive_run_length_mode
+        );
+        assert_eq!(
+            temporal.bocpd_sequence_recursive_run_length_expected_value,
+            trend.bocpd_sequence_recursive_run_length_expected_value
+        );
+        assert_eq!(
+            temporal.temporal_posterior_support,
+            trend.temporal_posterior_support
+        );
+    }
+
+    #[test]
+    fn test_structural_node_duration_priors_discount_older_streaks() {
+        let mut state = LearningState::default();
+        let seed = StructuralPriorSeed {
+            source_label: "analyze".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.01,
+        };
+
+        for (recommendation_id, recommended_at, node_id, branch_id) in [
+            (
+                "rec-1",
+                "2026-04-30T00:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-2",
+                "2026-04-30T01:00:00Z",
+                "NQ:belief_regime_node:range",
+                "NQ:belief_regime_node:range:range_mean_reversion",
+            ),
+            (
+                "rec-3",
+                "2026-04-30T02:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-4",
+                "2026-04-30T03:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+        ] {
+            state.apply_structural_prior_seed(
+                &StructuralFeedbackRefs {
+                    protocol_version: "structural-prior-seed-v1".to_string(),
+                    recommendation_id: recommendation_id.to_string(),
+                    recommended_at: recommended_at.to_string(),
+                    node_id: node_id.to_string(),
+                    branch_id: branch_id.to_string(),
+                    scenario_id: format!("scenario:{branch_id}"),
+                    path_id: format!("path:scenario:{branch_id}:primary"),
+                    followed_path: true,
+                    exit_reason: None,
+                    notes: None,
+                },
+                &seed,
+            );
+        }
+
+        let trend = state
+            .structural_prior_state
+            .node_duration_priors
+            .get("NQ:belief_regime_node:trend")
+            .expect("trend duration prior");
+        let range = state
+            .structural_prior_state
+            .node_duration_priors
+            .get("NQ:belief_regime_node:range")
+            .expect("range duration prior");
+
+        assert_eq!(trend.streak_count, 2);
+        assert_eq!(range.streak_count, 1);
+        assert!(trend.weighted_streak_mass > 1.0);
+        assert!(trend.weighted_streak_mass > range.weighted_streak_mass);
+        assert!(trend.persistence_prior > range.persistence_prior);
+    }
+
+    #[test]
+    fn test_structural_node_duration_outcome_support_penalizes_recent_negative_streaks() {
+        let mut state = LearningState::default();
+        let mut baseline_state = LearningState::default();
+        let positive_seed = StructuralPriorSeed {
+            source_label: "backtest".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.02,
+        };
+        let negative_seed = StructuralPriorSeed {
+            wins: 0,
+            losses: 1,
+            avg_pnl: -0.02,
+            ..positive_seed.clone()
+        };
+
+        state.apply_structural_prior_seed(
+            &StructuralFeedbackRefs {
+                protocol_version: "structural-prior-seed-v1".to_string(),
+                recommendation_id: "rec-1".to_string(),
+                recommended_at: "2026-04-30T00:00:00Z".to_string(),
+                node_id: "node-duration-quality".to_string(),
+                branch_id: "branch-duration-quality:trend".to_string(),
+                scenario_id: "scenario:branch-duration-quality:trend".to_string(),
+                path_id: "path:scenario:branch-duration-quality:trend:primary".to_string(),
+                followed_path: true,
+                exit_reason: None,
+                notes: None,
+            },
+            &positive_seed,
+        );
+        baseline_state.apply_structural_prior_seed(
+            &StructuralFeedbackRefs {
+                protocol_version: "structural-prior-seed-v1".to_string(),
+                recommendation_id: "rec-1".to_string(),
+                recommended_at: "2026-04-30T00:00:00Z".to_string(),
+                node_id: "node-duration-quality".to_string(),
+                branch_id: "branch-duration-quality:trend".to_string(),
+                scenario_id: "scenario:branch-duration-quality:trend".to_string(),
+                path_id: "path:scenario:branch-duration-quality:trend:primary".to_string(),
+                followed_path: true,
+                exit_reason: None,
+                notes: None,
+            },
+            &positive_seed,
+        );
+        state.apply_structural_prior_seed(
+            &StructuralFeedbackRefs {
+                protocol_version: "structural-prior-seed-v1".to_string(),
+                recommendation_id: "rec-2".to_string(),
+                recommended_at: "2026-04-30T01:00:00Z".to_string(),
+                node_id: "other-node".to_string(),
+                branch_id: "other-branch".to_string(),
+                scenario_id: "scenario:other-branch".to_string(),
+                path_id: "path:scenario:other-branch:primary".to_string(),
+                followed_path: true,
+                exit_reason: None,
+                notes: None,
+            },
+            &positive_seed,
+        );
+        state.apply_structural_prior_seed(
+            &StructuralFeedbackRefs {
+                protocol_version: "structural-prior-seed-v1".to_string(),
+                recommendation_id: "rec-3".to_string(),
+                recommended_at: "2026-04-30T02:00:00Z".to_string(),
+                node_id: "node-duration-quality".to_string(),
+                branch_id: "branch-duration-quality:trend".to_string(),
+                scenario_id: "scenario:branch-duration-quality:trend".to_string(),
+                path_id: "path:scenario:branch-duration-quality:trend:primary".to_string(),
+                followed_path: true,
+                exit_reason: None,
+                notes: None,
+            },
+            &negative_seed,
+        );
+        baseline_state.apply_structural_prior_seed(
+            &StructuralFeedbackRefs {
+                protocol_version: "structural-prior-seed-v1".to_string(),
+                recommendation_id: "rec-3".to_string(),
+                recommended_at: "2026-04-30T02:00:00Z".to_string(),
+                node_id: "node-duration-quality".to_string(),
+                branch_id: "branch-duration-quality:trend".to_string(),
+                scenario_id: "scenario:branch-duration-quality:trend".to_string(),
+                path_id: "path:scenario:branch-duration-quality:trend:primary".to_string(),
+                followed_path: true,
+                exit_reason: None,
+                notes: None,
+            },
+            &positive_seed,
+        );
+
+        let prior = state
+            .structural_prior_state
+            .node_duration_priors
+            .get("node-duration-quality")
+            .expect("node duration prior");
+        let baseline = baseline_state
+            .structural_prior_state
+            .node_duration_priors
+            .get("node-duration-quality")
+            .expect("baseline node duration prior");
+        assert!(prior.weighted_success_mass > 0.0);
+        assert!(prior.weighted_failure_mass > 0.0);
+        assert!(prior.duration_outcome_support < baseline.duration_outcome_support);
+        assert!(prior.bocpd_break_probability > baseline.bocpd_break_probability);
+    }
+
+    #[test]
+    fn test_structural_prior_seed_rebuilds_branch_transition_priors() {
+        let mut state = LearningState::default();
+        let seed = StructuralPriorSeed {
+            source_label: "backtest".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.02,
+        };
+
+        for (recommendation_id, recommended_at, node_id, branch_id) in [
+            (
+                "rec-a",
+                "2026-04-30T00:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-b",
+                "2026-04-30T01:00:00Z",
+                "NQ:belief_regime_node:range",
+                "NQ:belief_regime_node:range:range_mean_reversion",
+            ),
+            (
+                "rec-c",
+                "2026-04-30T02:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-d",
+                "2026-04-30T03:00:00Z",
+                "NQ:belief_regime_node:transition",
+                "NQ:belief_regime_node:transition:transition_confirmation",
+            ),
+        ] {
+            state.apply_structural_prior_seed(
+                &StructuralFeedbackRefs {
+                    protocol_version: "structural-prior-seed-v1".to_string(),
+                    recommendation_id: recommendation_id.to_string(),
+                    recommended_at: recommended_at.to_string(),
+                    node_id: node_id.to_string(),
+                    branch_id: branch_id.to_string(),
+                    scenario_id: format!("scenario:{branch_id}"),
+                    path_id: format!("path:scenario:{branch_id}:primary"),
+                    followed_path: true,
+                    exit_reason: None,
+                    notes: None,
+                },
+                &seed,
+            );
+        }
+
+        let transition_ab = state
+            .structural_prior_state
+            .branch_transition_priors
+            .get(
+                "NQ:belief_regime_node:trend:trend_follow_through=>NQ:belief_regime_node:range:range_mean_reversion",
+            )
+            .expect("trend to range transition");
+        let transition_ac = state
+            .structural_prior_state
+            .branch_transition_priors
+            .get(
+                "NQ:belief_regime_node:trend:trend_follow_through=>NQ:belief_regime_node:transition:transition_confirmation",
+            )
+            .expect("trend to transition transition");
+
+        assert_eq!(transition_ab.observations, 1);
+        assert_eq!(transition_ac.observations, 1);
+        assert!(transition_ac.weighted_observation_mass > transition_ab.weighted_observation_mass);
+        assert!(transition_ac.transition_prior > transition_ab.transition_prior);
+        let temporal = state
+            .structural_prior_state
+            .branch_temporal_posteriors
+            .get(
+                "NQ:belief_regime_node:trend:trend_follow_through=>NQ:belief_regime_node:transition:transition_confirmation",
+            )
+            .expect("transition temporal posterior");
+        assert_eq!(
+            temporal.transition_key,
+            "NQ:belief_regime_node:trend:trend_follow_through=>NQ:belief_regime_node:transition:transition_confirmation"
+        );
+        assert_eq!(temporal.observations, transition_ac.observations);
+        assert_eq!(
+            temporal.temporal_posterior_support,
+            transition_ac.temporal_posterior_support
+        );
+        let node_temporal = state
+            .structural_prior_state
+            .node_transition_posteriors
+            .get("NQ:belief_regime_node:trend=>NQ:belief_regime_node:transition")
+            .expect("node transition temporal posterior");
+        assert_eq!(
+            node_temporal.transition_key,
+            "NQ:belief_regime_node:trend=>NQ:belief_regime_node:transition"
+        );
+        assert_eq!(node_temporal.from_node_id, "NQ:belief_regime_node:trend");
+        assert_eq!(node_temporal.to_node_id, "NQ:belief_regime_node:transition");
+        assert!(node_temporal.weighted_observation_mass > 0.0);
+        assert!(node_temporal.normalized_transition_posterior > 0.0);
+    }
+
+    #[test]
+    fn test_structural_transition_priors_discount_older_transitions() {
+        let mut state = LearningState::default();
+        let seed = StructuralPriorSeed {
+            source_label: "backtest".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.02,
+        };
+
+        for (recommendation_id, recommended_at, node_id, branch_id) in [
+            (
+                "rec-1",
+                "2026-04-30T00:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-2",
+                "2026-04-30T01:00:00Z",
+                "NQ:belief_regime_node:range",
+                "NQ:belief_regime_node:range:range_mean_reversion",
+            ),
+            (
+                "rec-3",
+                "2026-04-30T02:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-4",
+                "2026-04-30T03:00:00Z",
+                "NQ:belief_regime_node:transition",
+                "NQ:belief_regime_node:transition:transition_confirmation",
+            ),
+            (
+                "rec-5",
+                "2026-04-30T04:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-6",
+                "2026-04-30T05:00:00Z",
+                "NQ:belief_regime_node:transition",
+                "NQ:belief_regime_node:transition:transition_confirmation",
+            ),
+        ] {
+            state.apply_structural_prior_seed(
+                &StructuralFeedbackRefs {
+                    protocol_version: "structural-prior-seed-v1".to_string(),
+                    recommendation_id: recommendation_id.to_string(),
+                    recommended_at: recommended_at.to_string(),
+                    node_id: node_id.to_string(),
+                    branch_id: branch_id.to_string(),
+                    scenario_id: format!("scenario:{branch_id}"),
+                    path_id: format!("path:scenario:{branch_id}:primary"),
+                    followed_path: true,
+                    exit_reason: None,
+                    notes: None,
+                },
+                &seed,
+            );
+        }
+
+        let trend_to_range = state
+            .structural_prior_state
+            .branch_transition_priors
+            .get(
+                "NQ:belief_regime_node:trend:trend_follow_through=>NQ:belief_regime_node:range:range_mean_reversion",
+            )
+            .expect("trend to range transition");
+        let trend_to_transition = state
+            .structural_prior_state
+            .branch_transition_priors
+            .get(
+                "NQ:belief_regime_node:trend:trend_follow_through=>NQ:belief_regime_node:transition:transition_confirmation",
+            )
+            .expect("trend to transition transition");
+
+        assert_eq!(trend_to_range.observations, 1);
+        assert_eq!(trend_to_transition.observations, 2);
+        assert!(
+            trend_to_transition.weighted_observation_mass
+                > trend_to_range.weighted_observation_mass
+        );
+        assert!(trend_to_transition.transition_prior > trend_to_range.transition_prior);
+    }
+
+    #[test]
+    fn test_repeated_branch_evidence_strengthens_without_collapsing_unrelated_nodes() {
+        let mut state = LearningState::default();
+        let seed = StructuralPriorSeed {
+            source_label: "backtest".to_string(),
+            tempering_coefficient: None,
+            observations: 1,
+            followed_count: 1,
+            wins: 1,
+            losses: 0,
+            breakevens: 0,
+            invalidated: 0,
+            abandoned: 0,
+            not_followed: 0,
+            avg_pnl: 0.02,
+        };
+
+        for (recommendation_id, recommended_at, node_id, branch_id) in [
+            (
+                "rec-1",
+                "2026-04-30T00:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-2",
+                "2026-04-30T01:00:00Z",
+                "NQ:belief_regime_node:range",
+                "NQ:belief_regime_node:range:range_mean_reversion",
+            ),
+            (
+                "rec-3",
+                "2026-04-30T02:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-4",
+                "2026-04-30T03:00:00Z",
+                "NQ:belief_regime_node:transition",
+                "NQ:belief_regime_node:transition:transition_confirmation",
+            ),
+            (
+                "rec-5",
+                "2026-04-30T04:00:00Z",
+                "NQ:belief_regime_node:trend",
+                "NQ:belief_regime_node:trend:trend_follow_through",
+            ),
+            (
+                "rec-6",
+                "2026-04-30T05:00:00Z",
+                "NQ:belief_regime_node:transition",
+                "NQ:belief_regime_node:transition:transition_confirmation",
+            ),
+        ] {
+            state.apply_structural_prior_seed(
+                &StructuralFeedbackRefs {
+                    protocol_version: "structural-prior-seed-v1".to_string(),
+                    recommendation_id: recommendation_id.to_string(),
+                    recommended_at: recommended_at.to_string(),
+                    node_id: node_id.to_string(),
+                    branch_id: branch_id.to_string(),
+                    scenario_id: format!("scenario:{branch_id}"),
+                    path_id: format!("path:scenario:{branch_id}:primary"),
+                    followed_path: true,
+                    exit_reason: None,
+                    notes: None,
+                },
+                &seed,
+            );
+        }
+
+        let trend_to_range_key =
+            "NQ:belief_regime_node:trend:trend_follow_through=>NQ:belief_regime_node:range:range_mean_reversion";
+        let trend_to_transition_key =
+            "NQ:belief_regime_node:trend:trend_follow_through=>NQ:belief_regime_node:transition:transition_confirmation";
+        let range_to_trend_key =
+            "NQ:belief_regime_node:range:range_mean_reversion=>NQ:belief_regime_node:trend:trend_follow_through";
+        let trend_to_range = state
+            .structural_prior_state
+            .branch_temporal_posteriors
+            .get(trend_to_range_key)
+            .expect("trend to range posterior");
+        let trend_to_transition = state
+            .structural_prior_state
+            .branch_temporal_posteriors
+            .get(trend_to_transition_key)
+            .expect("trend to transition posterior");
+        let range_to_trend = state
+            .structural_prior_state
+            .branch_temporal_posteriors
+            .get(range_to_trend_key)
+            .expect("range to trend posterior");
+
+        assert!(trend_to_transition.transition_prior > trend_to_range.transition_prior);
+        assert!(
+            trend_to_transition.normalized_transition_posterior
+                > trend_to_range.normalized_transition_posterior
+        );
+        assert!(
+            (trend_to_transition.normalized_transition_posterior
+                + trend_to_range.normalized_transition_posterior
+                - 1.0)
+                .abs()
+                < 1e-9
+        );
+        let node_trend_to_transition = state
+            .structural_prior_state
+            .node_transition_posteriors
+            .get("NQ:belief_regime_node:trend=>NQ:belief_regime_node:transition")
+            .expect("trend to transition node posterior");
+        let node_trend_to_range = state
+            .structural_prior_state
+            .node_transition_posteriors
+            .get("NQ:belief_regime_node:trend=>NQ:belief_regime_node:range")
+            .expect("trend to range node posterior");
+        assert!(
+            node_trend_to_transition.normalized_transition_posterior
+                > node_trend_to_range.normalized_transition_posterior
+        );
+        assert!(
+            (node_trend_to_transition.normalized_transition_posterior
+                + node_trend_to_range.normalized_transition_posterior
+                - 1.0)
+                .abs()
+                < 1e-9
+        );
+        assert!((range_to_trend.normalized_transition_posterior - 1.0).abs() < 1e-9);
+        assert!(range_to_trend.weighted_observation_mass > 0.0);
     }
 
     #[test]

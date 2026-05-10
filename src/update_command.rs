@@ -1,4 +1,95 @@
 use super::*;
+use ict_engine::application::entry_models::export_policy_training_tables;
+use ict_engine::application::orchestration::export_structural_path_ranking_target;
+use ict_engine::application::provider_catalog::provider_status_agent_surface;
+
+fn structural_prior_seed_from_artifact_validation(
+    summary: &ict_engine::state::ArtifactDecisionSummary,
+) -> Option<ict_engine::state::StructuralPriorSeed> {
+    let (observations, wins, breakevens, losses, avg_pnl) =
+        match summary.consumed_trend_status.as_str() {
+            "validated_positive" | "validated_improving" => (2, 2, 0, 0, 0.03),
+            "validated_negative" | "validated_regressing" => (2, 0, 0, 2, -0.03),
+            "validated_neutral" => (1, 0, 1, 0, 0.0),
+            _ => return None,
+        };
+    Some(ict_engine::state::StructuralPriorSeed {
+        source_label: "artifact_validation".to_string(),
+        tempering_coefficient: Some(1.0),
+        observations,
+        followed_count: observations,
+        wins,
+        losses,
+        breakevens,
+        invalidated: 0,
+        abandoned: 0,
+        not_followed: 0,
+        avg_pnl,
+    })
+}
+
+fn append_learning_semantics_to_family_outcomes(
+    outcomes: &mut [FactorFamilyOutcome],
+    semantics_summary: &str,
+) {
+    if semantics_summary.is_empty() {
+        return;
+    }
+    for outcome in outcomes {
+        if !outcome
+            .promotion_decision
+            .reason
+            .contains("learning_semantics=")
+        {
+            outcome.promotion_decision.reason = format!(
+                "{}|learning_semantics={}",
+                outcome.promotion_decision.reason, semantics_summary
+            );
+        }
+        if !outcome
+            .rollback_recommendation
+            .reason
+            .contains("learning_semantics=")
+        {
+            outcome.rollback_recommendation.reason = format!(
+                "{}|learning_semantics={}",
+                outcome.rollback_recommendation.reason, semantics_summary
+            );
+        }
+    }
+}
+
+fn append_learning_semantics_to_update_gate_prompts(
+    prompts: &mut ict_engine::agent::AgentPromptPack,
+    semantics_summary: &str,
+) {
+    if semantics_summary.is_empty() {
+        return;
+    }
+    for prompt in &mut prompts.prompts {
+        if prompt.id == "promotion_gate" || prompt.id == "rollback_review" {
+            if !prompt.user_prompt.contains("learning_semantics=") {
+                prompt.user_prompt = format!(
+                    "{} learning_semantics={}",
+                    prompt.user_prompt, semantics_summary
+                );
+            }
+            let criterion = "Use learning_semantics to distinguish full-credit, fractional-credit, and no-credit feedback before approving promotion or rollback.";
+            if !prompt
+                .success_criteria
+                .iter()
+                .any(|existing| existing == criterion)
+            {
+                prompt.success_criteria.push(criterion.to_string());
+            }
+        }
+    }
+}
+
+pub(crate) fn update_shell(input: UpdateCommandInput<'_>) -> Result<()> {
+    ensure_state_dir_ready(input.state_dir)?;
+    update_command(input)
+}
 
 pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
     let UpdateCommandInput {
@@ -25,6 +116,7 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
         load_state_or_default(state_dir, symbol, UPDATE_RUNS_FILE)?;
     let mut learning_state = load_learning_state(state_dir, symbol)?;
     let previous_rankings = learning_state.factor_rankings.clone();
+    let raw_outcome = outcome.trim().to_ascii_lowercase();
     let outcome_label = normalize_trade_outcome_label(outcome);
     let entry_signal = entry_signal.unwrap_or("medium");
     let mut consumed_pending_update_artifact: Option<PendingUpdateArtifact> = None;
@@ -36,21 +128,36 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
                     template_feedback: feedback,
                     ..PendingUpdateArtifact::default()
                 },
-                &outcome_label,
+                &raw_outcome,
                 pnl,
                 regime,
                 direction,
             ),
-            Err(_) => {
-                let artifact = serde_json::from_str::<PendingUpdateArtifact>(&content)?;
-                consumed_pending_update_artifact = Some(artifact.clone());
-                feedback_record_from_artifact(artifact, &outcome_label, pnl, regime, direction)
-            }
+            Err(_) => match serde_json::from_str::<
+                ict_engine::application::orchestration::StructuralFeedbackSubmission,
+            >(&content)
+            {
+                Ok(submission) => {
+                    ict_engine::application::orchestration::feedback_record_from_structural_submission(
+                        submission,
+                        Some(symbol),
+                        Some(&raw_outcome),
+                        pnl,
+                        regime.map(normalize_regime_label),
+                        direction.map(normalize_direction_label),
+                    )
+                }
+                Err(_) => {
+                    let artifact = serde_json::from_str::<PendingUpdateArtifact>(&content)?;
+                    consumed_pending_update_artifact = Some(artifact.clone());
+                    feedback_record_from_artifact(artifact, &raw_outcome, pnl, regime, direction)
+                }
+            },
         }
     } else if state_exists(state_dir, symbol, PENDING_UPDATE_ARTIFACT_FILE) {
         let artifact = load_pending_update_artifact(state_dir, symbol)?;
         consumed_pending_update_artifact = Some(artifact.clone());
-        feedback_record_from_artifact(artifact, &outcome_label, pnl, regime, direction)
+        feedback_record_from_artifact(artifact, &raw_outcome, pnl, regime, direction)
     } else {
         FeedbackRecord {
             timestamp: Utc::now(),
@@ -71,13 +178,15 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
                 win_prob_short: 0.0,
                 uncertainty: 0.0,
             },
-            realized_outcome: outcome_label.clone(),
-            pnl: pnl.unwrap_or_else(|| match outcome_label.as_str() {
+            realized_outcome: raw_outcome.clone(),
+            pnl: pnl.unwrap_or_else(|| match raw_outcome.as_str() {
                 "win" => 0.01,
                 "loss" => -0.01,
                 _ => 0.0,
             }),
             regime_at_entry: normalize_regime_label(regime.unwrap_or("manipulation_expansion")),
+            structural_feedback: None,
+            reflection_mismatch_tags: Vec::new(),
         }
     };
     let consumed_execution_candidate_artifact = latest_execution_candidate_for_source_run(
@@ -106,6 +215,13 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
             direction.unwrap_or("neutral"),
         ]),
     );
+    let learning_semantics = ict_engine::state::structural_feedback_learning_semantics(&feedback);
+    let learning_semantics_summary = ict_engine::state::structural_learning_semantics_summary(
+        Some(learning_semantics.credit_class.as_str()),
+        Some(learning_semantics.success_credit),
+        Some(learning_semantics.observation_weight),
+    );
+    let structural_feedback = feedback.structural_feedback.clone();
     let consumed_feedback_pnl = feedback.pnl;
     let entry_quality = normalize_entry_quality_label(entry_signal);
     let factor_alignment = factor_alignment_label_from_feedback(&feedback);
@@ -122,16 +238,22 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
         .nodes
         .get("trade_outcome")
         .and_then(|node| node.probabilities_for_evidence(&evidence).ok());
-    let new_feedback = learning_state.merge_feedback_records(&[feedback]);
+    let new_feedback = learning_state.merge_feedback_records(std::slice::from_ref(&feedback));
     let feedback_records_applied = new_feedback.len();
+    let realized_outcome_for_prompts = new_feedback
+        .first()
+        .map(|feedback| feedback.realized_outcome.as_str())
+        .unwrap_or(raw_outcome.as_str());
 
-    if let Some(feedback) = new_feedback.first() {
+    if let Some(feedback) = new_feedback.first().filter(|feedback| {
+        ict_engine::state::structural_feedback_counts_as_executed_trade(feedback)
+    }) {
+        let outcome_label = ict_engine::state::structural_feedback_trade_outcome_proxy(feedback)
+            .unwrap_or_else(|| normalize_trade_outcome_label(&feedback.realized_outcome));
         let realized_state_index = network
             .nodes
             .get("trade_outcome")
-            .and_then(|node| {
-                node.state_index(&normalize_trade_outcome_label(&feedback.realized_outcome))
-            })
+            .and_then(|node| node.state_index(&outcome_label))
             .ok_or_else(|| anyhow!("unknown outcome state '{}'", feedback.realized_outcome))?;
 
         CPTUpdater::default().update_from_trade(
@@ -172,13 +294,19 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
         normalized_entry_quality: &entry_quality,
         factor_alignment: &factor_alignment,
         factor_uncertainty: &factor_uncertainty,
-        realized_outcome: &outcome_label,
+        realized_outcome: realized_outcome_for_prompts,
+        structural_learning_credit_class: Some(learning_semantics.credit_class.as_str()),
+        structural_learning_success_credit: Some(learning_semantics.success_credit),
+        structural_learning_observation_weight: Some(learning_semantics.observation_weight),
         feedback_records_applied,
         consumed_pre_bayes_evidence_filter: consumed_analyze_context
             .pre_bayes_evidence_filter
             .as_ref(),
         consumed_pre_bayes_entry_quality_bridge: consumed_analyze_context
             .pre_bayes_entry_quality_bridge
+            .as_ref(),
+        consumed_canonical_structural_regime_posterior: consumed_analyze_context
+            .canonical_structural_regime_posterior
             .as_ref(),
         consumed_multi_timeframe_summary: &consumed_analyze_context.multi_timeframe_summary,
     });
@@ -247,7 +375,11 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
         normalized_entry_quality: entry_quality,
         factor_alignment,
         factor_uncertainty,
-        realized_outcome: outcome_label,
+        realized_outcome: feedback.realized_outcome.clone(),
+        structural_learning_credit_class: Some(learning_semantics.credit_class.clone()),
+        structural_learning_success_credit: Some(learning_semantics.success_credit),
+        structural_learning_observation_weight: Some(learning_semantics.observation_weight),
+        structural_feedback: structural_feedback.clone(),
         feedback_records_applied,
         duplicate_feedback_skipped: feedback_records_applied == 0,
         consumed_pending_update_artifact_id: consumed_pending_update_artifact
@@ -269,6 +401,9 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
             .clone(),
         consumed_pre_bayes_entry_quality_bridge: consumed_analyze_context
             .pre_bayes_entry_quality_bridge
+            .clone(),
+        consumed_canonical_structural_regime_posterior: consumed_analyze_context
+            .canonical_structural_regime_posterior
             .clone(),
         consumed_multi_timeframe_summary: consumed_analyze_context.multi_timeframe_summary.clone(),
         updated_trade_outcome: trade_outcome_map.clone(),
@@ -349,6 +484,10 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
         &report.dataset_comparability,
         Some(&artifact_family_trends),
     );
+    append_learning_semantics_to_family_outcomes(
+        &mut report.factor_family_outcomes,
+        &learning_semantics_summary,
+    );
     report.factor_family_diffs = family_diffs(
         previous_runs
             .last()
@@ -403,6 +542,9 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
         &artifact_family_trends,
         &artifact_consumed_impact_summary,
     );
+    report
+        .artifact_action_summary
+        .push(format!("learning_semantics={learning_semantics_summary}"));
     report.artifact_decision_summary =
         ict_engine::application::artifacts::artifact_decision_summary_from_ledger(
             &artifact_preview_ledger,
@@ -491,6 +633,10 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
         &report.trade_outcome_deltas,
         &report.decision_thresholds,
     ));
+    append_learning_semantics_to_update_gate_prompts(
+        &mut report.agent_prompts,
+        &learning_semantics_summary,
+    );
     let update_execution_fields = derive_update_execution_fields(
         feedback_records_applied,
         &report.realized_outcome,
@@ -516,6 +662,10 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
             factor_alignment: report.factor_alignment.clone(),
             factor_uncertainty: report.factor_uncertainty.clone(),
             realized_outcome: report.realized_outcome.clone(),
+            structural_learning_credit_class: report.structural_learning_credit_class.clone(),
+            structural_learning_success_credit: report.structural_learning_success_credit,
+            structural_learning_observation_weight: report.structural_learning_observation_weight,
+            structural_feedback: report.structural_feedback.clone(),
             feedback_records_applied,
             duplicate_feedback_skipped: report.duplicate_feedback_skipped,
             consumed_pending_update_artifact_id: report.consumed_pending_update_artifact_id.clone(),
@@ -527,6 +677,9 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
             consumed_pre_bayes_evidence_filter: report.consumed_pre_bayes_evidence_filter.clone(),
             consumed_pre_bayes_entry_quality_bridge: report
                 .consumed_pre_bayes_entry_quality_bridge
+                .clone(),
+            consumed_canonical_structural_regime_posterior: report
+                .consumed_canonical_structural_regime_posterior
                 .clone(),
             consumed_multi_timeframe_summary: report.consumed_multi_timeframe_summary.clone(),
             trade_outcome_deltas,
@@ -561,6 +714,12 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
             prompt_workflow: report.agent_prompts.workflow.clone(),
         },
     )?;
+    if let Err(err) = export_policy_training_tables(state_dir, symbol) {
+        eprintln!(
+            "warning: failed to export policy training tables for '{}' in '{}': {:#}",
+            symbol, state_dir, err
+        );
+    }
     if let Some(artifact_id) = &report.consumed_pending_update_artifact_id {
         mark_artifact_consumed(
             state_dir,
@@ -598,6 +757,66 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
         &mut report.promotion_decision,
         &mut report.rollback_recommendation,
     );
+    if let (Some(refs), Some(seed)) = (
+        report.structural_feedback.as_ref(),
+        structural_prior_seed_from_artifact_validation(&report.artifact_decision_summary),
+    ) {
+        learning_state.apply_structural_prior_seed(refs, &seed);
+        save_learning_state(state_dir, symbol, &learning_state)?;
+    }
+    let provider_status_agent = provider_status_agent_surface(None, None, None).unwrap_or_default();
+    if let Err(err) = export_structural_path_ranking_target(
+        state_dir,
+        symbol,
+        &report.workflow_snapshot,
+        &provider_status_agent,
+        &learning_state.feedback_history,
+        &learning_state.structural_prior_state,
+    ) {
+        eprintln!(
+            "warning: failed to export structural path ranking target for '{}' in '{}': {:#}",
+            symbol, state_dir, err
+        );
+    }
 
     emit_update_output(&report, ensemble)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_structural_prior_seed_from_artifact_validation_maps_status() {
+        let positive = structural_prior_seed_from_artifact_validation(
+            &ict_engine::state::ArtifactDecisionSummary {
+                consumed_trend_status: "validated_positive".to_string(),
+                ..ict_engine::state::ArtifactDecisionSummary::default()
+            },
+        )
+        .expect("positive seed");
+        let regressing = structural_prior_seed_from_artifact_validation(
+            &ict_engine::state::ArtifactDecisionSummary {
+                consumed_trend_status: "validated_regressing".to_string(),
+                ..ict_engine::state::ArtifactDecisionSummary::default()
+            },
+        )
+        .expect("regressing seed");
+        let neutral = structural_prior_seed_from_artifact_validation(
+            &ict_engine::state::ArtifactDecisionSummary {
+                consumed_trend_status: "validated_neutral".to_string(),
+                ..ict_engine::state::ArtifactDecisionSummary::default()
+            },
+        )
+        .expect("neutral seed");
+
+        assert_eq!(positive.source_label, "artifact_validation");
+        assert_eq!(positive.wins, 2);
+        assert_eq!(regressing.losses, 2);
+        assert_eq!(neutral.breakevens, 1);
+        assert!(structural_prior_seed_from_artifact_validation(
+            &ict_engine::state::ArtifactDecisionSummary::default()
+        )
+        .is_none());
+    }
 }

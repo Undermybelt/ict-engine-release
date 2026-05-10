@@ -59,17 +59,23 @@ impl HumanAnalyzeReport {
         if let Some(next_action_line) = &self.next_action_line {
             sections.push(next_action_line.clone());
         }
-        sections.extend([
-            format!(
-                "Basic price structure\n{}",
-                self.basic_price_structure_analysis
-            ),
-            format!("Technical price\n{}", self.technical_price_analysis),
-            format!("SMT correlation\n{}", self.smt_correlation_analysis),
-            format!("Regime + Bayesian view\n{}", self.regime_bayes_analysis),
-            format!("Trade plan\n{}", self.trade_plan),
-        ]);
-        sections.join("\n\n")
+        push_labeled_line(
+            &mut sections,
+            "Structure",
+            &self.basic_price_structure_analysis,
+        );
+        push_labeled_line(&mut sections, "Technicals", &self.technical_price_analysis);
+        push_labeled_line(&mut sections, "SMT", &self.smt_correlation_analysis);
+        push_labeled_line(&mut sections, "Regime", &self.regime_bayes_analysis);
+        push_labeled_line(&mut sections, "Plan", &self.trade_plan);
+        sections.join("\n")
+    }
+}
+
+fn push_labeled_line(lines: &mut Vec<String>, label: &str, value: &str) {
+    let trimmed = value.trim();
+    if !trimmed.is_empty() {
+        lines.push(format!("{label}: {trimmed}"));
     }
 }
 
@@ -132,16 +138,15 @@ mod tests {
     fn human_report_renders_five_sections() {
         let report = build_human_analyze_report(None, None, None, None, "a", "b", "c", "d", "e");
         let rendered = report.render();
-        assert!(rendered.contains("Basic price structure"));
-        assert!(rendered.contains("Trade plan"));
+        assert!(rendered.contains("Structure: a"));
+        assert!(rendered.contains("Plan: e"));
+        assert!(!rendered.contains("Basic price structure"));
     }
 
     #[test]
     fn human_report_renders_summary_lines_first() {
         let report = build_human_analyze_report(
-            Some(
-                "NQ | Bull bias | Entry: medium | Gate: observe_only | Quality: 0.244".to_string(),
-            ),
+            Some("NQ | Bull bias | entry=medium | gate=observe_only | quality=0.244".to_string()),
             Some("Decision: Observe only".to_string()),
             Some("Action: TUNE structure_ict".to_string()),
             Some("Next: wait".to_string()),
@@ -154,7 +159,7 @@ mod tests {
         let rendered = report.render();
         assert!(
             rendered.starts_with(
-                "NQ | Bull bias | Entry: medium | Gate: observe_only | Quality: 0.244\n\nDecision: Observe only\n\nAction: TUNE structure_ict\n\nNext: wait"
+                "NQ | Bull bias | entry=medium | gate=observe_only | quality=0.244\nDecision: Observe only\nAction: TUNE structure_ict\nNext: wait"
             )
         );
     }

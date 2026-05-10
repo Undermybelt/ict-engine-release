@@ -1,19 +1,97 @@
 use super::*;
+use ict_engine::application::backtest::parse_duration_sizing_scale;
+use ict_engine::types::RegimeV2;
+use std::collections::HashMap;
+use std::path::Path;
+
+/// Regime label entry from HMM output
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RegimeLabelJson {
+    ts: String,
+    family: String,
+}
+
+/// Load regime V2 labels from JSON file alongside candle data
+fn load_regime_v2_labels(data_path: &str) -> HashMap<String, RegimeV2> {
+    // Try to find regime_v2_labels.json alongside the candle data
+    let data_dir = Path::new(data_path).parent().unwrap_or(Path::new("."));
+    let regime_path = data_dir.join("regime_v2_labels.json");
+
+    if !regime_path.exists() {
+        // Try /tmp as fallback for HMM output
+        let tmp_path = Path::new("/tmp/hmm_regime_nq_15m_v8/regime_v2_labels.json");
+        if tmp_path.exists() {
+            return load_regime_v2_from_path(tmp_path);
+        }
+        return HashMap::new();
+    }
+
+    load_regime_v2_from_path(&regime_path)
+}
+
+fn load_regime_v2_from_path(path: &Path) -> HashMap<String, RegimeV2> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+
+    let labels: Vec<RegimeLabelJson> = match serde_json::from_str(&content) {
+        Ok(l) => l,
+        Err(_) => return HashMap::new(),
+    };
+
+    labels
+        .into_iter()
+        .filter_map(|l| parse_regime_v2(&l.family).map(|r| (l.ts, r)))
+        .collect()
+}
+
+/// Parse regime family string into RegimeV2 enum
+fn parse_regime_v2(family: &str) -> Option<RegimeV2> {
+    match family {
+        "trend_up_strong" => Some(RegimeV2::TrendUpStrong),
+        "trend_up_weak" => Some(RegimeV2::TrendUpWeak),
+        "trend_down_strong" => Some(RegimeV2::TrendDownStrong),
+        "trend_down_weak" => Some(RegimeV2::TrendDownWeak),
+        "range_quiet" => Some(RegimeV2::RangeQuiet),
+        "range_volatile" => Some(RegimeV2::RangeVolatile),
+        "transition" => Some(RegimeV2::Transition),
+        "crash_recovery" => Some(RegimeV2::CrashRecovery),
+        _ => None,
+    }
+}
+
+pub(crate) struct RunFactorBacktestInput<'a> {
+    pub(crate) symbol: &'a str,
+    pub(crate) data: &'a str,
+    pub(crate) multi_timeframe_inputs: MultiTimeframeInputPaths<'a>,
+    pub(crate) paired_data: Option<&'a str>,
+    pub(crate) auxiliary_override:
+        Option<&'a ict_engine::data::realtime::market_support::AuxiliaryMarketEvidence>,
+    pub(crate) state_dir: &'a str,
+}
 
 pub(crate) fn run_factor_backtest(
-    symbol: &str,
-    data: &str,
-    paired_data: Option<&str>,
-    state_dir: &str,
+    input: RunFactorBacktestInput<'_>,
 ) -> Result<ict_engine::factor_lab::BacktestResult> {
+    let RunFactorBacktestInput {
+        symbol,
+        data,
+        multi_timeframe_inputs,
+        paired_data,
+        auxiliary_override,
+        state_dir,
+    } = input;
     let candles = load_candles(data)?;
     let paired_candles = paired_data.map(load_candles).transpose()?;
     let resolved_multi_timeframe_inputs =
-        resolve_multi_timeframe_inputs(data, None, None, None, None, None, None);
+        resolve_multi_timeframe_inputs(data, multi_timeframe_inputs);
     let multi_timeframe_summary =
         build_multi_timeframe_summary(data, &resolved_multi_timeframe_inputs)?;
     let multi_timeframe_signal =
         build_multi_timeframe_research_signal(&resolved_multi_timeframe_inputs)?;
+    let structure_ict_context =
+        build_structure_ict_context_events(&resolved_multi_timeframe_inputs)?;
     let previous_runs: Vec<BacktestRunRecord> =
         load_state_or_default(state_dir, symbol, BACKTEST_RUNS_FILE)?;
     let mut learning_state = load_learning_state(state_dir, symbol)?;
@@ -23,14 +101,32 @@ pub(crate) fn run_factor_backtest(
         .iter()
         .map(LearningState::feedback_key)
         .collect::<std::collections::BTreeSet<_>>();
-    let lab = FactorLab::new(FactorRegistry::default());
+    let mut registry = FactorRegistry::default();
+    ict_engine::factors::FactorHotplugConfig::apply_to_registry_if_present(
+        state_dir,
+        &mut registry,
+    );
+    let lab = FactorLab::new(registry);
+
+    // Load regime V2 labels if available
+    let regime_v2_labels = load_regime_v2_labels(data);
+
     let research = lab.run_research(
         symbol,
         &candles,
         &FactorContext {
             paired_candles: paired_candles.as_deref(),
-            auxiliary: None,
+            m1_events: structure_ict_context.m1_events.as_deref(),
+            m5_events: structure_ict_context.m5_events.as_deref(),
+            m15_events: structure_ict_context.m15_events.as_deref(),
+            m30_events: structure_ict_context.m30_events.as_deref(),
+            h1_events: structure_ict_context.h1_events.as_deref(),
+            h4_events: structure_ict_context.h4_events.as_deref(),
+            d1_events: structure_ict_context.d1_events.as_deref(),
+            w1_events: structure_ict_context.w1_events.as_deref(),
+            auxiliary: auxiliary_override,
             regime: None,
+            regime_v2_labels: Some(&regime_v2_labels),
         },
         Some(&mut learning_state),
         &FactorBacktestConfig::default(),
@@ -53,6 +149,7 @@ pub(crate) fn run_factor_backtest(
     let mut report = research.backtest;
     let thresholds = decision_thresholds();
     let score_deltas = ranking_diffs(&previous_rankings, &learning_state.factor_rankings);
+    let first_score_delta = score_deltas.first().map(|item| item.score_delta);
     let factor_family_decisions = learning_state.family_decisions();
 
     report.feedback_records_generated = feedback_records_generated;
@@ -233,6 +330,12 @@ pub(crate) fn run_factor_backtest(
         .cloned()
         .chain(multi_timeframe_signal.summary.iter().cloned())
         .collect();
+    report
+        .multi_timeframe_summary
+        .extend(build_market_state_summary_for_candles(&candles));
+    report
+        .multi_timeframe_summary
+        .push(structure_ict_pda_context_summary(&structure_ict_context));
     report.agent_context_bundle.multi_timeframe_summary = report.multi_timeframe_summary.clone();
     report.agent_context_bundle_minimal =
         build_agent_context_bundle_minimal(&report.agent_context_bundle);
@@ -300,7 +403,7 @@ pub(crate) fn run_factor_backtest(
         state_dir,
         symbol,
         BacktestRunRecord {
-            run_id,
+            run_id: run_id.clone(),
             timestamp: run_timestamp,
             symbol: symbol.to_string(),
             provenance: report.provenance.clone(),
@@ -440,6 +543,22 @@ pub(crate) fn run_factor_backtest(
             prediction_edge_share: backtest_execution_fields.prediction_edge_share,
             execution_readiness: backtest_execution_fields.execution_readiness,
             execution_gate_status: backtest_execution_fields.execution_gate_status.clone(),
+            canonical_structural_regime_posterior: report
+                .workflow_snapshot
+                .latest_analyze
+                .as_ref()
+                .and_then(|phase| {
+                    if phase.canonical_structural_probabilities.is_empty() {
+                        None
+                    } else {
+                        Some(ict_engine::state::CanonicalStructuralRegimePosterior {
+                            active_regime: phase.canonical_structural_active_regime.clone(),
+                            confidence: phase.canonical_structural_confidence,
+                            probabilities: phase.canonical_structural_probabilities.clone(),
+                            evidence: Vec::new(),
+                        })
+                    }
+                }),
             artifact_decision_summary: report.artifact_decision_summary.clone(),
             artifact_decision_section: report.artifact_decision_section.clone(),
             agent_prompts: report.agent_prompts.clone(),
@@ -457,6 +576,48 @@ pub(crate) fn run_factor_backtest(
         None,
     )?;
     report.workflow_snapshot = refresh_workflow_snapshot(state_dir, symbol)?;
+    let backtest_support_hint = crate::analyze_shared::structural_support_hint_for_backtest(
+        crate::analyze_shared::BacktestStructuralSupportInput {
+            baseline_composite_score: report.scorecards.first().map(|score| score.composite_score),
+            aggregate_return: report.aggregate_return,
+            execution_readiness: backtest_execution_fields.execution_readiness,
+            comparable_to_previous: report.dataset_comparability.comparable,
+            feedback_records_applied: report.feedback_records_applied,
+            conformal_coverage_1sigma: report
+                .factor_results
+                .first()
+                .map(|result| result.metrics.conformal_coverage_1sigma),
+            regime_break_penalty: report
+                .factor_results
+                .first()
+                .map(|result| result.metrics.regime_break_penalty),
+            structural_break_detected: report
+                .factor_results
+                .first()
+                .map(|result| result.metrics.structural_break_detected),
+            quality_delta: first_score_delta,
+        },
+    );
+    let backtest_support_hint = crate::analyze_shared::offline_structural_support_hint(
+        crate::analyze_shared::OfflineStructuralSupportHintInput {
+            artifact_validation_bias: Some(
+                crate::analyze_shared::artifact_validation_support_bias(
+                    &report.workflow_snapshot.artifact_decision_summary,
+                ),
+            ),
+            baseline_support: backtest_support_hint,
+            ..crate::analyze_shared::OfflineStructuralSupportHintInput::default()
+        },
+    );
+    crate::analyze_shared::apply_offline_structural_prior_seed(
+        &mut learning_state,
+        &report.workflow_snapshot,
+        &format!("structural-prior-seed:{}", run_id),
+        run_timestamp,
+        backtest_support_hint,
+        "backtest_run_structural_prior_seed",
+    );
+    save_learning_state(state_dir, symbol, &learning_state)?;
     report.artifact_decision_summary = artifact_decision_summary_from_snapshot(
         &report.workflow_snapshot,
         &report.artifact_action_summary,

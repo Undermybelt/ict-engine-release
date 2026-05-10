@@ -56,6 +56,8 @@ fn score(
         hmm_posterior: &posterior,
         mece_recovery_confidence: Some(0.96),
         prediction_vote_score: prediction_score,
+        market_state_lineage: None,
+        path_ranker_lineage: None,
         axial_trace: None,
     };
     DefaultExecutionTreeScorer

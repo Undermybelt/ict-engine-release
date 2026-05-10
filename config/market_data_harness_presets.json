@@ -1,0 +1,247 @@
+{
+  "version": 2,
+  "markets": [
+    {
+      "market_key": "NQ",
+      "aliases": ["CME:NQ1!", "NASDAQ_FUTURES"],
+      "live_defaults": {
+        "futures_symbol": "NQ=F",
+        "spot_role": "etf_reference",
+        "options_role": "options_underlying",
+        "spot_kind": "equity"
+      },
+      "related": {
+        "etf_reference": {
+          "display_symbol": "QQQ",
+          "yfinance": "QQQ",
+          "tradingview_mcp": "NASDAQ:QQQ",
+          "ibkr": {
+            "symbol": "QQQ",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD"
+          }
+        },
+        "cfd_reference": {
+          "display_symbol": "NDX",
+          "yfinance": "^NDX",
+          "tradingview_mcp": "NASDAQ:NDX",
+          "ibkr": {
+            "symbol": "NDX",
+            "sec_type": "IND",
+            "exchange": "NASDAQ",
+            "currency": "USD"
+          }
+        },
+        "volatility_reference": {
+          "display_symbol": "VIX",
+          "yfinance": "^VIX",
+          "tradingview_mcp": "CBOE:VIX",
+          "ibkr": {
+            "symbol": "VIX",
+            "sec_type": "IND",
+            "exchange": "CBOE",
+            "currency": "USD"
+          }
+        },
+        "options_underlying": {
+          "display_symbol": "QQQ",
+          "yfinance": "QQQ",
+          "tradingview_mcp": "NASDAQ:QQQ"
+        }
+      }
+    },
+    {
+      "market_key": "ES",
+      "aliases": ["CME:ES1!", "SP500_FUTURES"],
+      "live_defaults": {
+        "futures_symbol": "ES=F",
+        "spot_role": "etf_reference",
+        "options_role": "options_underlying",
+        "spot_kind": "equity"
+      },
+      "related": {
+        "etf_reference": {
+          "display_symbol": "SPY",
+          "yfinance": "SPY",
+          "tradingview_mcp": "AMEX:SPY",
+          "ibkr": {
+            "symbol": "SPY",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD"
+          }
+        },
+        "cfd_reference": {
+          "display_symbol": "SPX",
+          "yfinance": "^GSPC",
+          "tradingview_mcp": "SP:SPX",
+          "ibkr": {
+            "symbol": "SPX",
+            "sec_type": "IND",
+            "exchange": "CBOE",
+            "currency": "USD"
+          }
+        },
+        "volatility_reference": {
+          "display_symbol": "VIX",
+          "yfinance": "^VIX",
+          "tradingview_mcp": "CBOE:VIX",
+          "ibkr": {
+            "symbol": "VIX",
+            "sec_type": "IND",
+            "exchange": "CBOE",
+            "currency": "USD"
+          }
+        },
+        "options_underlying": {
+          "display_symbol": "SPY",
+          "yfinance": "SPY",
+          "tradingview_mcp": "AMEX:SPY"
+        }
+      }
+    },
+    {
+      "market_key": "YM",
+      "aliases": ["CBOT:YM1!", "DOW_FUTURES"],
+      "live_defaults": {
+        "futures_symbol": "YM=F",
+        "spot_role": "etf_reference",
+        "options_role": "options_underlying",
+        "spot_kind": "equity"
+      },
+      "related": {
+        "etf_reference": {
+          "display_symbol": "DIA",
+          "yfinance": "DIA",
+          "tradingview_mcp": "AMEX:DIA",
+          "ibkr": {
+            "symbol": "DIA",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD"
+          }
+        },
+        "cfd_reference": {
+          "display_symbol": "DJI",
+          "yfinance": "^DJI",
+          "tradingview_mcp": "DJ:DJI",
+          "ibkr": {
+            "symbol": "DJI",
+            "sec_type": "IND",
+            "exchange": "NYSE",
+            "currency": "USD"
+          }
+        },
+        "volatility_reference": {
+          "display_symbol": "VIX",
+          "yfinance": "^VIX",
+          "tradingview_mcp": "CBOE:VIX",
+          "ibkr": {
+            "symbol": "VIX",
+            "sec_type": "IND",
+            "exchange": "CBOE",
+            "currency": "USD"
+          }
+        },
+        "options_underlying": {
+          "display_symbol": "DIA",
+          "yfinance": "DIA",
+          "tradingview_mcp": "AMEX:DIA"
+        }
+      }
+    },
+    {
+      "market_key": "GC",
+      "aliases": ["COMEX:GC1!", "GOLD_FUTURES"],
+      "live_defaults": {
+        "futures_symbol": "GC=F",
+        "spot_role": "etf_reference",
+        "options_role": "options_underlying",
+        "spot_kind": "etf"
+      },
+      "related": {
+        "etf_reference": {
+          "display_symbol": "GLD",
+          "yfinance": "GLD",
+          "tradingview_mcp": "AMEX:GLD",
+          "ibkr": {
+            "symbol": "GLD",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD"
+          }
+        },
+        "cfd_reference": {
+          "display_symbol": "XAUUSD",
+          "tradingview_mcp": "OANDA:XAUUSD",
+          "ibkr": {
+            "symbol": "XAUUSD",
+            "sec_type": "CASH",
+            "exchange": "IDEALPRO",
+            "currency": "USD"
+          }
+        },
+        "volatility_reference": {
+          "display_symbol": "VIX",
+          "yfinance": "^VIX",
+          "tradingview_mcp": "CBOE:VIX",
+          "ibkr": {
+            "symbol": "VIX",
+            "sec_type": "IND",
+            "exchange": "CBOE",
+            "currency": "USD"
+          }
+        },
+        "options_underlying": {
+          "display_symbol": "GLD",
+          "yfinance": "GLD",
+          "tradingview_mcp": "AMEX:GLD"
+        }
+      }
+    },
+    {
+      "market_key": "CL",
+      "aliases": ["NYMEX:CL1!", "WTI_FUTURES"],
+      "live_defaults": {
+        "futures_symbol": "CL=F",
+        "spot_role": "etf_reference",
+        "options_role": "options_underlying",
+        "spot_kind": "etf"
+      },
+      "related": {
+        "etf_reference": {
+          "display_symbol": "USO",
+          "yfinance": "USO",
+          "tradingview_mcp": "AMEX:USO",
+          "ibkr": {
+            "symbol": "USO",
+            "sec_type": "STK",
+            "exchange": "SMART",
+            "currency": "USD"
+          }
+        },
+        "cfd_reference": {
+          "display_symbol": "USOIL",
+          "tradingview_mcp": "TVC:USOIL"
+        },
+        "volatility_reference": {
+          "display_symbol": "VIX",
+          "yfinance": "^VIX",
+          "tradingview_mcp": "CBOE:VIX",
+          "ibkr": {
+            "symbol": "VIX",
+            "sec_type": "IND",
+            "exchange": "CBOE",
+            "currency": "USD"
+          }
+        },
+        "options_underlying": {
+          "display_symbol": "USO",
+          "yfinance": "USO",
+          "tradingview_mcp": "AMEX:USO"
+        }
+      }
+    }
+  ]
+}

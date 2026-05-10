@@ -118,6 +118,7 @@ pub fn persist_finalized_backtest_run(
                 .latest_backtest
                 .as_ref()
                 .and_then(|phase| phase.hybrid_remaining_expected_bars),
+            canonical_structural_regime_posterior: None,
             execution_artifact_id: None,
             execution_edge_share: backtest_execution_fields.execution_edge_share,
             prediction_edge_share: backtest_execution_fields.prediction_edge_share,

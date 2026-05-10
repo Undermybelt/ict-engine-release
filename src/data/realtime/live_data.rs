@@ -4,37 +4,39 @@ use chrono::{DateTime, Utc};
 use crate::types::Candle;
 
 use super::{
-    nofx::NofxProvider,
-    openalice::{
-        AuxiliaryMarketEvidence, OpenAliceProvider, OptionsChainSummary, SpotInstrumentKind,
-    },
-    openbb::OpenBBProvider,
+    crypto_public_runtime::CryptoPublicRuntimeProvider,
+    external_http_runtime::ExternalHttpRuntimeProvider,
+    market_support::{AuxiliaryMarketEvidence, OptionsChainSummary, SpotInstrumentKind},
     provider::RealtimeDataProvider,
+    tradingview_mcp_runtime::TradingViewMcpRuntimeProvider,
+    yfinance_runtime::YahooFinanceProvider,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveDataBackend {
-    OpenAlice,
-    OpenBB,
-    Nofx,
+    ExternalHttp,
+    Yfinance,
+    CryptoPublic,
+    TradingViewMcp,
 }
 
 impl LiveDataBackend {
     pub fn parse(input: &str) -> Result<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
-            "openalice" => Ok(Self::OpenAlice),
-            "openbb" => Ok(Self::OpenBB),
-            "nofx" => Ok(Self::Nofx),
-            "yfinance" => Ok(Self::OpenBB),
+            "external_http" | "external_http_runtime" => Ok(Self::ExternalHttp),
+            "yfinance" => Ok(Self::Yfinance),
+            "crypto_public" | "crypto_public_runtime" => Ok(Self::CryptoPublic),
+            "tradingview" | "tradingview_mcp" | "tv_mcp" => Ok(Self::TradingViewMcp),
             other => bail!("unsupported live data backend '{}'", other),
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::OpenAlice => "openalice",
-            Self::OpenBB => "openbb",
-            Self::Nofx => "nofx",
+            Self::ExternalHttp => "external_http_runtime",
+            Self::Yfinance => "yfinance",
+            Self::CryptoPublic => "crypto_public_runtime",
+            Self::TradingViewMcp => "tradingview_mcp",
         }
     }
 }
@@ -63,6 +65,12 @@ pub trait IntegratedLiveDataSource: Send + Sync {
 
     fn fetch_options_chain_summary(&self, symbol: &str) -> Result<OptionsChainSummary>;
 
+    fn fetch_options_volatility_proxy_summary(
+        &self,
+        proxy_symbol: &str,
+        underlying_symbol: &str,
+    ) -> Result<OptionsChainSummary>;
+
     fn build_auxiliary_evidence(
         &self,
         spot_kind: SpotInstrumentKind,
@@ -81,7 +89,7 @@ pub trait IntegratedLiveDataSource: Send + Sync {
     ) -> Vec<f64>;
 }
 
-impl IntegratedLiveDataSource for OpenAliceProvider {
+impl IntegratedLiveDataSource for ExternalHttpRuntimeProvider {
     fn fetch_futures_candles(
         &self,
         symbol: &str,
@@ -89,7 +97,7 @@ impl IntegratedLiveDataSource for OpenAliceProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<Candle>> {
-        OpenAliceProvider::fetch_futures_candles(self, symbol, interval, start, end)
+        ExternalHttpRuntimeProvider::fetch_futures_candles(self, symbol, interval, start, end)
     }
 
     fn fetch_futures_last_price(&self, symbol: &str) -> Result<f64> {
@@ -104,7 +112,7 @@ impl IntegratedLiveDataSource for OpenAliceProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<Candle>> {
-        OpenAliceProvider::fetch_spot_candles(self, kind, symbol, interval, start, end)
+        ExternalHttpRuntimeProvider::fetch_spot_candles(self, kind, symbol, interval, start, end)
     }
 
     fn fetch_spot_last_price(&self, _kind: SpotInstrumentKind, symbol: &str) -> Result<f64> {
@@ -112,7 +120,15 @@ impl IntegratedLiveDataSource for OpenAliceProvider {
     }
 
     fn fetch_options_chain_summary(&self, symbol: &str) -> Result<OptionsChainSummary> {
-        OpenAliceProvider::fetch_options_chain_summary(self, symbol)
+        ExternalHttpRuntimeProvider::fetch_options_chain_summary(self, symbol)
+    }
+
+    fn fetch_options_volatility_proxy_summary(
+        &self,
+        _proxy_symbol: &str,
+        _underlying_symbol: &str,
+    ) -> Result<OptionsChainSummary> {
+        bail!("external_http runtime does not support options volatility proxy fallback")
     }
 
     fn build_auxiliary_evidence(
@@ -124,7 +140,7 @@ impl IntegratedLiveDataSource for OpenAliceProvider {
         spot_candles: &[Candle],
         options_summary: &OptionsChainSummary,
     ) -> AuxiliaryMarketEvidence {
-        OpenAliceProvider::build_auxiliary_evidence(
+        ExternalHttpRuntimeProvider::build_auxiliary_evidence(
             self,
             spot_kind,
             spot_symbol,
@@ -141,7 +157,7 @@ impl IntegratedLiveDataSource for OpenAliceProvider {
         directional_bias: f64,
         uncertainty_penalty: f64,
     ) -> Vec<f64> {
-        OpenAliceProvider::apply_auxiliary_evidence_to_outcome(
+        ExternalHttpRuntimeProvider::apply_auxiliary_evidence_to_outcome(
             self,
             base_distribution,
             directional_bias,
@@ -150,7 +166,7 @@ impl IntegratedLiveDataSource for OpenAliceProvider {
     }
 }
 
-impl IntegratedLiveDataSource for OpenBBProvider {
+impl IntegratedLiveDataSource for YahooFinanceProvider {
     fn fetch_futures_candles(
         &self,
         symbol: &str,
@@ -158,11 +174,11 @@ impl IntegratedLiveDataSource for OpenBBProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<Candle>> {
-        OpenBBProvider::fetch_futures_candles(self, symbol, interval, start, end)
+        YahooFinanceProvider::fetch_futures_candles(self, symbol, interval, start, end)
     }
 
     fn fetch_futures_last_price(&self, symbol: &str) -> Result<f64> {
-        Ok(OpenBBProvider::fetch_futures_quote(self, symbol)?.last)
+        Ok(YahooFinanceProvider::fetch_futures_quote(self, symbol)?.last)
     }
 
     fn fetch_spot_candles(
@@ -173,15 +189,27 @@ impl IntegratedLiveDataSource for OpenBBProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<Candle>> {
-        OpenBBProvider::fetch_spot_candles(self, kind, symbol, interval, start, end)
+        YahooFinanceProvider::fetch_spot_candles(self, kind, symbol, interval, start, end)
     }
 
     fn fetch_spot_last_price(&self, kind: SpotInstrumentKind, symbol: &str) -> Result<f64> {
-        Ok(OpenBBProvider::fetch_spot_quote(self, kind, symbol)?.last)
+        Ok(YahooFinanceProvider::fetch_spot_quote(self, kind, symbol)?.last)
     }
 
     fn fetch_options_chain_summary(&self, symbol: &str) -> Result<OptionsChainSummary> {
-        OpenBBProvider::fetch_options_chain_summary(self, symbol)
+        YahooFinanceProvider::fetch_options_chain_summary(self, symbol)
+    }
+
+    fn fetch_options_volatility_proxy_summary(
+        &self,
+        proxy_symbol: &str,
+        underlying_symbol: &str,
+    ) -> Result<OptionsChainSummary> {
+        YahooFinanceProvider::fetch_options_volatility_proxy_summary(
+            self,
+            proxy_symbol,
+            underlying_symbol,
+        )
     }
 
     fn build_auxiliary_evidence(
@@ -193,7 +221,7 @@ impl IntegratedLiveDataSource for OpenBBProvider {
         spot_candles: &[Candle],
         options_summary: &OptionsChainSummary,
     ) -> AuxiliaryMarketEvidence {
-        OpenBBProvider::build_auxiliary_evidence(
+        YahooFinanceProvider::build_auxiliary_evidence(
             self,
             spot_kind,
             spot_symbol,
@@ -210,7 +238,7 @@ impl IntegratedLiveDataSource for OpenBBProvider {
         directional_bias: f64,
         uncertainty_penalty: f64,
     ) -> Vec<f64> {
-        OpenBBProvider::apply_auxiliary_evidence_to_outcome(
+        YahooFinanceProvider::apply_auxiliary_evidence_to_outcome(
             self,
             base_distribution,
             directional_bias,
@@ -219,7 +247,7 @@ impl IntegratedLiveDataSource for OpenBBProvider {
     }
 }
 
-impl IntegratedLiveDataSource for NofxProvider {
+impl IntegratedLiveDataSource for TradingViewMcpRuntimeProvider {
     fn fetch_futures_candles(
         &self,
         symbol: &str,
@@ -227,7 +255,88 @@ impl IntegratedLiveDataSource for NofxProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<Candle>> {
-        NofxProvider::fetch_futures_candles(self, symbol, interval, start, end)
+        TradingViewMcpRuntimeProvider::fetch_futures_candles(self, symbol, interval, start, end)
+    }
+
+    fn fetch_futures_last_price(&self, symbol: &str) -> Result<f64> {
+        Ok(TradingViewMcpRuntimeProvider::fetch_futures_quote(self, symbol)?.last)
+    }
+
+    fn fetch_spot_candles(
+        &self,
+        kind: SpotInstrumentKind,
+        symbol: &str,
+        interval: Option<&str>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<Candle>> {
+        TradingViewMcpRuntimeProvider::fetch_spot_candles(self, kind, symbol, interval, start, end)
+    }
+
+    fn fetch_spot_last_price(&self, kind: SpotInstrumentKind, symbol: &str) -> Result<f64> {
+        Ok(TradingViewMcpRuntimeProvider::fetch_spot_quote(self, kind, symbol)?.last)
+    }
+
+    fn fetch_options_chain_summary(&self, symbol: &str) -> Result<OptionsChainSummary> {
+        TradingViewMcpRuntimeProvider::fetch_options_chain_summary(self, symbol)
+    }
+
+    fn fetch_options_volatility_proxy_summary(
+        &self,
+        proxy_symbol: &str,
+        underlying_symbol: &str,
+    ) -> Result<OptionsChainSummary> {
+        TradingViewMcpRuntimeProvider::fetch_options_volatility_proxy_summary(
+            self,
+            proxy_symbol,
+            underlying_symbol,
+        )
+    }
+
+    fn build_auxiliary_evidence(
+        &self,
+        spot_kind: SpotInstrumentKind,
+        spot_symbol: &str,
+        options_symbol: &str,
+        futures_candles: &[Candle],
+        spot_candles: &[Candle],
+        options_summary: &OptionsChainSummary,
+    ) -> AuxiliaryMarketEvidence {
+        TradingViewMcpRuntimeProvider::build_auxiliary_evidence(
+            self,
+            spot_kind,
+            spot_symbol,
+            options_symbol,
+            futures_candles,
+            spot_candles,
+            options_summary,
+        )
+    }
+
+    fn apply_auxiliary_evidence_to_outcome(
+        &self,
+        base_distribution: &[f64],
+        directional_bias: f64,
+        uncertainty_penalty: f64,
+    ) -> Vec<f64> {
+        TradingViewMcpRuntimeProvider::apply_auxiliary_evidence_to_outcome(
+            self,
+            base_distribution,
+            directional_bias,
+            uncertainty_penalty,
+        )
+    }
+}
+
+impl IntegratedLiveDataSource for CryptoPublicRuntimeProvider {
+    fn fetch_futures_candles(
+        &self,
+        symbol: &str,
+        interval: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<Candle>> {
+        CryptoPublicRuntimeProvider::fetch_futures_candles(self, symbol, interval, start, end)
     }
 
     fn fetch_futures_last_price(&self, symbol: &str) -> Result<f64> {
@@ -242,15 +351,23 @@ impl IntegratedLiveDataSource for NofxProvider {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<Vec<Candle>> {
-        NofxProvider::fetch_spot_candles(self, kind, symbol, interval, start, end)
+        CryptoPublicRuntimeProvider::fetch_spot_candles(self, kind, symbol, interval, start, end)
     }
 
     fn fetch_spot_last_price(&self, _kind: SpotInstrumentKind, _symbol: &str) -> Result<f64> {
-        bail!("nofx backend does not provide spot quote data")
+        bail!("crypto_public runtime does not provide spot quote data")
     }
 
     fn fetch_options_chain_summary(&self, symbol: &str) -> Result<OptionsChainSummary> {
-        NofxProvider::fetch_options_chain_summary(self, symbol)
+        CryptoPublicRuntimeProvider::fetch_options_chain_summary(self, symbol)
+    }
+
+    fn fetch_options_volatility_proxy_summary(
+        &self,
+        _proxy_symbol: &str,
+        _underlying_symbol: &str,
+    ) -> Result<OptionsChainSummary> {
+        bail!("crypto_public runtime does not support options volatility proxy fallback")
     }
 
     fn build_auxiliary_evidence(
@@ -262,7 +379,7 @@ impl IntegratedLiveDataSource for NofxProvider {
         spot_candles: &[Candle],
         options_summary: &OptionsChainSummary,
     ) -> AuxiliaryMarketEvidence {
-        NofxProvider::build_auxiliary_evidence(
+        CryptoPublicRuntimeProvider::build_auxiliary_evidence(
             self,
             spot_kind,
             spot_symbol,
@@ -279,7 +396,7 @@ impl IntegratedLiveDataSource for NofxProvider {
         directional_bias: f64,
         uncertainty_penalty: f64,
     ) -> Vec<f64> {
-        NofxProvider::apply_auxiliary_evidence_to_outcome(
+        CryptoPublicRuntimeProvider::apply_auxiliary_evidence_to_outcome(
             self,
             base_distribution,
             directional_bias,
@@ -293,8 +410,9 @@ pub fn build_live_data_source(
     base_url: &str,
 ) -> Box<dyn IntegratedLiveDataSource> {
     match backend {
-        LiveDataBackend::OpenAlice => Box::new(OpenAliceProvider::new(base_url, None)),
-        LiveDataBackend::OpenBB => Box::new(OpenBBProvider::new(base_url)),
-        LiveDataBackend::Nofx => Box::new(NofxProvider::new(base_url)),
+        LiveDataBackend::ExternalHttp => Box::new(ExternalHttpRuntimeProvider::new(base_url, None)),
+        LiveDataBackend::Yfinance => Box::new(YahooFinanceProvider::new(base_url)),
+        LiveDataBackend::CryptoPublic => Box::new(CryptoPublicRuntimeProvider::new(base_url)),
+        LiveDataBackend::TradingViewMcp => Box::new(TradingViewMcpRuntimeProvider::new(base_url)),
     }
 }

@@ -427,6 +427,7 @@ where
 
     let baseline_registry = FactorRegistry::default();
     let mut registry = FactorRegistry::default();
+    crate::factors::FactorHotplugConfig::apply_to_registry_if_present(&state_dir, &mut registry);
     if let Some(spec) = mutation_spec {
         apply_factor_mutation_spec(&mut registry, spec)?;
     }

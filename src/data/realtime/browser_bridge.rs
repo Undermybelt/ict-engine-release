@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::openalice::{OptionsChainSummary, Quote};
+use super::market_support::{OptionsChainSummary, Quote};
 
 const OPENCLI_DAEMON_URL: &str = "http://127.0.0.1:19825";
 static COMMAND_COUNTER: AtomicU64 = AtomicU64::new(1);

@@ -90,6 +90,8 @@ pub fn build_feedback_record(input: BuildFeedbackRecordInput<'_>) -> FeedbackRec
         realized_outcome,
         pnl,
         regime_at_entry,
+        structural_feedback: None,
+        reflection_mismatch_tags: Vec::new(),
     }
 }
 
@@ -126,6 +128,9 @@ pub fn apply_feedback_to_trade_outcome_network(
     let mut updates = Vec::new();
 
     for record in feedback {
+        if !crate::state::structural_feedback_counts_as_executed_trade(record) {
+            continue;
+        }
         let entry_quality = entry_quality_label_from_probability(
             record.model_probabilities_before_trade.selected_probability,
         );
@@ -139,7 +144,8 @@ pub fn apply_feedback_to_trade_outcome_network(
                 ("factor_uncertainty", factor_uncertainty.as_str()),
             ],
         )?;
-        let outcome_label = normalize_trade_outcome_label(&record.realized_outcome);
+        let outcome_label = crate::state::structural_feedback_trade_outcome_proxy(record)
+            .unwrap_or_else(|| normalize_trade_outcome_label(&record.realized_outcome));
         let realized_state_index = network
             .nodes
             .get("trade_outcome")

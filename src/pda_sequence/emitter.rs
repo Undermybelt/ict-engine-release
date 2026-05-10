@@ -13,7 +13,9 @@
 
 use crate::ict::{
     detect_cisd, detect_fvg, detect_liquidity_pools, detect_liquidity_sweep, detect_order_blocks,
-    detect_rb, detect_structure_breaks, find_swing_highs, find_swing_lows,
+    detect_propulsion_blocks, detect_rb, detect_structure_breaks, find_swing_highs,
+    find_swing_lows, DEFAULT_PROPULSION_BODY_RANGE_MIN, DEFAULT_PROPULSION_RANGE_ATR_MIN,
+    DEFAULT_PROPULSION_VOLUME_WINDOW, DEFAULT_PROPULSION_VOLUME_Z_MIN,
 };
 use crate::indicators::compute_atr;
 use crate::types::{Candle, LiquiditySweep};
@@ -107,10 +109,25 @@ pub fn emit_pda_sequence_from_candles(candles: &[Candle]) -> Vec<PdaToken> {
             &sweeps,
         ));
     }
-    // PropulsionBlock has no dedicated detector in `ict::` yet — omitted in v1.
+    let propulsions = detect_propulsion_blocks(
+        candles,
+        &atr,
+        DEFAULT_PROPULSION_BODY_RANGE_MIN,
+        DEFAULT_PROPULSION_RANGE_ATR_MIN,
+        DEFAULT_PROPULSION_VOLUME_WINDOW,
+        DEFAULT_PROPULSION_VOLUME_Z_MIN,
+    );
+    for pb in &propulsions {
+        tokens.push(make_token(
+            PdaTokenKind::PropulsionBlock,
+            pb.bar_index,
+            candles,
+            &sweeps,
+        ));
+    }
 
     // Stable sort by bar index keeps the per-kind emission order as a
-    // deterministic tiebreak (FVG → OB → Sweep → SB → RB → CISD).
+    // deterministic tiebreak (FVG → OB → Sweep → SB → RB → CISD → PB).
     tokens.sort_by_key(|token| token.bar_index);
     apply_same_kind_overlap(&mut tokens);
     tokens

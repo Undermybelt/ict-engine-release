@@ -1,60 +1,63 @@
-use crate::data::realtime::LiveDataBackend;
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use crate::data::realtime::LiveDataBackend;
+use crate::market_catalog::MarketCatalog;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalyzeLiveSymbolDefaults {
-    pub futures_symbol: &'static str,
-    pub spot_symbol: &'static str,
-    pub options_symbol: &'static str,
-    pub spot_kind: &'static str,
+    pub futures_symbol: String,
+    pub spot_symbol: String,
+    pub options_symbol: String,
+    pub spot_kind: String,
 }
 
 pub fn resolve_live_backend_base_url(
     backend: &str,
-    openalice_base_url: &str,
-    nofx_base_url: &str,
+    external_http_base_url: &str,
+    crypto_public_base_url: &str,
 ) -> String {
     match backend.trim().to_ascii_lowercase().as_str() {
-        "openbb" => "native://openbb".to_string(),
-        "openalice" => openalice_base_url.to_string(),
-        "nofx" => nofx_base_url.to_string(),
-        _ => "native://openbb".to_string(),
+        "yfinance" => "native://yfinance".to_string(),
+        "external_http" | "external_http_runtime" => external_http_base_url.to_string(),
+        "crypto_public" | "crypto_public_runtime" => crypto_public_base_url.to_string(),
+        "tradingview" | "tradingview_mcp" | "tv_mcp" => "mcp://tradingview_mcp".to_string(),
+        _ => "native://yfinance".to_string(),
     }
 }
 
-pub fn analyze_live_inferred_symbols(symbol: &str) -> Option<AnalyzeLiveSymbolDefaults> {
-    match symbol.to_ascii_uppercase().as_str() {
-        "NQ" => Some(AnalyzeLiveSymbolDefaults {
-            futures_symbol: "NQ=F",
-            spot_symbol: "QQQ",
-            options_symbol: "QQQ",
-            spot_kind: "equity",
-        }),
-        "ES" => Some(AnalyzeLiveSymbolDefaults {
-            futures_symbol: "ES=F",
-            spot_symbol: "SPY",
-            options_symbol: "SPY",
-            spot_kind: "equity",
-        }),
-        "YM" => Some(AnalyzeLiveSymbolDefaults {
-            futures_symbol: "YM=F",
-            spot_symbol: "DIA",
-            options_symbol: "DIA",
-            spot_kind: "equity",
-        }),
-        "GC" => Some(AnalyzeLiveSymbolDefaults {
-            futures_symbol: "GC=F",
-            spot_symbol: "GLD",
-            options_symbol: "GLD",
-            spot_kind: "etf",
-        }),
-        "CL" => Some(AnalyzeLiveSymbolDefaults {
-            futures_symbol: "CL=F",
-            spot_symbol: "USO",
-            options_symbol: "USO",
-            spot_kind: "etf",
-        }),
-        _ => None,
-    }
+pub fn analyze_live_inferred_symbols(
+    catalog: &MarketCatalog,
+    symbol: &str,
+) -> Option<AnalyzeLiveSymbolDefaults> {
+    let defaults = catalog.live_defaults(symbol)?;
+    Some(AnalyzeLiveSymbolDefaults {
+        futures_symbol: defaults.futures_symbol,
+        spot_symbol: defaults.spot_symbol,
+        options_symbol: defaults.options_symbol,
+        spot_kind: defaults.spot_kind,
+    })
+}
+
+pub fn build_inferable_live_defaults_map(
+    catalog: &MarketCatalog,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    catalog
+        .market_keys_with_live_defaults()
+        .into_iter()
+        .filter_map(|market_key| {
+            analyze_live_inferred_symbols(catalog, &market_key).map(|defaults| {
+                (
+                    market_key,
+                    BTreeMap::from([
+                        ("futures_symbol".to_string(), defaults.futures_symbol),
+                        ("spot_symbol".to_string(), defaults.spot_symbol),
+                        ("options_symbol".to_string(), defaults.options_symbol),
+                        ("spot_kind".to_string(), defaults.spot_kind),
+                    ]),
+                )
+            })
+        })
+        .collect()
 }
 
 pub fn parse_live_backend(backend: &str) -> anyhow::Result<LiveDataBackend> {
@@ -64,31 +67,39 @@ pub fn parse_live_backend(backend: &str) -> anyhow::Result<LiveDataBackend> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::market_catalog::load_market_catalog;
+    use std::path::PathBuf;
 
     #[test]
     fn resolve_live_backend_base_url_uses_expected_sources() {
         assert_eq!(
-            resolve_live_backend_base_url("openbb", "http://oa", "http://nofx"),
-            "native://openbb"
+            resolve_live_backend_base_url("yfinance", "http://ext", "http://crypto"),
+            "native://yfinance"
         );
         assert_eq!(
-            resolve_live_backend_base_url("openalice", "http://oa", "http://nofx"),
-            "http://oa"
+            resolve_live_backend_base_url("external_http_runtime", "http://ext", "http://crypto"),
+            "http://ext"
         );
         assert_eq!(
-            resolve_live_backend_base_url("nofx", "http://oa", "http://nofx"),
-            "http://nofx"
+            resolve_live_backend_base_url("crypto_public_runtime", "http://ext", "http://crypto"),
+            "http://crypto"
         );
         assert_eq!(
-            resolve_live_backend_base_url("unknown", "http://oa", "http://nofx"),
-            "native://openbb"
+            resolve_live_backend_base_url("tradingview_mcp", "http://ext", "http://crypto"),
+            "mcp://tradingview_mcp"
+        );
+        assert_eq!(
+            resolve_live_backend_base_url("unknown", "http://ext", "http://crypto"),
+            "native://yfinance"
         );
     }
 
     #[test]
     fn analyze_live_symbol_can_infer_gc_and_cl_defaults() {
-        let gc = analyze_live_inferred_symbols("GC").unwrap();
-        let cl = analyze_live_inferred_symbols("CL").unwrap();
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let catalog = load_market_catalog(&repo_root).unwrap();
+        let gc = analyze_live_inferred_symbols(&catalog, "GC").unwrap();
+        let cl = analyze_live_inferred_symbols(&catalog, "CL").unwrap();
         assert_eq!(gc.futures_symbol, "GC=F");
         assert_eq!(gc.spot_symbol, "GLD");
         assert_eq!(cl.futures_symbol, "CL=F");
@@ -96,12 +107,36 @@ mod tests {
     }
 
     #[test]
+    fn build_inferable_live_defaults_map_matches_catalog_markets() {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let catalog = load_market_catalog(&repo_root).unwrap();
+        let defaults = build_inferable_live_defaults_map(&catalog);
+        assert_eq!(defaults["YM"]["spot_symbol"], "DIA");
+        assert_eq!(defaults["CL"]["options_symbol"], "USO");
+    }
+
+    #[test]
     fn parse_live_backend_accepts_supported_values() {
-        assert_eq!(parse_live_backend("openbb").unwrap().as_str(), "openbb");
+        assert_eq!(parse_live_backend("yfinance").unwrap().as_str(), "yfinance");
         assert_eq!(
-            parse_live_backend("openalice").unwrap().as_str(),
-            "openalice"
+            parse_live_backend("external_http_runtime")
+                .unwrap()
+                .as_str(),
+            "external_http_runtime"
         );
-        assert_eq!(parse_live_backend("nofx").unwrap().as_str(), "nofx");
+        assert_eq!(
+            parse_live_backend("crypto_public_runtime")
+                .unwrap()
+                .as_str(),
+            "crypto_public_runtime"
+        );
+        assert_eq!(
+            parse_live_backend("tradingview_mcp").unwrap().as_str(),
+            "tradingview_mcp"
+        );
+        assert_eq!(
+            parse_live_backend("tv_mcp").unwrap().as_str(),
+            "tradingview_mcp"
+        );
     }
 }

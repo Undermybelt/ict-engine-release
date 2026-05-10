@@ -198,13 +198,15 @@
 - `scripts/archive/pre_bayes_policy_tuning.py`
 - 以及其余历史实验脚本
 
-这些 backend 仍有研究属性，且部分仍含本机路径假设；对外优先经 public wrappers 进入。
+这些 backend 仍有研究属性；对外优先经 public wrappers 进入。
+当前 public wrappers 已经去掉本机绝对路径假设，并要求在 `--run` 前先满足显式 data-root readiness。
 
 ## Recommended workflows
 
 ### Workflow 1: parameter comparison
 - use isolated state
-- run `python3 scripts/search_local.py --run`
+- run `python3 scripts/search_local.py --show-config`
+- then run `python3 scripts/search_local.py --run --data-root <ict-cleaned-mtf>`
 - read `results.json`
 - optionally summarize with `python3 scripts/research_verdict.py <state-or-result-dir>`
 - never trust cumulative autoresearch deltas for comparison

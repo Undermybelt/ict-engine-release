@@ -102,22 +102,40 @@ Not in the autoresearch surface.
 
 The tree is clean as of this handoff. Do not let it grow broad again before the next release checkpoint. Prefer small, single-topic commits that each pass the three CI gates locally.
 
-### 3. Hermes routing convention mismatch
+### 3. Public wrapper data-root assumption must not regress
+
+This is now an explicit invariant:
+
+- public experiment wrappers must not assume a local Tomac cleaned-data layout exists
+- wrappers should expose resolved config first
+- wrappers should require explicit data readiness before `--run`
+- when in doubt, prefer `--show-config` and explicit `--data-root` over hidden local path guessing
+
+Current expected behavior:
+
+- `python3 scripts/search_local.py --show-config`
+- `python3 scripts/search_cluster.py --show-config`
+- `python3 scripts/evaluate_bottleneck.py --show-config`
+- `--run` refuses execution when `cleaned_data_ready=false`
+
+Do not undo this by reintroducing "best effort" local path guessing as silent runtime behavior.
+
+### 4. Hermes routing convention mismatch
 
 The repo has `.hermes/`, but the routing files expected by the user-level AGENTS.md convention (`.hermes/routing/skill-router`, `project-router`, etc.) are not present in this worktree.
 
 This is a project-process gap, not a code bug. It only matters if you are following the routing convention from outside this repo. Do not try to fix it in `ict-engine` source. If it needs fixing, it should be fixed in the user-level Hermes setup, not here.
 
-### 4. Release to the private mirror
+### 5. Release to the private mirror
 
 The two commits on `green-baseline` have not been pushed to `Undermybelt/ict-engine-release`. Follow `docs/release-mirror-runbook.md` when you are ready. Do not push source commits to a public source repo as part of a release flow.
 
 ## Suggested order for the next session
 
-1. Run the isolated smoke block from section "What is explicitly not closed / 1" and confirm the three CLI surfaces render sensibly.
-2. If anything in step 1 regresses, fix it at the rendering layer, not in the autoresearch surface.
-3. Consider updating `docs/release-notes-draft.md` with the two new commit summaries (autoresearch derived surface + metadata/baseline alignment) before a mirror push.
-4. Follow `docs/release-mirror-runbook.md` to publish through `Undermybelt/ict-engine-release`.
+1. If you touch public experiment wrappers, preserve the `--show-config` + explicit data-readiness gate behavior.
+2. If any CLI surface regresses, fix it at the rendering layer, not in unrelated research/autoresearch state code.
+3. Keep `docs/release-notes-draft.md` and `docs/release-mirror-runbook.md` aligned with actual release transport.
+4. Treat source repo history hygiene as a protected invariant now that oversized generated artifacts were removed.
 
 ## Reading list (in order)
 
@@ -139,3 +157,4 @@ The two commits on `green-baseline` have not been pushed to `Undermybelt/ict-eng
 - Prefer minimal upstream fixes over downstream workarounds.
 - If you touch a user-visible surface (CLI flag, JSON field, human text), update the corresponding doc in the same commit.
 - State writes belong under a caller-provided `--state-dir`. Do not write into the repo `state/` directory from tests or smoke runs.
+- Do not reintroduce public wrapper assumptions that only work on the maintainer's workstation layout.

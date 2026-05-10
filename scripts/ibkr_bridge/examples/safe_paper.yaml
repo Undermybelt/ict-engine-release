@@ -1,0 +1,56 @@
+# =============================================================================
+# Safe paper-account starter config
+# =============================================================================
+# This is the most conservative bridge config that should work on any IBKR
+# paper account, including ones with NO market-data subscriptions at all.
+#
+# Strategy:
+#   * Use bars_kup (historical-data plumbing) instead of live tick streams
+#   * Use market_data_type: 3 (delayed) for any market_data feed — IBKR
+#     auto-substitutes ~15-min delayed quotes which are free everywhere
+#   * Stick to ARCA-listed SPY (avoids NASDAQ TotalView / ISLAND permission
+#     gaps that the IBKR-PRO non-consolidated bundle does NOT cover)
+#
+# Use this when:
+#   * You're brand-new to the bridge and just want it to start cleanly
+#   * Your live account has no MD subscriptions yet
+#   * You're on a Sat/Sun and want to verify wiring without live ticks
+#
+# Run:
+#   .venv/bin/python -m scripts.ibkr_bridge.bridge \
+#       --config scripts/ibkr_bridge/examples/safe_paper.yaml
+# =============================================================================
+
+gateway:
+  host: 127.0.0.1
+  port: 4002
+  client_id: 20
+  market_data_type: 3       # delayed (~15min); free for most IBKR accounts
+
+redis:
+  url: redis://localhost:6379
+
+publishing:
+  stream_maxlen: 10000
+  snapshot_ttl_sec: 0
+
+subscriptions:
+  # Daily SPY bars — slow-moving, smallest possible budget hit
+  - symbol: SPY
+    sec_type: STK
+    exchange: SMART
+    currency: USD
+    primary_exchange: ARCA
+    feed: [bars_kup]
+    bar_size: '1 day'
+    what_to_show: TRADES
+    duration: '1 Y'           # 1 year of daily bars ≈ 250 rows
+    use_rth: true
+
+  # Optional: also pull a single delayed snapshot to verify market_data path
+  # - symbol: SPY
+  #   sec_type: STK
+  #   exchange: SMART
+  #   currency: USD
+  #   primary_exchange: ARCA
+  #   feed: [market_data]

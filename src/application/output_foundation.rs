@@ -5,11 +5,10 @@ use serde_json::Value;
 use crate::state::WorkflowPhaseSnapshot;
 
 pub fn redact_local_paths(text: &str) -> String {
-    let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'/' {
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, ch)) = chars.next() {
+        if ch == '/' {
             let rest = &text[i..];
             let is_local = rest.starts_with("/Users/")
                 || rest.starts_with("/home/")
@@ -18,34 +17,70 @@ pub fn redact_local_paths(text: &str) -> String {
                 || rest.starts_with("/private/")
                 || rest.starts_with("/Volumes/");
             if is_local {
-                let mut j = i;
-                while j < bytes.len() {
-                    let ch = bytes[j];
-                    if ch.is_ascii_whitespace()
-                        || matches!(
-                            ch,
-                            b',' | b';' | b'|' | b')' | b'(' | b'[' | b']' | b'{' | b'}'
-                        )
+                let mut end = text.len();
+                for (relative_index, path_ch) in rest.char_indices() {
+                    if path_ch.is_ascii_whitespace()
+                        || matches!(path_ch, ',' | ';' | '|' | ')' | '(' | '[' | ']' | '{' | '}')
                     {
+                        end = i + relative_index;
                         break;
                     }
-                    j += 1;
+                }
+                while chars
+                    .peek()
+                    .is_some_and(|(next_index, _)| *next_index < end)
+                {
+                    chars.next();
                 }
                 out.push_str("<local-path>");
-                i = j;
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        out.push(ch);
     }
     out
+}
+
+fn looks_like_machine_command(text: &str) -> bool {
+    let Some(first_token) = text.split_whitespace().next() else {
+        return false;
+    };
+    matches!(
+        first_token,
+        "ict-engine" | "cargo" | "uv" | "python" | "python3" | "bash" | "sh" | "zsh"
+    ) || first_token.starts_with("./")
+        || first_token.starts_with('/')
+}
+
+fn redact_local_paths_in_human_line(line: &str) -> String {
+    if let Some((prefix, command)) = line.split_once("Then run: ") {
+        if looks_like_machine_command(command) {
+            return format!("{}Then run: {}", redact_local_paths(prefix), command);
+        }
+    }
+    for marker in ["Next: ", "- Next: "] {
+        if let Some(command) = line.strip_prefix(marker) {
+            if looks_like_machine_command(command) {
+                return format!("{marker}{command}");
+            }
+        }
+    }
+    redact_local_paths(line)
+}
+
+pub fn redact_local_paths_in_human_text(text: &str) -> String {
+    text.split('\n')
+        .map(redact_local_paths_in_human_line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn preserves_machine_command_value(key: &str) -> bool {
     matches!(
         key,
         "next_command"
+            | "recommended_next_command"
+            | "command"
             | "recommended_command"
             | "deferred_command"
             | "executable_command"
@@ -124,8 +159,10 @@ mod tests {
     fn redaction_preserves_agent_machine_command_fields() {
         let mut value = serde_json::json!({
             "next_command": "ict-engine factor-research --state-dir /tmp/ict-agent-state",
+            "recommended_next_command": "ict-engine workflow-status --state-dir /tmp/ict-agent-state",
             "recommended_command": "ict-engine workflow-status --state-dir /tmp/ict-agent-state",
             "pointer_command": "ict-engine workflow-status --state-dir /tmp/ict-agent-state --output-format json",
+            "command": "ict-engine analyze --data /tmp/data.json --state-dir /tmp/ict-agent-state",
             "next_step": {
                 "deferred_command": "ict-engine factor-research --data /tmp/data.json --state-dir /tmp/ict-agent-state",
                 "prompt": "Ask about /tmp/data.json"
@@ -141,12 +178,20 @@ mod tests {
             "ict-engine factor-research --state-dir /tmp/ict-agent-state"
         );
         assert_eq!(
+            value["recommended_next_command"],
+            "ict-engine workflow-status --state-dir /tmp/ict-agent-state"
+        );
+        assert_eq!(
             value["recommended_command"],
             "ict-engine workflow-status --state-dir /tmp/ict-agent-state"
         );
         assert_eq!(
             value["pointer_command"],
             "ict-engine workflow-status --state-dir /tmp/ict-agent-state --output-format json"
+        );
+        assert_eq!(
+            value["command"],
+            "ict-engine analyze --data /tmp/data.json --state-dir /tmp/ict-agent-state"
         );
         assert_eq!(
             value["next_step"]["deferred_command"],
@@ -158,5 +203,38 @@ mod tests {
             "ict-engine factor-research --state-dir <local-path>"
         );
         assert_eq!(value["path"], "<local-path>");
+    }
+
+    #[test]
+    fn redaction_preserves_utf8_prompt_text_while_redacting_paths() {
+        let mut value = serde_json::json!({
+            "workflow": "回答五段: 基本价格结构分析, 技术面价格分析, SMT相关性分析, Regime分类结合贝叶斯分析并给推测概率, 交易计划",
+            "display": "state at /tmp/ict-engine-first-run-native/report.json"
+        });
+
+        redact_local_paths_in_value(&mut value);
+
+        let workflow = value["workflow"].as_str().unwrap();
+        assert!(workflow.contains("基本价格结构分析"));
+        assert!(workflow.contains("技术面价格分析"));
+        assert!(workflow.contains("交易计划"));
+        assert!(!workflow.contains("å"));
+        assert_eq!(value["display"], "state at <local-path>");
+    }
+
+    #[test]
+    fn redaction_preserves_machine_commands_inside_human_text() {
+        let rendered = redact_local_paths_in_human_text(
+            "State: /tmp/ict-agent-state/report.json\nNext: ict-engine factor-research --data /tmp/data.json --state-dir /tmp/ict-agent-state\n- Next: Ask the user: pick from /tmp/a.json, /tmp/b.json Then run: ict-engine factor-research --data /tmp/a.json --state-dir /tmp/ict-agent-state",
+        );
+
+        assert!(rendered.contains("State: <local-path>"));
+        assert!(rendered.contains(
+            "Next: ict-engine factor-research --data /tmp/data.json --state-dir /tmp/ict-agent-state"
+        ));
+        assert!(rendered.contains("pick from <local-path>, <local-path> Then run:"));
+        assert!(rendered.contains(
+            "Then run: ict-engine factor-research --data /tmp/a.json --state-dir /tmp/ict-agent-state"
+        ));
     }
 }

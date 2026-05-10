@@ -5,21 +5,180 @@ use std::path::Path;
 
 use anyhow::Result;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::application::regime::recovery::MeceRecoveryReport;
 use crate::domain::regime::{
     classify_mece_recovery_combined_gate, classify_mece_recovery_gate, MeceRecoveryArtifact,
     MeceRegimeLabel,
 };
+use crate::hmm::init_hmm_params;
 use crate::state::{
-    append_artifact_ledger_entry, artifact_state_path, save_state, ArtifactLedgerEntry,
+    append_artifact_ledger_entry, artifact_state_path, load_state, save_state, state_exists,
+    ArtifactLedgerEntry,
 };
+use crate::types::HMMParams;
 
 pub const MECE_RECOVERY_ARTIFACT_FILE: &str = "mece_recovery_artifact.json";
 /// Bumped to 2 when the artifact gained sparsity_ratio / pruned_factor_trail
 /// / segments. Readers of v1 entries must tolerate their absence.
 pub const MECE_RECOVERY_ARTIFACT_LEDGER_VERSION: usize = 2;
 pub const MECE_RECOVERY_ARTIFACT_REVIEW_RULE_VERSION: &str = "mece-recovery-artifact-v2";
+pub const HMM_STATE_FILE: &str = "hmm_params.json";
+pub const HMM_NUMERIC_TRAINER_ARTIFACT_FILE: &str = "hmm_numeric_trainer_artifact.json";
+pub const HMM_NUMERIC_TRAINER_ARTIFACT_PROTOCOL_VERSION: &str = "hmm-numeric-trainer-artifact-v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct HmmNumericTrainerParameterBound {
+    pub name: String,
+    pub lower: f64,
+    pub upper: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct HmmNumericTrainerArtifact {
+    pub protocol_version: String,
+    pub parameter_vector: Vec<f64>,
+    pub parameter_names: Vec<String>,
+    pub bounds: Vec<HmmNumericTrainerParameterBound>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub objective_breakdown: BTreeMap<String, f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u64>,
+    pub split_id: String,
+    pub best_iteration: usize,
+    pub source_data_hash: String,
+    pub state_count: usize,
+}
+
+fn normalize_transition_row(row: &mut [f64]) {
+    let sum: f64 = row.iter().sum();
+    if sum > f64::EPSILON {
+        for value in row {
+            *value = (*value / sum).clamp(0.0, 1.0);
+        }
+    }
+}
+
+fn apply_transition_smoothing(params: &mut HMMParams, smoothing: f64) {
+    let smoothing = smoothing.clamp(0.0, 1.0);
+    let uniform = 1.0 / params.n_states as f64;
+    for row in &mut params.transition {
+        for value in row.iter_mut() {
+            *value = (1.0 - smoothing) * *value + smoothing * uniform;
+        }
+        normalize_transition_row(row);
+    }
+}
+
+fn apply_emission_std_floor(params: &mut HMMParams, floor: f64) {
+    let floor = floor.max(1e-6);
+    for row in &mut params.emission_stds {
+        for value in row.iter_mut() {
+            *value = value.max(floor);
+        }
+    }
+}
+
+fn hmm_numeric_trainer_artifact_path<P: AsRef<Path>>(dir: P, symbol: &str) -> std::path::PathBuf {
+    dir.as_ref()
+        .join(symbol)
+        .join(HMM_NUMERIC_TRAINER_ARTIFACT_FILE)
+}
+
+pub fn load_hmm_numeric_trainer_artifact<P: AsRef<Path>>(
+    dir: P,
+    symbol: &str,
+) -> Result<Option<HmmNumericTrainerArtifact>> {
+    let path = hmm_numeric_trainer_artifact_path(dir, symbol);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path)?;
+    let artifact = serde_json::from_str::<HmmNumericTrainerArtifact>(&raw)?;
+    Ok(Some(artifact))
+}
+
+fn hmm_numeric_trainer_artifact_to_params(
+    artifact: &HmmNumericTrainerArtifact,
+    obs_dim: usize,
+) -> Result<HMMParams> {
+    if artifact.protocol_version.trim() != HMM_NUMERIC_TRAINER_ARTIFACT_PROTOCOL_VERSION {
+        anyhow::bail!(
+            "unsupported HMM numeric artifact protocol version '{}'",
+            artifact.protocol_version
+        );
+    }
+    if artifact.state_count != 3 {
+        anyhow::bail!(
+            "unsupported HMM numeric artifact state_count '{}'; expected 3",
+            artifact.state_count
+        );
+    }
+    if artifact.parameter_vector.len() != artifact.parameter_names.len() {
+        anyhow::bail!(
+            "HMM numeric artifact parameter_vector/parameter_names length mismatch: {} vs {}",
+            artifact.parameter_vector.len(),
+            artifact.parameter_names.len()
+        );
+    }
+    let mut params = init_hmm_params(obs_dim);
+    for (name, value) in artifact
+        .parameter_names
+        .iter()
+        .zip(artifact.parameter_vector.iter().copied())
+    {
+        match name.trim() {
+            "transition_smoothing" => apply_transition_smoothing(&mut params, value),
+            "emission_std_floor" => apply_emission_std_floor(&mut params, value),
+            "posterior_temperature" => {}
+            _ => {}
+        }
+    }
+    Ok(params)
+}
+
+fn hmm_params_compatible(params: &HMMParams, obs_dim: usize) -> bool {
+    params.n_states == 3
+        && params.transition.len() == params.n_states
+        && params.initial_probs.len() == params.n_states
+        && params.emission_means.len() == params.n_states
+        && params.emission_stds.len() == params.n_states
+        && params.emission_means.iter().all(|row| row.len() == obs_dim)
+        && params.emission_stds.iter().all(|row| row.len() == obs_dim)
+}
+
+pub fn load_or_init_hmm_params_with_numeric_artifact(
+    symbol: &str,
+    state_dir: &str,
+    obs_dim: usize,
+) -> HMMParams {
+    if let Ok(Some(artifact)) = load_hmm_numeric_trainer_artifact(state_dir, symbol) {
+        match hmm_numeric_trainer_artifact_to_params(&artifact, obs_dim) {
+            Ok(params) => return params,
+            Err(err) => {
+                eprintln!(
+                    "warning: failed to apply HMM numeric trainer artifact for '{}' from '{}': {}",
+                    symbol, state_dir, err
+                );
+            }
+        }
+    }
+    if !state_exists(state_dir, symbol, HMM_STATE_FILE) {
+        return init_hmm_params(obs_dim);
+    }
+    match load_state::<HMMParams, _>(state_dir, symbol, HMM_STATE_FILE) {
+        Ok(params) if hmm_params_compatible(&params, obs_dim) => params,
+        Ok(_) => init_hmm_params(obs_dim),
+        Err(err) => {
+            eprintln!(
+                "warning: failed to load HMM state for '{}' from '{}': {}",
+                symbol, state_dir, err
+            );
+            init_hmm_params(obs_dim)
+        }
+    }
+}
 
 pub fn build_mece_recovery_artifact(
     symbol: &str,
@@ -159,7 +318,7 @@ mod tests {
     use crate::config::FrameFeatures;
     use crate::domain::regime::{manual_mece_labeler, MECE_RECOVERY_ACCURACY_GATE};
     use crate::factors::FactorRegistry;
-    use crate::state::RunProvenance;
+    use crate::state::{save_state, RunProvenance};
     use crate::types::Candle;
     use chrono::{Duration, TimeZone};
     use std::fs;
@@ -326,5 +485,96 @@ mod tests {
         .unwrap();
         assert!(ledger2.contains("\"status\": \"promote\""));
         assert!(ledger2.contains("\"promote_candidate\": true"));
+    }
+
+    #[test]
+    fn load_or_init_hmm_params_with_numeric_artifact_prefers_artifact_when_valid() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("NQ")).unwrap();
+        let artifact = HmmNumericTrainerArtifact {
+            protocol_version: HMM_NUMERIC_TRAINER_ARTIFACT_PROTOCOL_VERSION.to_string(),
+            parameter_vector: vec![1.0, 2.5, 0.8],
+            parameter_names: vec![
+                "transition_smoothing".to_string(),
+                "emission_std_floor".to_string(),
+                "posterior_temperature".to_string(),
+            ],
+            bounds: vec![
+                HmmNumericTrainerParameterBound {
+                    name: "transition_smoothing".to_string(),
+                    lower: 0.0,
+                    upper: 1.0,
+                },
+                HmmNumericTrainerParameterBound {
+                    name: "emission_std_floor".to_string(),
+                    lower: 0.1,
+                    upper: 5.0,
+                },
+            ],
+            objective_breakdown: BTreeMap::from([
+                ("accuracy".to_string(), 0.96),
+                ("macro_f1".to_string(), 0.94),
+            ]),
+            seed: Some(7),
+            split_id: "demo-split".to_string(),
+            best_iteration: 12,
+            source_data_hash: "demo-hash".to_string(),
+            state_count: 3,
+        };
+        save_state(
+            dir.path(),
+            "NQ",
+            HMM_NUMERIC_TRAINER_ARTIFACT_FILE,
+            &artifact,
+        )
+        .unwrap();
+
+        let params =
+            load_or_init_hmm_params_with_numeric_artifact("NQ", dir.path().to_str().unwrap(), 4);
+
+        for row in &params.transition {
+            for value in row {
+                assert!((value - (1.0 / 3.0)).abs() < 1e-9);
+            }
+        }
+        for row in &params.emission_stds {
+            for value in row {
+                assert!(*value >= 2.5);
+            }
+        }
+    }
+
+    #[test]
+    fn load_or_init_hmm_params_with_numeric_artifact_falls_back_to_saved_state_when_artifact_invalid(
+    ) {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join("NQ")).unwrap();
+        let artifact = HmmNumericTrainerArtifact {
+            protocol_version: HMM_NUMERIC_TRAINER_ARTIFACT_PROTOCOL_VERSION.to_string(),
+            parameter_vector: vec![0.5],
+            parameter_names: vec!["transition_smoothing".to_string()],
+            bounds: Vec::new(),
+            objective_breakdown: BTreeMap::new(),
+            seed: Some(7),
+            split_id: "demo-split".to_string(),
+            best_iteration: 12,
+            source_data_hash: "demo-hash".to_string(),
+            state_count: 4,
+        };
+        save_state(
+            dir.path(),
+            "NQ",
+            HMM_NUMERIC_TRAINER_ARTIFACT_FILE,
+            &artifact,
+        )
+        .unwrap();
+        let mut saved = HMMParams::new_3state(4);
+        saved.initial_probs = vec![0.9, 0.05, 0.05];
+        save_state(dir.path(), "NQ", HMM_STATE_FILE, &saved).unwrap();
+
+        let params =
+            load_or_init_hmm_params_with_numeric_artifact("NQ", dir.path().to_str().unwrap(), 4);
+
+        assert_eq!(params.initial_probs, saved.initial_probs);
     }
 }

@@ -71,6 +71,27 @@ impl RegimeConditional {
         effective_success: bool,
         pnl: f64,
     ) {
+        Self::update_profile_fractional(
+            profile,
+            regime,
+            if effective_success { 1.0 } else { 0.0 },
+            1.0,
+            pnl,
+        );
+    }
+
+    pub fn update_profile_fractional(
+        profile: &mut FactorLearningProfile,
+        regime: Regime,
+        success_credit: f64,
+        observation_weight: f64,
+        pnl: f64,
+    ) {
+        let success_credit = success_credit.clamp(0.0, 1.0);
+        let observation_weight = observation_weight.clamp(0.0, 1.0);
+        if observation_weight <= f64::EPSILON {
+            return;
+        }
         let stats = profile
             .regime_stats
             .entry(regime_key(regime).to_string())
@@ -80,17 +101,24 @@ impl RegimeConditional {
             });
 
         stats.observations += 1;
-        if effective_success {
+        if success_credit >= 1.0 - f64::EPSILON {
             stats.wins += 1;
         }
+        let previous_weighted_observations = stats.weighted_observations;
+        stats.weighted_observations += observation_weight;
+        stats.weighted_successes += success_credit * observation_weight;
 
-        let n = stats.observations as f64;
-        stats.avg_pnl = if n <= 1.0 {
+        let n = stats.weighted_observations;
+        stats.avg_pnl = if previous_weighted_observations <= f64::EPSILON {
             pnl
         } else {
-            ((stats.avg_pnl * (n - 1.0)) + pnl) / n
+            ((stats.avg_pnl * previous_weighted_observations) + pnl * observation_weight) / n
         };
-        let hit_rate = stats.wins as f64 / stats.observations.max(1) as f64;
+        let hit_rate = if stats.weighted_observations <= f64::EPSILON {
+            0.5
+        } else {
+            (stats.weighted_successes / stats.weighted_observations).clamp(0.0, 1.0)
+        };
         stats.multiplier = (0.5 + hit_rate + stats.avg_pnl.tanh() * 0.25).clamp(0.4, 1.6);
     }
 }
@@ -156,5 +184,29 @@ mod tests {
             .get(regime_key(Regime::ManipulationExpansion))
             .expect("manipulation_expansion stats");
         assert!(stats.multiplier > 1.0);
+    }
+
+    #[test]
+    fn test_update_profile_fractional_breakeven_keeps_multiplier_near_neutral() {
+        let mut profile = FactorLearningProfile::default();
+
+        for _ in 0..5 {
+            RegimeConditional::update_profile_fractional(
+                &mut profile,
+                Regime::ManipulationExpansion,
+                0.5,
+                1.0,
+                0.0,
+            );
+        }
+
+        let stats = profile
+            .regime_stats
+            .get(regime_key(Regime::ManipulationExpansion))
+            .expect("manipulation_expansion stats");
+        assert_eq!(stats.observations, 5);
+        assert!((stats.weighted_observations - 5.0).abs() < 1e-9);
+        assert!((stats.weighted_successes - 2.5).abs() < 1e-9);
+        assert!((stats.multiplier - 1.0).abs() < 1e-9);
     }
 }

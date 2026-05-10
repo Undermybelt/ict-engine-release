@@ -30,8 +30,9 @@ What changed
 - policy-training helper scripts no longer hard-code repo-local absolute paths
 
 Residual caveat
-- experiment scripts still assume a Tomac-style cleaned-data layout unless the corresponding env vars are overridden
-- that is a workflow assumption, not the old machine-local absolute-path bug
+- public wrappers no longer silently assume a Tomac-style cleaned-data layout
+- wrappers expose `--show-config` and require explicit cleaned-data readiness before `--run`
+- keep this as a regression-watch rule for future wrapper work
 
 One-shot feasibility
 - already landed in-tree

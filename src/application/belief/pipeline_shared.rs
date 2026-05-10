@@ -6,7 +6,13 @@ use std::collections::BTreeMap;
 use crate::analyze::multi_timeframe_parse::{
     multi_timeframe_direction_conflicts_with, ParsedMultiTimeframeEvidence,
 };
-use crate::bbn::adapters::belief_evidence_packet_from_pre_bayes_filter;
+use crate::application::belief::blend_node_posterior_with_duration_prior;
+use crate::application::belief::transition_adjusted_branch_posteriors;
+use crate::application::belief::transition_adjusted_node_posteriors;
+use crate::application::entry_models::{apply_cisd_rb_to_belief_packet, CisdRbEntryModelPacket};
+use crate::bbn::adapters::{
+    belief_evidence_packet_from_pre_bayes_filter, gate_decision_from_regime_posterior,
+};
 use crate::bbn::engine::InferenceEngineRegistry;
 use crate::domain::regime::RegimeSegmentationPacket;
 use crate::factor_lab::{FactorDiagnostics, PairedMarketQualityReport};
@@ -16,6 +22,7 @@ use crate::reporting::belief::BeliefReportPacket;
 use crate::state::{
     FactorPipelineLabelSource, PreBayesEntryQualityBridge, PreBayesEntryQualityBridgeDiff,
     PreBayesEvidenceFilter, PreBayesEvidencePolicy, PreBayesSoftEvidenceNodeDiff,
+    StructuralPriorEvent, StructuralPriorLearningState,
 };
 use crate::types::Direction;
 
@@ -243,6 +250,7 @@ pub fn build_canonical_belief_report(
         raw_multi_timeframe_resonance_trace,
         None,
         None,
+        None,
     )
 }
 
@@ -256,6 +264,34 @@ pub fn build_canonical_belief_report_with_pda(
     raw_multi_timeframe_resonance_trace: Option<&FactorPipelineLabelSource>,
     pda_sequence_artifact: Option<&PdaSequenceAnalysisArtifact>,
     hybrid_regime_packet: Option<&RegimeSegmentationPacket>,
+    cisd_rb_packet: Option<&CisdRbEntryModelPacket>,
+) -> Result<BeliefReportPacket> {
+    build_canonical_belief_report_with_pda_and_structural_prior_state(
+        symbol,
+        market,
+        filter,
+        raw_market_regime_trace,
+        raw_liquidity_context_trace,
+        raw_multi_timeframe_resonance_trace,
+        pda_sequence_artifact,
+        hybrid_regime_packet,
+        cisd_rb_packet,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_canonical_belief_report_with_pda_and_structural_prior_state(
+    symbol: &str,
+    market: Option<&str>,
+    filter: &PreBayesEvidenceFilter,
+    raw_market_regime_trace: Option<&FactorPipelineLabelSource>,
+    raw_liquidity_context_trace: Option<&FactorPipelineLabelSource>,
+    raw_multi_timeframe_resonance_trace: Option<&FactorPipelineLabelSource>,
+    pda_sequence_artifact: Option<&PdaSequenceAnalysisArtifact>,
+    hybrid_regime_packet: Option<&RegimeSegmentationPacket>,
+    cisd_rb_packet: Option<&CisdRbEntryModelPacket>,
+    structural_prior_state: Option<&StructuralPriorLearningState>,
 ) -> Result<BeliefReportPacket> {
     let mut packet = belief_evidence_packet_from_pre_bayes_filter(
         symbol,
@@ -271,7 +307,19 @@ pub fn build_canonical_belief_report_with_pda(
     if let Some(hybrid) = hybrid_regime_packet {
         crate::bbn::adapters::apply_hybrid_regime_packet_to_belief_packet(&mut packet, hybrid);
     }
-    InferenceEngineRegistry::default().build_report(packet)
+    if let Some(cisd_rb_packet) = cisd_rb_packet {
+        apply_cisd_rb_to_belief_packet(cisd_rb_packet, &mut packet);
+    }
+    let mut report = InferenceEngineRegistry::default().build_report(packet)?;
+    if let Some(structural_prior_state) = structural_prior_state {
+        apply_structural_prior_state_to_belief_report(
+            symbol,
+            filter,
+            structural_prior_state,
+            &mut report,
+        );
+    }
+    Ok(report)
 }
 
 pub fn build_canonical_belief_snapshot(
@@ -279,7 +327,7 @@ pub fn build_canonical_belief_snapshot(
     market: Option<&str>,
     filter: &PreBayesEvidenceFilter,
 ) -> Result<BeliefReportPacket> {
-    build_canonical_belief_snapshot_with_pda(symbol, market, filter, None, None)
+    build_canonical_belief_snapshot_with_pda(symbol, market, filter, None, None, None)
 }
 
 pub fn build_canonical_belief_snapshot_with_pda(
@@ -288,8 +336,29 @@ pub fn build_canonical_belief_snapshot_with_pda(
     filter: &PreBayesEvidenceFilter,
     pda_sequence_artifact: Option<&PdaSequenceAnalysisArtifact>,
     hybrid_regime_packet: Option<&RegimeSegmentationPacket>,
+    cisd_rb_packet: Option<&CisdRbEntryModelPacket>,
 ) -> Result<BeliefReportPacket> {
-    build_canonical_belief_report_with_pda(
+    build_canonical_belief_snapshot_with_pda_and_structural_prior_state(
+        symbol,
+        market,
+        filter,
+        pda_sequence_artifact,
+        hybrid_regime_packet,
+        cisd_rb_packet,
+        None,
+    )
+}
+
+pub fn build_canonical_belief_snapshot_with_pda_and_structural_prior_state(
+    symbol: &str,
+    market: Option<&str>,
+    filter: &PreBayesEvidenceFilter,
+    pda_sequence_artifact: Option<&PdaSequenceAnalysisArtifact>,
+    hybrid_regime_packet: Option<&RegimeSegmentationPacket>,
+    cisd_rb_packet: Option<&CisdRbEntryModelPacket>,
+    structural_prior_state: Option<&StructuralPriorLearningState>,
+) -> Result<BeliefReportPacket> {
+    build_canonical_belief_report_with_pda_and_structural_prior_state(
         symbol,
         market,
         filter,
@@ -298,7 +367,406 @@ pub fn build_canonical_belief_snapshot_with_pda(
         None,
         pda_sequence_artifact,
         hybrid_regime_packet,
+        cisd_rb_packet,
+        structural_prior_state,
     )
+}
+
+fn apply_structural_prior_state_to_belief_report(
+    symbol: &str,
+    filter: &PreBayesEvidenceFilter,
+    structural_prior_state: &StructuralPriorLearningState,
+    report: &mut BeliefReportPacket,
+) {
+    let mut canonical_probabilities = BTreeMap::new();
+    for (regime, probability) in &report.regime_posterior.probabilities {
+        if let Some(canonical) = canonical_structural_regime_label(regime) {
+            *canonical_probabilities.entry(canonical).or_insert(0.0) += *probability;
+        }
+    }
+    if filter.uses_soft_evidence && !filter.soft_market_regime_distribution.is_empty() {
+        let trend = filter
+            .soft_market_regime_distribution
+            .get("bull")
+            .copied()
+            .unwrap_or(0.0)
+            + filter
+                .soft_market_regime_distribution
+                .get("bear")
+                .copied()
+                .unwrap_or(0.0);
+        let range = filter
+            .soft_market_regime_distribution
+            .get("range")
+            .copied()
+            .unwrap_or(0.0);
+        canonical_probabilities.insert("trend".to_string(), trend.clamp(0.0, 1.0));
+        canonical_probabilities.insert("range".to_string(), range.clamp(0.0, 1.0));
+    }
+    if canonical_probabilities.is_empty() {
+        return;
+    }
+
+    for (regime, probability) in canonical_probabilities.iter_mut() {
+        let node_id = format!("{symbol}:belief_regime_node:{regime}");
+        let node_temporal_state = structural_prior_state
+            .node_temporal_posteriors
+            .get(&node_id);
+        if let Some(duration_prior) = structural_prior_state.node_duration_priors.get(&node_id) {
+            *probability = blend_node_posterior_with_duration_prior(
+                *probability,
+                Some(duration_prior),
+                node_temporal_state,
+            );
+        }
+    }
+
+    let latest_branch_id =
+        latest_structural_branch_id_for_symbol(&structural_prior_state.event_ledger, symbol);
+    if let Some(latest_branch_id) = latest_branch_id.as_deref() {
+        let regime_probabilities = canonical_probabilities
+            .iter()
+            .map(|(regime, probability)| (regime.clone(), *probability))
+            .collect::<Vec<_>>();
+        let adjusted_node_probabilities = transition_adjusted_node_posteriors(
+            symbol,
+            &regime_probabilities,
+            Some(latest_branch_id),
+            &structural_prior_state.branch_transition_priors,
+            &structural_prior_state.branch_temporal_posteriors,
+            &structural_prior_state.node_transition_posteriors,
+        );
+        let node_transition_adjusted =
+            adjusted_node_probabilities
+                .iter()
+                .any(|(regime, probability)| {
+                    (canonical_probabilities
+                        .get(regime)
+                        .copied()
+                        .unwrap_or_default()
+                        - *probability)
+                        .abs()
+                        > 1e-9
+                });
+        canonical_probabilities = adjusted_node_probabilities;
+        if node_transition_adjusted {
+            report
+                .regime_posterior
+                .evidence
+                .push(format!("node_transition_posterior_from={latest_branch_id}"));
+        }
+    }
+
+    let mut active_regime = canonical_probabilities
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(Ordering::Equal))
+        .map(|(regime, _)| regime.clone());
+
+    if let Some(active) = active_regime.as_ref() {
+        let node_id = format!("{symbol}:belief_regime_node:{active}");
+        let regime_probabilities = canonical_probabilities
+            .iter()
+            .map(|(regime, probability)| (regime.clone(), *probability))
+            .collect::<Vec<_>>();
+        if let Some(latest_branch_id) = latest_branch_id.as_deref() {
+            let adjusted = transition_adjusted_branch_posteriors(
+                &node_id,
+                &regime_probabilities,
+                Some(latest_branch_id),
+                &structural_prior_state.branch_transition_priors,
+                &structural_prior_state.branch_temporal_posteriors,
+                structural_branch_label_for_regime,
+            );
+            for (regime, _) in &regime_probabilities {
+                let branch_id = format!(
+                    "{node_id}:{}",
+                    structural_branch_label_for_regime(regime.as_str())
+                );
+                if let Some(probability) = adjusted.get(&branch_id) {
+                    canonical_probabilities.insert(regime.clone(), *probability);
+                }
+            }
+            let max_weighted_transition_mass = regime_probabilities
+                .iter()
+                .filter_map(|(regime, _)| {
+                    let branch_id = format!(
+                        "{}:{}",
+                        node_id,
+                        structural_branch_label_for_regime(regime.as_str())
+                    );
+                    structural_prior_state
+                        .branch_transition_priors
+                        .get(&format!("{latest_branch_id}=>{branch_id}"))
+                        .map(|prior| prior.weighted_observation_mass)
+                })
+                .fold(0.0, f64::max);
+            let max_transition_outcome_support = regime_probabilities
+                .iter()
+                .filter_map(|(regime, _)| {
+                    let branch_id = format!(
+                        "{}:{}",
+                        node_id,
+                        structural_branch_label_for_regime(regime.as_str())
+                    );
+                    let transition_key = format!("{latest_branch_id}=>{branch_id}");
+                    structural_prior_state
+                        .branch_temporal_posteriors
+                        .get(&transition_key)
+                        .map(|state| state.transition_outcome_support)
+                        .or_else(|| {
+                            structural_prior_state
+                                .branch_transition_priors
+                                .get(&transition_key)
+                                .map(|prior| prior.transition_outcome_support)
+                        })
+                })
+                .fold(0.0, f64::max);
+            let max_transition_temporal_support = regime_probabilities
+                .iter()
+                .filter_map(|(regime, _)| {
+                    let branch_id = format!(
+                        "{}:{}",
+                        node_id,
+                        structural_branch_label_for_regime(regime.as_str())
+                    );
+                    let transition_key = format!("{latest_branch_id}=>{branch_id}");
+                    structural_prior_state
+                        .branch_temporal_posteriors
+                        .get(&transition_key)
+                        .map(|state| state.temporal_posterior_support)
+                        .or_else(|| {
+                            structural_prior_state
+                                .branch_transition_priors
+                                .get(&transition_key)
+                                .map(|prior| prior.temporal_posterior_support)
+                        })
+                })
+                .fold(0.0, f64::max);
+            report
+                .regime_posterior
+                .evidence
+                .push(format!(
+                    "branch_transition_prior_from={} weighted_transition_mass={:.3} transition_outcome_support={:.3} transition_temporal_posterior_support={:.3}",
+                    latest_branch_id,
+                    max_weighted_transition_mass,
+                    max_transition_outcome_support,
+                    max_transition_temporal_support
+                ));
+            if let Some(max_transition_multiplier) = regime_probabilities
+                .iter()
+                .filter_map(|(regime, _)| {
+                    let branch_id = format!(
+                        "{}:{}",
+                        node_id,
+                        structural_branch_label_for_regime(regime.as_str())
+                    );
+                    structural_prior_state
+                        .branch_temporal_posteriors
+                        .get(&format!("{latest_branch_id}=>{branch_id}"))
+                        .map(|state| state.posterior_multiplier)
+                })
+                .max_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal))
+            {
+                report.regime_posterior.evidence.push(format!(
+                    "transition_posterior_multiplier={max_transition_multiplier:.3}"
+                ));
+            }
+            if let Some(summary_line) = regime_probabilities
+                .iter()
+                .filter_map(|(regime, _)| {
+                    let branch_id = format!(
+                        "{}:{}",
+                        node_id,
+                        structural_branch_label_for_regime(regime.as_str())
+                    );
+                    structural_prior_state
+                        .branch_temporal_posteriors
+                        .get(&format!("{latest_branch_id}=>{branch_id}"))
+                        .map(|state| state.summary_line.clone())
+                })
+                .max()
+            {
+                report
+                    .regime_posterior
+                    .evidence
+                    .push(format!("branch_temporal_summary={summary_line}"));
+            }
+        }
+    }
+
+    let total: f64 = canonical_probabilities.values().copied().sum();
+    if total > f64::EPSILON {
+        for probability in canonical_probabilities.values_mut() {
+            *probability = (*probability / total).clamp(0.0, 1.0);
+        }
+    }
+    active_regime = canonical_probabilities
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(Ordering::Equal))
+        .map(|(regime, _)| regime.clone());
+    if let Some(active) = active_regime.as_ref() {
+        let node_id = format!("{symbol}:belief_regime_node:{active}");
+        let node_temporal_state = structural_prior_state
+            .node_temporal_posteriors
+            .get(&node_id);
+        if let Some(duration_prior) = structural_prior_state.node_duration_priors.get(&node_id) {
+            let active_probability = canonical_probabilities.get(active).copied().unwrap_or(0.5);
+            let base_confidence = report
+                .regime_posterior
+                .confidence
+                .unwrap_or_default()
+                .max(active_probability);
+            report.regime_posterior.confidence = Some(blend_node_posterior_with_duration_prior(
+                base_confidence,
+                Some(duration_prior),
+                node_temporal_state,
+            ));
+            report.regime_posterior.evidence.push(format!(
+                "duration_persistence_prior={:.3} observations={} streaks={} weighted_streak_mass={:.3} expected_dwell={:.3} break_hazard={:.3} sticky_self_transition={:.3} duration_outcome_support={:.3} duration_temporal_posterior_support={:.3}",
+                duration_prior.persistence_prior,
+                node_temporal_state
+                    .map(|state| state.observations)
+                    .unwrap_or(duration_prior.observations),
+                node_temporal_state
+                    .map(|state| state.streak_count)
+                    .unwrap_or(duration_prior.streak_count),
+                node_temporal_state
+                    .map(|state| state.weighted_streak_mass)
+                    .unwrap_or(duration_prior.weighted_streak_mass),
+                node_temporal_state
+                    .map(|state| state.expected_dwell_steps)
+                    .unwrap_or(duration_prior.expected_dwell_steps),
+                node_temporal_state
+                    .map(|state| state.break_hazard)
+                    .unwrap_or(duration_prior.break_hazard),
+                node_temporal_state
+                    .map(|state| state.sticky_self_transition_strength)
+                    .unwrap_or(duration_prior.sticky_self_transition_strength),
+                node_temporal_state
+                    .map(|state| state.duration_outcome_support)
+                    .unwrap_or(duration_prior.duration_outcome_support),
+                node_temporal_state
+                    .map(|state| state.temporal_posterior_support)
+                    .unwrap_or(duration_prior.temporal_posterior_support)
+            ));
+            if let Some(blend_weight) =
+                node_temporal_state.map(|state| state.posterior_blend_weight)
+            {
+                report
+                    .regime_posterior
+                    .evidence
+                    .push(format!("duration_posterior_blend_weight={blend_weight:.3}"));
+            }
+            if let Some(summary_line) = node_temporal_state.map(|state| state.summary_line.clone())
+            {
+                report
+                    .regime_posterior
+                    .evidence
+                    .push(format!("node_temporal_summary={summary_line}"));
+            }
+        }
+    }
+    report.regime_posterior.active_regime = active_regime.clone();
+    report.regime_posterior.probabilities = canonical_probabilities.clone();
+    report.gate_decision = gate_decision_from_regime_posterior(&report.regime_posterior);
+    report.strategy_recommendation.direction = if active_regime.as_deref() == Some("trend") {
+        "bull".to_string()
+    } else {
+        "neutral".to_string()
+    };
+    report.strategy_recommendation.market_family = report.regime_posterior.market_family.clone();
+    report.strategy_recommendation.market_behavior_profile =
+        report.regime_posterior.market_behavior_profile.clone();
+    report.strategy_recommendation.selected_market_subgraph =
+        Some(report.gate_decision.selected_subgraph.clone());
+    report.selected_market_subgraph = Some(report.gate_decision.selected_subgraph.clone());
+    report
+        .strategy_recommendation
+        .rationale
+        .push("regime_posterior_adjusted_by_structural_priors".to_string());
+    if let Some(summary) = report.temporal_summary.as_mut() {
+        if let Some(active_regime) = active_regime.as_ref() {
+            summary.dominant_regime = active_regime.clone();
+        }
+    }
+    synchronize_market_regime_belief_snapshot(
+        report,
+        active_regime.as_deref(),
+        &canonical_probabilities,
+    );
+}
+
+fn canonical_structural_regime_label(label: &str) -> Option<String> {
+    let normalized = label.trim().to_ascii_lowercase();
+    let canonical = match normalized.as_str() {
+        "trend" | "bull" | "bear" | "trend_impulse" | "trend_decay" => "trend",
+        "range" | "range_calm" | "range_choppy" => "range",
+        "stress" => "stress",
+        "transition" => "transition",
+        _ => return None,
+    };
+    Some(canonical.to_string())
+}
+
+fn structural_branch_label_for_regime(regime: &str) -> &'static str {
+    match regime {
+        "trend" => "trend_follow_through",
+        "transition" => "transition_confirmation",
+        "range" => "range_mean_reversion",
+        "stress" => "stress_de_risk",
+        _ => "execute_recommended_path",
+    }
+}
+
+fn latest_structural_branch_id_for_symbol(
+    events: &[StructuralPriorEvent],
+    symbol: &str,
+) -> Option<String> {
+    events
+        .iter()
+        .filter(|event| event.symbol == symbol)
+        .max_by(|left, right| {
+            left.recommended_at
+                .cmp(&right.recommended_at)
+                .then_with(|| left.recommendation_id.cmp(&right.recommendation_id))
+        })
+        .map(|event| event.branch_id.clone())
+}
+
+fn synchronize_market_regime_belief_snapshot(
+    report: &mut BeliefReportPacket,
+    active_regime: Option<&str>,
+    canonical_probabilities: &BTreeMap<String, f64>,
+) {
+    let Some(snapshot) = report
+        .belief_posteriors
+        .iter_mut()
+        .find(|item| item.node_id == "market_regime")
+    else {
+        return;
+    };
+    let top_state = active_regime
+        .map(str::to_string)
+        .or_else(|| {
+            canonical_probabilities
+                .iter()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(Ordering::Equal))
+                .map(|(regime, _)| regime.clone())
+        })
+        .unwrap_or_else(|| "state_unavailable".to_string());
+    let top_probability = canonical_probabilities
+        .get(&top_state)
+        .copied()
+        .unwrap_or_default();
+    let entropy = canonical_probabilities
+        .values()
+        .filter(|value| **value > 0.0)
+        .map(|value| -value * value.ln())
+        .sum();
+    snapshot.top_state = top_state;
+    snapshot.top_probability = top_probability;
+    snapshot.entropy = entropy;
+    snapshot.probabilities = canonical_probabilities.clone();
 }
 
 pub fn market_category_from_symbol(symbol: &str) -> &'static str {

@@ -74,6 +74,8 @@ pub struct ConsumedAnalyzeContext {
     pub pre_bayes_evidence_filter: Option<PreBayesEvidenceFilter>,
     pub pre_bayes_entry_quality_bridge: Option<PreBayesEntryQualityBridge>,
     pub multi_timeframe_summary: Vec<String>,
+    pub canonical_structural_regime_posterior:
+        Option<crate::state::CanonicalStructuralRegimePosterior>,
 }
 
 pub fn pending_update_artifact_path(state_dir: &str, symbol: &str) -> Option<String> {
@@ -108,6 +110,7 @@ pub fn consumed_analyze_context_for_update(
                 pre_bayes_evidence_filter: pending.pre_bayes_evidence_filter.clone(),
                 pre_bayes_entry_quality_bridge: pending.pre_bayes_entry_quality_bridge.clone(),
                 multi_timeframe_summary: pending.multi_timeframe_summary.clone(),
+                canonical_structural_regime_posterior: None,
             });
         }
     }
@@ -121,6 +124,7 @@ pub fn consumed_analyze_context_for_update(
                 pre_bayes_evidence_filter: execution.pre_bayes_evidence_filter.clone(),
                 pre_bayes_entry_quality_bridge: execution.pre_bayes_entry_quality_bridge.clone(),
                 multi_timeframe_summary: execution.multi_timeframe_summary.clone(),
+                canonical_structural_regime_posterior: None,
             });
         }
     }
@@ -140,6 +144,7 @@ pub fn consumed_analyze_context_for_update(
         pre_bayes_evidence_filter: Some(run.pre_bayes_evidence_filter.clone()),
         pre_bayes_entry_quality_bridge: Some(run.pre_bayes_entry_quality_bridge.clone()),
         multi_timeframe_summary: run.multi_timeframe_summary.clone(),
+        canonical_structural_regime_posterior: run.canonical_structural_regime_posterior.clone(),
     })
 }
 

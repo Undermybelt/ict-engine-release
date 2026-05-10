@@ -11,7 +11,7 @@ use crate::application::factor_lifecycle::{
 };
 use crate::application::multi_timeframe_inputs::{
     build_multi_timeframe_research_signal, build_multi_timeframe_summary,
-    resolve_multi_timeframe_inputs,
+    resolve_multi_timeframe_inputs, MultiTimeframeInputPaths,
 };
 use crate::data::load_candles;
 use crate::factors::FactorRegistry;
@@ -29,12 +29,7 @@ pub fn build_expansion_sop_mutation_metrics(
         let candles = load_candles(&dataset.output_path)?;
         let resolved_multi_timeframe_inputs = resolve_multi_timeframe_inputs(
             &dataset.output_path,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            MultiTimeframeInputPaths::default(),
         );
         let multi_timeframe_summary =
             build_multi_timeframe_summary(&dataset.output_path, &resolved_multi_timeframe_inputs)?

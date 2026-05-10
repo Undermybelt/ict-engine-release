@@ -1,7 +1,13 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use chrono::Utc;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::thread;
+use std::time::Duration;
 
 use crate::application::decision_utils::parse_research_objective;
 use crate::application::factor_lifecycle::{
@@ -403,6 +409,7 @@ pub struct FactorAutoresearchCommandInput<'a> {
     pub data_1m: Option<&'a str>,
     pub data_5m: Option<&'a str>,
     pub data_15m: Option<&'a str>,
+    pub data_30m: Option<&'a str>,
     pub data_1h: Option<&'a str>,
     pub data_4h: Option<&'a str>,
     pub data_1d: Option<&'a str>,
@@ -450,6 +457,98 @@ pub fn factor_autoresearch_decision(
     }
 }
 
+fn default_first_run_autoresearch_seed_spec(
+    objective: crate::application::decision_utils::ResearchObjectiveMode,
+) -> FactorMutationSpec {
+    match objective {
+        crate::application::decision_utils::ResearchObjectiveMode::ExpansionManipulation => {
+            FactorMutationSpec {
+                mutation_id: format!(
+                    "seed-structure-ict-{}",
+                    Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
+                ),
+                base_factor: "structure_ict".to_string(),
+                hypothesis:
+                    "Seed first-run autoresearch from the canonical structure_ict setup universe."
+                        .to_string(),
+                evaluate_expansion_preview: true,
+                ..FactorMutationSpec::default()
+            }
+        }
+        crate::application::decision_utils::ResearchObjectiveMode::Generic => FactorMutationSpec {
+            mutation_id: format!(
+                "seed-trend-momentum-{}",
+                Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
+            ),
+            base_factor: "trend_momentum".to_string(),
+            hypothesis: "Seed first-run autoresearch from a generic trend_momentum baseline."
+                .to_string(),
+            evaluate_expansion_preview: false,
+            ..FactorMutationSpec::default()
+        },
+    }
+}
+
+struct AutoresearchHeartbeat {
+    stop: Arc<AtomicBool>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl AutoresearchHeartbeat {
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for AutoresearchHeartbeat {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn start_autoresearch_live_heartbeat(
+    state_dir: String,
+    symbol: String,
+    snapshot: FactorAutoresearchLiveSnapshot,
+) -> AutoresearchHeartbeat {
+    start_autoresearch_live_heartbeat_with_interval(
+        state_dir,
+        symbol,
+        snapshot,
+        Duration::from_secs(2),
+    )
+}
+
+fn start_autoresearch_live_heartbeat_with_interval(
+    state_dir: String,
+    symbol: String,
+    mut snapshot: FactorAutoresearchLiveSnapshot,
+    interval: Duration,
+) -> AutoresearchHeartbeat {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_flag = Arc::clone(&stop);
+    let handle = thread::spawn(move || {
+        while !stop_flag.load(Ordering::SeqCst) {
+            thread::sleep(interval);
+            if stop_flag.load(Ordering::SeqCst) {
+                break;
+            }
+            snapshot.updated_at = Utc::now();
+            let _ = save_factor_autoresearch_live_snapshot(&state_dir, &symbol, &snapshot);
+        }
+    });
+    AutoresearchHeartbeat {
+        stop,
+        handle: Some(handle),
+    }
+}
+
 pub fn factor_autoresearch_command<FLoad, FRun>(
     input: FactorAutoresearchCommandInput<'_>,
     load_mutation_spec: FLoad,
@@ -476,9 +575,7 @@ where
                     anyhow!("--resume-latest requested but no prior autoresearch attempts found")
                 })?
         }
-        (None, false) => {
-            bail!("factor-autoresearch requires --mutation-spec unless --resume-latest is set")
-        }
+        (None, false) => default_first_run_autoresearch_seed_spec(objective),
     };
     let now = Utc::now();
     let session_id = input
@@ -538,6 +635,7 @@ where
         attempts_total: session.attempts_total,
         kept_attempts: session.kept_attempts,
         discarded_attempts: session.discarded_attempts,
+        current_stage: "seed_initialized".to_string(),
         current_candidate_spec: Some(current_spec.clone()),
         latest_attempt_id: session.last_attempt_id.clone(),
         status: "running".to_string(),
@@ -547,9 +645,16 @@ where
         live_snapshot.current_iteration = iteration_index + 1;
         live_snapshot.updated_at = Utc::now();
         live_snapshot.current_candidate_spec = Some(current_spec.clone());
+        live_snapshot.current_stage = "running_attempt".to_string();
         live_snapshot.status = "running".to_string();
         save_factor_autoresearch_live_snapshot(input.state_dir, input.symbol, &live_snapshot)?;
+        let heartbeat = start_autoresearch_live_heartbeat(
+            input.state_dir.to_string(),
+            input.symbol.to_string(),
+            live_snapshot.clone(),
+        );
         let report = run_research(objective, &current_spec)?;
+        heartbeat.stop();
         let evaluation = report
             .factor_mutation_evaluation
             .clone()
@@ -622,6 +727,7 @@ where
     live_snapshot.attempts_total = session.attempts_total;
     live_snapshot.kept_attempts = session.kept_attempts;
     live_snapshot.discarded_attempts = session.discarded_attempts;
+    live_snapshot.current_stage = "completed".to_string();
     live_snapshot.current_candidate_spec = Some(current_spec.clone());
     live_snapshot.latest_attempt_id = session.last_attempt_id.clone();
     live_snapshot.status = "completed".to_string();
@@ -681,4 +787,105 @@ pub fn factor_autoresearch_status_command(
 
     println!("{}", serde_json::to_string_pretty(&surface)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::decision_utils::ResearchObjectiveMode;
+    use crate::state::{load_factor_autoresearch_live_snapshot, FactorMutationMetricSet};
+    use tempfile::TempDir;
+
+    #[test]
+    fn default_first_run_autoresearch_seed_spec_uses_structure_ict_for_expansion_objective() {
+        let spec =
+            default_first_run_autoresearch_seed_spec(ResearchObjectiveMode::ExpansionManipulation);
+
+        assert_eq!(spec.base_factor, "structure_ict");
+        assert!(spec.evaluate_expansion_preview);
+        assert!(spec
+            .hypothesis
+            .contains("canonical structure_ict setup universe"));
+    }
+
+    #[test]
+    fn heartbeat_updates_live_snapshot_stage_and_timestamp() {
+        let dir = TempDir::new().unwrap();
+        let snapshot = FactorAutoresearchLiveSnapshot {
+            session_id: "s-1".to_string(),
+            symbol: "NQ".to_string(),
+            objective: "expansion_manipulation".to_string(),
+            current_iteration: 1,
+            current_stage: "running_attempt".to_string(),
+            status: "running".to_string(),
+            ..FactorAutoresearchLiveSnapshot::default()
+        };
+        save_factor_autoresearch_live_snapshot(dir.path(), "NQ", &snapshot).unwrap();
+        let before = load_factor_autoresearch_live_snapshot(dir.path(), "NQ").unwrap();
+        let heartbeat = start_autoresearch_live_heartbeat_with_interval(
+            dir.path().to_string_lossy().to_string(),
+            "NQ".to_string(),
+            snapshot,
+            Duration::from_millis(20),
+        );
+        std::thread::sleep(Duration::from_millis(60));
+        heartbeat.stop();
+
+        let after = load_factor_autoresearch_live_snapshot(dir.path(), "NQ").unwrap();
+        assert_eq!(after.current_stage, "running_attempt");
+        assert!(after.updated_at >= before.updated_at);
+    }
+
+    #[test]
+    fn factor_autoresearch_command_bootstraps_seed_spec_when_missing() {
+        let dir = TempDir::new().unwrap();
+
+        factor_autoresearch_command(
+            FactorAutoresearchCommandInput {
+                symbol: "NQ",
+                data: "demo.json",
+                objective: "expansion_manipulation",
+                mutation_spec_path: None,
+                iterations: 1,
+                data_1m: None,
+                data_5m: None,
+                data_15m: None,
+                data_30m: None,
+                data_1h: None,
+                data_4h: None,
+                data_1d: None,
+                paired_data: None,
+                session_id: Some("session-1"),
+                resume_latest: false,
+                max_cluster_fail_streak: 2,
+                state_dir: dir.path().to_str().unwrap(),
+            },
+            |_path| unreachable!("load_mutation_spec should not be called"),
+            |_objective, spec| {
+                assert_eq!(spec.base_factor, "structure_ict");
+                assert!(spec.evaluate_expansion_preview);
+                let evaluation = FactorMutationEvaluation {
+                    mutation_id: spec.mutation_id.clone(),
+                    accepted: false,
+                    metrics_after: FactorMutationMetricSet {
+                        top_factor_names: vec!["structure_ict".to_string()],
+                        ..FactorMutationMetricSet::default()
+                    },
+                    ..FactorMutationEvaluation::default()
+                };
+                Ok(crate::factor_lab::research::ResearchReport {
+                    factor_mutation_evaluation: Some(evaluation),
+                    ..crate::factor_lab::research::ResearchReport::default()
+                })
+            },
+        )
+        .unwrap();
+
+        let attempts = load_factor_autoresearch_attempts(dir.path(), "NQ").unwrap();
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].candidate_mutation_spec.base_factor,
+            "structure_ict"
+        );
+    }
 }

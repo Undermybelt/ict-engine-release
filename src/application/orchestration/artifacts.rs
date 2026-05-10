@@ -59,6 +59,8 @@ pub struct EnsembleHardBlockArtifact {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EnsembleVoteArtifact {
     pub ensemble_version: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_runtime_sources: Vec<String>,
     pub posterior: PosteriorAuditArtifact,
     pub final_action: String,
     pub recommended_command: String,
@@ -125,5 +127,6 @@ mod tests {
 
         assert!(!artifact.hard_block.active);
         assert!(artifact.hard_block.reason.is_none());
+        assert!(artifact.policy_runtime_sources.is_empty());
     }
 }

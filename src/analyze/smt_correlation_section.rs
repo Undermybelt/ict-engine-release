@@ -1,7 +1,8 @@
+use anyhow::Result;
 use serde::Serialize;
 
 use super::series::{aligned_close_series, close_to_returns};
-use crate::data::realtime::openalice::AuxiliaryMarketEvidence;
+use crate::data::realtime::market_support::AuxiliaryMarketEvidence;
 use crate::smt::{Cointegration, Correlation, Divergence};
 use crate::types::Candle;
 
@@ -14,111 +15,13 @@ struct CorrelationAssetMap {
     related_crypto_symbols: Vec<String>,
 }
 
-fn correlation_asset_map(
-    symbol: &str,
-    spot_symbol: &str,
-    options_symbol: &str,
-) -> CorrelationAssetMap {
-    match symbol.trim().to_ascii_uppercase().as_str() {
-        "NQ" => CorrelationAssetMap {
-            related_futures_symbols: vec!["ES".to_string(), "YM".to_string()],
-            related_etf_symbols: vec![
-                spot_symbol.to_string(),
-                "SPY".to_string(),
-                "DIA".to_string(),
-            ],
-            related_options_symbols: vec![
-                options_symbol.to_string(),
-                "SPY".to_string(),
-                "DIA".to_string(),
-            ],
-            related_cfd_symbols: vec![
-                "NAS100".to_string(),
-                "US500".to_string(),
-                "US30".to_string(),
-            ],
-            related_crypto_symbols: vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()],
-        },
-        "ES" => CorrelationAssetMap {
-            related_futures_symbols: vec!["NQ".to_string(), "YM".to_string()],
-            related_etf_symbols: vec![
-                spot_symbol.to_string(),
-                "QQQ".to_string(),
-                "DIA".to_string(),
-            ],
-            related_options_symbols: vec![
-                options_symbol.to_string(),
-                "QQQ".to_string(),
-                "DIA".to_string(),
-            ],
-            related_cfd_symbols: vec![
-                "US500".to_string(),
-                "NAS100".to_string(),
-                "US30".to_string(),
-            ],
-            related_crypto_symbols: vec!["BTC".to_string(), "ETH".to_string()],
-        },
-        "YM" => CorrelationAssetMap {
-            related_futures_symbols: vec!["NQ".to_string(), "ES".to_string()],
-            related_etf_symbols: vec![
-                spot_symbol.to_string(),
-                "QQQ".to_string(),
-                "SPY".to_string(),
-            ],
-            related_options_symbols: vec![
-                options_symbol.to_string(),
-                "QQQ".to_string(),
-                "SPY".to_string(),
-            ],
-            related_cfd_symbols: vec![
-                "US30".to_string(),
-                "NAS100".to_string(),
-                "US500".to_string(),
-            ],
-            related_crypto_symbols: vec!["BTC".to_string(), "ETH".to_string()],
-        },
-        "GC" => CorrelationAssetMap {
-            related_futures_symbols: vec!["SI".to_string()],
-            related_etf_symbols: vec![spot_symbol.to_string(), "SLV".to_string()],
-            related_options_symbols: vec![options_symbol.to_string(), "SLV".to_string()],
-            related_cfd_symbols: vec!["XAUUSD".to_string(), "XAGUSD".to_string()],
-            related_crypto_symbols: vec!["BTC".to_string(), "ETH".to_string()],
-        },
-        "CL" => CorrelationAssetMap {
-            related_futures_symbols: vec!["BZ".to_string()],
-            related_etf_symbols: vec![spot_symbol.to_string(), "BNO".to_string()],
-            related_options_symbols: vec![options_symbol.to_string(), "BNO".to_string()],
-            related_cfd_symbols: vec!["USOIL".to_string(), "UKOIL".to_string()],
-            related_crypto_symbols: vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()],
-        },
-        "BTC" => CorrelationAssetMap {
-            related_futures_symbols: vec![],
-            related_etf_symbols: vec![spot_symbol.to_string()],
-            related_options_symbols: vec![options_symbol.to_string()],
-            related_cfd_symbols: vec!["BTCUSD".to_string()],
-            related_crypto_symbols: vec!["ETH".to_string(), "SOL".to_string()],
-        },
-        "ETH" => CorrelationAssetMap {
-            related_futures_symbols: vec![],
-            related_etf_symbols: vec![spot_symbol.to_string()],
-            related_options_symbols: vec![options_symbol.to_string()],
-            related_cfd_symbols: vec!["ETHUSD".to_string()],
-            related_crypto_symbols: vec!["BTC".to_string(), "SOL".to_string()],
-        },
-        "SOL" => CorrelationAssetMap {
-            related_futures_symbols: vec![],
-            related_etf_symbols: vec![spot_symbol.to_string()],
-            related_options_symbols: vec![options_symbol.to_string()],
-            related_cfd_symbols: vec!["SOLUSD".to_string()],
-            related_crypto_symbols: vec!["BTC".to_string(), "ETH".to_string()],
-        },
-        _ => CorrelationAssetMap {
-            related_futures_symbols: Vec::new(),
-            related_etf_symbols: vec![spot_symbol.to_string()],
-            related_options_symbols: vec![options_symbol.to_string()],
-            related_cfd_symbols: Vec::new(),
-            related_crypto_symbols: Vec::new(),
-        },
+fn correlation_asset_map(spot_symbol: &str, options_symbol: &str) -> CorrelationAssetMap {
+    CorrelationAssetMap {
+        related_futures_symbols: Vec::new(),
+        related_etf_symbols: vec![spot_symbol.to_string()],
+        related_options_symbols: vec![options_symbol.to_string()],
+        related_cfd_symbols: Vec::new(),
+        related_crypto_symbols: Vec::new(),
     }
 }
 
@@ -175,8 +78,8 @@ pub fn build_smt_correlation_section(
     futures_candles: &[Candle],
     spot_candles: &[Candle],
     auxiliary: &AuxiliaryMarketEvidence,
-) -> SmtCorrelationSection {
-    let asset_map = correlation_asset_map(futures_symbol, spot_symbol, &auxiliary.options_symbol);
+) -> Result<SmtCorrelationSection> {
+    let asset_map = correlation_asset_map(spot_symbol, &auxiliary.options_symbol);
     let (futures_series, spot_series) = aligned_close_series(futures_candles, spot_candles);
     let futures_returns = close_to_returns(&futures_series);
     let spot_returns = close_to_returns(&spot_series);
@@ -199,7 +102,7 @@ pub fn build_smt_correlation_section(
         "paired_markets_offer_mixed_confirmation".to_string()
     };
 
-    SmtCorrelationSection {
+    Ok(SmtCorrelationSection {
         probability_role: "cross_market_confirmation_for_probability_model".to_string(),
         paired_market_available: true,
         futures_symbol: Some(futures_symbol.to_string()),
@@ -219,5 +122,5 @@ pub fn build_smt_correlation_section(
         rolling_price_ratio_mean: auxiliary.rolling_price_ratio_mean,
         notes: auxiliary.notes.clone(),
         narrative,
-    }
+    })
 }

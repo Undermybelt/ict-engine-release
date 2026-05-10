@@ -2,8 +2,13 @@
 /.DS_Store
 /state
 /state*/
-/state_autoresearch_cycle_validation.next-spec.json
+/state_experiments/
 __pycache__/
 *.pyc
 tmp_cycle_seed_spec.json
 *.log
+catboost_info/
+
+# IBKR bridge user-local configs
+scripts/ibkr_bridge/my_config*
+scripts/ibkr_bridge/__pycache__/

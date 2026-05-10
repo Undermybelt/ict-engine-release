@@ -1,0 +1,65 @@
+# =============================================================================
+# Intraday 5-min ICT/factor research config
+# =============================================================================
+# Use this when you want a continuously-updating buffer of 5-minute bars in
+# Redis to feed an ICT structure analyser, an alpha-factor scanner, or a
+# live-mode FreqTrade strategy that re-evaluates every 5 minutes.
+#
+# Why bars_kup (keepUpToDate=True) instead of real_time_bars?
+#   * Works at any bar size (1m / 5m / 15m / 1h / 1d)
+#   * Goes through IBKR's historical-data farm which is more permissive
+#     about market-data subscriptions than the live tick-stream farm
+#   * Backfills the most recent `duration` window on first connect, so
+#     consumers replaying from start_id='0' see a complete dataset
+#
+# Run:
+#   .venv/bin/python -m scripts.ibkr_bridge.bridge \
+#       --config scripts/ibkr_bridge/examples/intraday_5min.yaml
+# =============================================================================
+
+gateway:
+  host: 127.0.0.1
+  port: 4002          # 4002 = paper standalone Gateway, 7497 = TWS paper
+  client_id: 20
+  market_data_type: 1 # bars_kup ignores this; only matters for market_data feed
+
+redis:
+  url: redis://localhost:6379
+
+publishing:
+  stream_maxlen: 50000     # ≈174 days of 5-min bars per symbol
+  snapshot_ttl_sec: 0       # 0 = no expire (let consumers see latest forever)
+
+subscriptions:
+  - symbol: SPY
+    sec_type: STK
+    exchange: SMART
+    currency: USD
+    primary_exchange: ARCA
+    feed: [bars_kup]
+    bar_size: '5 mins'
+    what_to_show: TRADES
+    duration: '5 D'         # back-fill 5 trading days = ≈1950 RTH bars
+    use_rth: true            # filter to regular US trading hours
+
+  - symbol: QQQ
+    sec_type: STK
+    exchange: SMART
+    currency: USD
+    primary_exchange: NASDAQ
+    feed: [bars_kup]
+    bar_size: '5 mins'
+    what_to_show: TRADES
+    duration: '5 D'
+    use_rth: true
+
+  # Mid-price kline for FX is more stable than TRADES (which is sparse for FX)
+  - symbol: EURUSD
+    sec_type: CASH
+    exchange: IDEALPRO
+    currency: USD
+    feed: [bars_kup]
+    bar_size: '5 mins'
+    what_to_show: MIDPOINT
+    duration: '5 D'
+    use_rth: false           # FX trades 23h/d, no RTH concept

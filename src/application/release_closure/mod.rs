@@ -215,7 +215,8 @@ pub fn build_research_verdict_report(
         }
     }
     if research_objectives.len() > 1 {
-        contamination_reasons.push("research_runs_mix_multiple_objectives_in_one_state_dir".to_string());
+        contamination_reasons
+            .push("research_runs_mix_multiple_objectives_in_one_state_dir".to_string());
     }
     if research_data_paths.len() > 1 {
         contamination_reasons.push("research_runs_mix_multiple_primary_data_paths".to_string());
@@ -223,11 +224,9 @@ pub fn build_research_verdict_report(
     if paired_data_paths.len() > 1 {
         contamination_reasons.push("comparison_runs_mix_multiple_paired_data_paths".to_string());
     }
-    if mutation_runs.len() > 3 {
-        if mutation_source_commands.len() > 1 {
-            contamination_reasons
-                .push("factor_mutation_runs_mix_multiple_sources_in_one_state_dir".to_string());
-        }
+    if mutation_runs.len() > 3 && mutation_source_commands.len() > 1 {
+        contamination_reasons
+            .push("factor_mutation_runs_mix_multiple_sources_in_one_state_dir".to_string());
     }
     if artifact_source_phases.len() > 3 {
         contamination_reasons
@@ -732,9 +731,11 @@ mod tests {
 
     #[test]
     fn evidence_quality_breakdown_surfaces_policy_bridge_and_soft_evidence_fields() {
-        let mut analyze_run = AnalyzeRunRecord::default();
-        analyze_run.run_id = "analyze:demo:1".to_string();
-        analyze_run.timestamp = Utc::now();
+        let mut analyze_run = AnalyzeRunRecord {
+            run_id: "analyze:demo:1".to_string(),
+            timestamp: Utc::now(),
+            ..AnalyzeRunRecord::default()
+        };
         analyze_run.pre_bayes_evidence_filter.policy.version = "policy-v3".to_string();
         analyze_run.pre_bayes_evidence_filter.gating_status = "pass_neutralized".to_string();
         analyze_run.pre_bayes_evidence_filter.evidence_quality_score = 0.72;

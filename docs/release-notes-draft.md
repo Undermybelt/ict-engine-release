@@ -1,91 +1,71 @@
 # Release Notes Draft
 
-Version: preview release candidate
-Status: draft
+Version: `v0.1.1` candidate
+Status: release mirror candidate, refreshed 2026-05-10
 
 ## Highlights
 
-- Added safer public Python experiment entrypoints:
-  - `scripts/search_local.py`
-  - `scripts/search_cluster.py`
-  - `scripts/evaluate_bottleneck.py`
-- Cleared source-repo oversized-history debt by removing generated `state*` artifacts from git history.
-- Deepened release-closure surfaces:
-  - richer `research-verdict` contamination evidence
-  - richer `evidence-quality-breakdown` policy / bridge / soft-evidence fields
-- Public wrappers now default to help-only mode instead of launching long runs.
-- Added non-executing backend summaries via `--backend-help`.
-- Added release-facing onboarding docs:
-  - `README.md` rewritten as a publishable entry surface
-  - `docs/first-run.md`
-- Added explicit release caveat for archived backend portability:
-  - `docs/backend-path-audit.md`
+- Rust CLI release gates are currently green:
+  - `cargo fmt --check`
+  - `cargo clippy --all-targets -- -D warnings`
+  - `cargo test`
+- First-run demo path works with an explicit `/tmp` state dir:
+  - `cargo run -- analyze --symbol DEMO --demo --state-dir /tmp/ict-engine-first-run-native --human`
+- Factor diagnostics and native research path are usable on bundled demo data:
+  - `factor-pipeline-debug --symbol DEMO --data examples/demo/demo-15m.json --factor structure_ict --objective expansion_manipulation`
+  - `factor-research --symbol DEMO --data examples/demo/demo-15m.json --state-dir /tmp/ict-engine-first-run-native --backend native --human`
+- Public Python wrappers remain safe to inspect before execution:
+  - `python3 scripts/search_local.py --show-config`
+  - `python3 scripts/search_cluster.py --show-config`
+  - `python3 scripts/evaluate_bottleneck.py --show-config`
+- Workflow snapshots now preserve canonical structural regime posterior fields on analyze snapshots, matching research/backtest/update surfaces.
+- Multi-timeframe and factor-backtest runtime inputs were tightened into structured input types, keeping Clippy clean without widening allow-lints.
+- Release mirror runbook is now variableized and no longer hardcodes the old `v0.0.1` tag.
 
-## UX improvements
-
-- Users can now inspect public script families safely before execution.
-- `--target` now reports backend paths clearly.
-- Wrapper help now explains when each script should be used.
-- Documentation now routes common intents directly to the right CLI/script surface.
-
-## New recommended first-run flow
+## Smoke results from 2026-05-10
 
 ```bash
-cargo check
-cargo run -- --help
-python3 scripts/search_local.py
-python3 scripts/search_cluster.py
-python3 scripts/evaluate_bottleneck.py
+cargo fmt --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml --check
+cargo check --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml --all-targets
+cargo clippy --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml
 ```
 
-## Important caveats
+All passed.
 
-- Public wrappers are safer than the archived backends they call.
-- Archived backends now use shared repo/data/bin path discovery instead of machine-local absolute paths.
-- Treat this release as an agent-first / researcher-preview surface, not a fully generalized packaged distribution.
+```bash
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- analyze --symbol DEMO --demo --state-dir /tmp/ict-engine-first-run-native --human
+```
 
-## Best commands for current users
+Passed. Output starts with a compact desk summary and recommends a native factor-research next command using the same `/tmp` state dir.
 
-- market read:
-  - `cargo run -- analyze --help`
-- gate / bridge diagnosis:
-  - `cargo run -- factor-pipeline-debug --help`
-- latest autoresearch truth:
-  - `cargo run -- factor-autoresearch-status --help`
-- local search wrapper:
-  - `python3 scripts/search_local.py`
-- cluster jump wrapper:
-  - `python3 scripts/search_cluster.py`
-- bottleneck wrapper:
-  - `python3 scripts/evaluate_bottleneck.py`
-- verdict synthesis:
-  - `python3 scripts/research_verdict.py <state-or-result-dir>`
+```bash
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- factor-research --symbol DEMO --data /Users/thrill3r/projects-ict-engine/ict-engine/examples/demo/demo-15m.json --state-dir /tmp/ict-engine-first-run-native --backend native --human
+```
+
+Passed. Best factor was `trend_momentum`; output stayed human-readable.
+
+```bash
+cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- auto-quant-status --state-dir /tmp/ict-engine-auto-quant-smoke
+```
+
+Passed as readiness reporting. It correctly returned `missing_dependency` / `bootstrap_needed=true` and kept managed paths under `/tmp/ict-engine-auto-quant-smoke/auto-quant/...`.
 
 ## Known limitations
 
-- public wrappers summarize backend behavior, but archived backends do not yet expose a stable full public argparse surface
-- some experiments still assume local cleaned-data layouts and repo-root-relative state conventions
+- This remains an agent-first / researcher-preview release, not a fully generalized packaged distribution.
+- Python research tests were not executed in the current environment because `python3 -m pytest` failed with `No module named pytest`.
+- Some Python experiment flows still assume a maintainer-style cleaned-data layout unless `--data-root` is provided explicitly.
+- Auto-Quant is optional and reports `bootstrap_needed` until its managed dependency is installed in the selected state dir.
+- The bundled demo data has about 52 candles and is intentionally too small for full `backtest` paths that require more history.
+- Source development history remains far ahead of its origin; this release is published through the clean tree-state release mirror.
 
-## Upgrade / migration notes
+## Release label
 
-If you previously called archived scripts directly, prefer the new public wrappers first.
-
-Old habit:
-- `python3 scripts/archive/factor_local_search_v2d.py`
-
-New habit:
-- `python3 scripts/search_local.py`
-- `python3 scripts/search_local.py --backend-help`
-- `python3 scripts/search_local.py --run`
-
-## Suggested release label
-
-`ict-engine v0.1.0-preview`
+`ict-engine v0.1.1`
 
 Reason:
-- core CLI is real and usable
-- release-facing docs are now present
-- wrapper UX is much safer
-- source repo history is pushable again
-- release-closure surfaces are deeper and less placeholder-like
-- backend path portability landed, but the public experiment surface is still preview-grade
+- core Rust CLI gates are green
+- first-run demo and native factor loop smoke paths pass
+- release-facing docs and runbook are current
+- Python/Auto-Quant surfaces are useful but still preview-grade / optional

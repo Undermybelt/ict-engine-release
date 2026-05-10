@@ -1,0 +1,62 @@
+# =============================================================================
+# IDEALPRO forex config
+# =============================================================================
+# Use this when you want forex factor research / FX-pair structure analysis.
+# IBKR's IDEALPRO is a free real-time MD subscription that ships with the
+# IBKR-PRO commission tier ("IDEALPRO 外汇" in Chinese UI).
+#
+# FX trades Sun 17:00 EST → Fri 17:00 EST (≈115 hours/week of liquidity).
+# On weekends the bridge will subscribe cleanly but receive sentinel quotes
+# (bid=-1, ask=-1) until Sunday afternoon NY time.
+#
+# Use what_to_show=MIDPOINT for bars_kup — TRADES is sparse for FX since
+# IDEALPRO aggregates a quoted-spread venue.
+#
+# Run:
+#   .venv/bin/python -m scripts.ibkr_bridge.bridge \
+#       --config scripts/ibkr_bridge/examples/forex_idealpro.yaml
+# =============================================================================
+
+gateway:
+  host: 127.0.0.1
+  port: 4002
+  client_id: 20
+  market_data_type: 1  # IDEALPRO real-time is free with IBKR-PRO
+
+redis:
+  url: redis://localhost:6379
+
+publishing:
+  stream_maxlen: 50000
+  snapshot_ttl_sec: 0
+
+subscriptions:
+  - symbol: EURUSD
+    sec_type: CASH
+    exchange: IDEALPRO
+    currency: USD
+    feed: [bars_kup, market_data]
+    bar_size: '5 mins'
+    what_to_show: MIDPOINT
+    duration: '5 D'           # 5 days of 5-min FX bars ≈ 1440 rows
+    use_rth: false
+
+  - symbol: USDJPY
+    sec_type: CASH
+    exchange: IDEALPRO
+    currency: JPY
+    feed: [bars_kup]
+    bar_size: '5 mins'
+    what_to_show: MIDPOINT
+    duration: '5 D'
+    use_rth: false
+
+  - symbol: GBPUSD
+    sec_type: CASH
+    exchange: IDEALPRO
+    currency: USD
+    feed: [bars_kup]
+    bar_size: '5 mins'
+    what_to_show: MIDPOINT
+    duration: '5 D'
+    use_rth: false

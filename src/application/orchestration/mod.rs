@@ -8,6 +8,7 @@ pub mod final_adapter;
 pub mod policy_engine;
 pub mod stage_plan;
 pub mod stage_runner;
+pub mod structural_playbook;
 pub mod trace_builder;
 pub mod workflow_status;
 
@@ -21,5 +22,6 @@ pub use final_adapter::*;
 pub use policy_engine::*;
 pub use stage_plan::*;
 pub use stage_runner::*;
+pub use structural_playbook::*;
 pub use trace_builder::*;
 pub use workflow_status::*;

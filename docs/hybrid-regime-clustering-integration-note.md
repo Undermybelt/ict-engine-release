@@ -198,3 +198,42 @@ cluster 很适合提供：
 ## 一句话总结
 这篇论文最该借给本仓的不是算法细节，而是一个正确的架构顺序：
 先用多特征无监督方法把 regime 分出来，再让 PreBayes 和 BBN 去调和 temporal state 与 clustering state，最后才进入 policy/execution。
+
+## Contributor Trial Intake Normalization
+
+This repo should normalize outside trial wording into existing repo concepts before any promotion or implementation:
+
+- `related-stock relative consistency`
+  - normalize to the repo's existing `SMT / correlation-consistency` lane
+  - do not promote it as a brand-new ontology term
+- `tiny-leg zigzag regime`
+  - normalize to a `retrospective segmentation / clustering` lane
+  - do not treat it as live runtime truth by default
+
+The first-pass intake should stay simple and inspectable:
+
+- prefer a small layered evidence packet over a deep or opaque hierarchy
+- keep each layer separable and nameable
+- record layer-by-layer contribution explicitly before any later blending
+- treat `six periods` as an explicit evaluation dimension, not a hidden scalar average
+
+## Dual-Track Constraint
+
+The repo's regime path should remain dual-track:
+
+1. retrospective structure lane
+   - tiny zigzag
+   - tiny-leg segmentation
+   - 5 leg factors
+   - optional `16 -> 6` clustering path
+   - research-only evidence and summaries
+2. live current-state lane
+   - now-cast regime evidence
+   - not delayed purely by pivot confirmation
+   - eligible to influence gating / uncertainty / belief only after explicit validation
+
+Required guardrail:
+
+- retrospective zigzag / tiny-leg / cluster outputs are not sufficient by themselves for live regime truth
+- no runtime path should rely on pivot-confirmed retrospective structure as the sole regime judge
+- any layered BBN promotion must keep the now-cast branch explicit

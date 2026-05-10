@@ -30,6 +30,8 @@ pub struct ExecutionTreeInput<'a> {
     pub hmm_posterior: &'a RegimeProbs,
     pub mece_recovery_confidence: Option<f64>,
     pub prediction_vote_score: f64,
+    pub market_state_lineage: Option<&'a [String]>,
+    pub path_ranker_lineage: Option<&'a [String]>,
     /// Axial pooling trace over the MTF tensor. When `force_observe` is true
     /// the scorer downgrades an `aggressive` bias to `passive` because no
     /// timeframe is meaningfully dominant. Optional so legacy callers that
@@ -47,10 +49,22 @@ pub struct ExecutionTreeOutput {
     pub posterior_uncertainty: f64,
     pub split_reason_lineage: Vec<String>,
     pub decision_hint: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub consumer_reason: String,
     /// Top axial attention weights (feature_name, weight) carried into the
     /// trace artifact. Empty when no axial trace was provided to the scorer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub axial_attention_trace: Vec<(String, f64)>,
+    #[serde(default)]
+    pub path_ranker_score_visible_to_execution_tree: bool,
+    #[serde(default)]
+    pub path_ranker_score_used_by_execution_tree: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_ranker_model_family: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_ranker_runtime_source: Option<String>,
+    #[serde(default)]
+    pub ranker_validation_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -209,6 +223,9 @@ pub struct ExecutionTriage {
     pub branch_probability: f64,
     pub posterior_uncertainty: f64,
     pub one_line: String,
+    pub consumer_reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reason_summary: Vec<String>,
 }
 
 pub fn build_execution_triage(output: &ExecutionTreeOutput) -> ExecutionTriage {
@@ -221,6 +238,19 @@ pub fn build_execution_triage(output: &ExecutionTreeOutput) -> ExecutionTriage {
         output.branch_probability,
         output.decision_hint,
     );
+    let reason_summary = output
+        .split_reason_lineage
+        .iter()
+        .filter(|line| {
+            line.contains("market_state=")
+                || line.contains("path_ranker=")
+                || line.contains("branch=")
+                || line.contains("hybrid_transition_hazard=")
+        })
+        .take(5)
+        .cloned()
+        .collect();
+    let consumer_reason = execution_consumer_reason(output);
     ExecutionTriage {
         gate_status: output.gate_status.clone(),
         branch: output.branch.clone(),
@@ -230,7 +260,125 @@ pub fn build_execution_triage(output: &ExecutionTreeOutput) -> ExecutionTriage {
         branch_probability: output.branch_probability,
         posterior_uncertainty: output.posterior_uncertainty,
         one_line,
+        consumer_reason,
+        reason_summary,
     }
+}
+
+pub fn refresh_consumer_reason(mut output: ExecutionTreeOutput) -> ExecutionTreeOutput {
+    output.consumer_reason = build_consumer_reason(&output);
+    output
+}
+
+fn execution_consumer_reason(output: &ExecutionTreeOutput) -> String {
+    if output.consumer_reason.is_empty() {
+        build_consumer_reason(output)
+    } else {
+        output.consumer_reason.clone()
+    }
+}
+
+fn build_consumer_reason(output: &ExecutionTreeOutput) -> String {
+    let (primary, secondary) = market_state_primary_secondary(output)
+        .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
+    let ranker_source = output
+        .path_ranker_runtime_source
+        .as_deref()
+        .unwrap_or("none");
+    let ranker_model = output.path_ranker_model_family.as_deref().unwrap_or("none");
+    let ranker_ready = if output.ranker_validation_ready {
+        "ready"
+    } else {
+        "not_ready"
+    };
+    format!(
+        "market_state={primary}/{secondary} | execution={}/{}/{} | ranker={ranker_source}/{ranker_model}/{ranker_ready}",
+        output.gate_status, output.branch, output.execution_bias
+    )
+}
+
+fn market_state_primary_secondary(output: &ExecutionTreeOutput) -> Option<(String, String)> {
+    output
+        .split_reason_lineage
+        .iter()
+        .find(|line| line.contains("market_state=") && line.contains("primary_regime="))
+        .map(|line| {
+            (
+                lineage_value(line, "primary_regime").unwrap_or_else(|| "unknown".to_string()),
+                lineage_value(line, "secondary_regime").unwrap_or_else(|| "unknown".to_string()),
+            )
+        })
+}
+
+fn lineage_value(line: &str, key: &str) -> Option<String> {
+    let needle = format!("{key}=");
+    line.split_whitespace()
+        .find_map(|part| {
+            part.find(&needle)
+                .map(|index| &part[index + needle.len()..])
+        })
+        .map(|value| value.trim_matches(|ch| ch == ',' || ch == ';').to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn path_ranker_machine_fields(
+    path_ranker_lineage: Option<&[String]>,
+) -> (Option<String>, Option<String>, bool, Option<f64>) {
+    let Some(lines) = path_ranker_lineage else {
+        return (None, None, false, None);
+    };
+    let runtime_line = lines.iter().find(|line| line.contains("Ranker runtime:"));
+    let validation_line = lines
+        .iter()
+        .find(|line| line.contains("Ranker validation:"));
+    let score_line = lines.iter().find(|line| line.contains("ranker_score="));
+    let score_runtime_source = score_line
+        .and_then(|line| lineage_value(line, "runtime_source"))
+        .filter(|source| source != "none");
+    let score_value = score_line.and_then(|line| {
+        score_runtime_source.as_ref()?;
+        [
+            "path_prob_lower_bound",
+            "calibrated_path_prob",
+            "raw_path_score",
+        ]
+        .iter()
+        .find_map(|key| {
+            lineage_value(line, key)
+                .filter(|value| value != "none")
+                .and_then(|value| value.parse::<f64>().ok())
+        })
+        .map(|value| value.clamp(0.0, 1.0))
+    });
+    let machine_line = lines.iter().find(|line| line.contains("ranker_machine="));
+    let model_family = runtime_line
+        .and_then(|line| lineage_value(line, "score_model_family"))
+        .or_else(|| runtime_line.and_then(|line| lineage_value(line, "model_family")))
+        .or_else(|| {
+            machine_line
+                .and_then(|line| lineage_value(line, "score_model_family"))
+                .or_else(|| machine_line.and_then(|line| lineage_value(line, "model_family")))
+        });
+    let runtime_source = score_runtime_source.clone().or_else(|| {
+        runtime_line
+            .and_then(|line| lineage_value(line, "runtime_source"))
+            .or_else(|| runtime_line.and_then(|line| lineage_value(line, "source")))
+            .filter(|source| source != "none")
+            .or_else(|| {
+                machine_line
+                    .and_then(|line| lineage_value(line, "runtime_source"))
+                    .or_else(|| machine_line.and_then(|line| lineage_value(line, "source")))
+                    .filter(|source| source != "none")
+            })
+    });
+    let validation_ready = validation_line
+        .map(|line| line.contains("ready=true"))
+        .unwrap_or_else(|| {
+            lines.iter().any(|line| {
+                line.contains("ranker_machine=") && line.contains("validation_ready=true")
+            })
+        });
+    (model_family, runtime_source, validation_ready, score_value)
 }
 
 pub trait ExecutionTreeScorer {
@@ -300,13 +448,37 @@ impl ExecutionTreeScorer for DefaultExecutionTreeScorer {
             )
         };
 
-        let prediction_strength = classify_prediction_strength(input.prediction_vote_score);
+        let (
+            path_ranker_model_family,
+            path_ranker_runtime_source,
+            ranker_validation_ready,
+            path_ranker_score,
+        ) = path_ranker_machine_fields(input.path_ranker_lineage);
+        let path_ranker_score_visible_to_execution_tree = path_ranker_score.is_some();
+        let path_ranker_score_used_by_execution_tree = path_ranker_score.is_some();
+        let effective_prediction_vote_score = if path_ranker_score_used_by_execution_tree {
+            let score = path_ranker_score.unwrap_or(input.prediction_vote_score);
+            (input.prediction_vote_score * 0.75 + score * 0.25).clamp(0.0, 1.0)
+        } else {
+            input.prediction_vote_score
+        };
+        if let Some(score) = path_ranker_score {
+            lineage.push(format!(
+                "path_ranker_score_input={:.4} visible=true used={} ranker_validation_ready={} effective_prediction_vote_score={:.4}",
+                score,
+                path_ranker_score_used_by_execution_tree,
+                ranker_validation_ready,
+                effective_prediction_vote_score
+            ));
+        }
+
+        let prediction_strength = classify_prediction_strength(effective_prediction_vote_score);
         let execution_strength = classify_execution_strength(readiness);
         let (mut execution_bias, mut decision_hint) =
             execution_first_decision(prediction_strength, execution_strength);
         lineage.push(format!(
             "prediction_vote_score={:.4} ({}) × execution_readiness={:.4} ({}) → bias={}, hint={}",
-            input.prediction_vote_score,
+            effective_prediction_vote_score,
             prediction_strength,
             readiness,
             execution_strength,
@@ -339,6 +511,16 @@ impl ExecutionTreeScorer for DefaultExecutionTreeScorer {
         if let Some(confidence) = input.mece_recovery_confidence {
             lineage.push(format!("mece_recovery_confidence={:.4}", confidence));
         }
+        if let Some(market_state_lineage) = input.market_state_lineage {
+            for line in market_state_lineage.iter().take(8) {
+                lineage.push(format!("market_state={}", line));
+            }
+        }
+        if let Some(path_ranker_lineage) = input.path_ranker_lineage {
+            for line in path_ranker_lineage.iter().take(8) {
+                lineage.push(format!("path_ranker={}", line));
+            }
+        }
         lineage.push(format!(
             "hmm_posterior=(acc={:.3}, manip={:.3}, dist={:.3})",
             input.hmm_posterior.accumulation,
@@ -346,7 +528,7 @@ impl ExecutionTreeScorer for DefaultExecutionTreeScorer {
             input.hmm_posterior.distribution
         ));
 
-        Ok(ExecutionTreeOutput {
+        Ok(refresh_consumer_reason(ExecutionTreeOutput {
             execution_score: input.execution_features.execution_score,
             branch,
             execution_bias: execution_bias.to_string(),
@@ -355,8 +537,14 @@ impl ExecutionTreeScorer for DefaultExecutionTreeScorer {
             posterior_uncertainty: (1.0 - branch_probability).clamp(0.0, 1.0),
             split_reason_lineage: lineage,
             decision_hint: decision_hint.to_string(),
+            consumer_reason: String::new(),
             axial_attention_trace,
-        })
+            path_ranker_score_visible_to_execution_tree,
+            path_ranker_score_used_by_execution_tree,
+            path_ranker_model_family,
+            path_ranker_runtime_source,
+            ranker_validation_ready,
+        }))
     }
 }
 
@@ -556,6 +744,8 @@ mod tests {
             hmm_posterior: &posterior,
             mece_recovery_confidence: Some(0.97),
             prediction_vote_score: 0.7,
+            market_state_lineage: None,
+            path_ranker_lineage: None,
             axial_trace: None,
         };
         let output = DefaultExecutionTreeScorer.score(&input).unwrap();
@@ -579,6 +769,8 @@ mod tests {
             hmm_posterior: &posterior,
             mece_recovery_confidence: None,
             prediction_vote_score: 0.7,
+            market_state_lineage: None,
+            path_ranker_lineage: None,
             axial_trace: None,
         };
         let output = DefaultExecutionTreeScorer.score(&input).unwrap();
@@ -599,6 +791,8 @@ mod tests {
             hmm_posterior: &posterior,
             mece_recovery_confidence: None,
             prediction_vote_score: 0.7,
+            market_state_lineage: None,
+            path_ranker_lineage: None,
             axial_trace: None,
         };
         let output = DefaultExecutionTreeScorer.score(&input).unwrap();
@@ -616,6 +810,8 @@ mod tests {
             hmm_posterior: &posterior,
             mece_recovery_confidence: Some(0.97),
             prediction_vote_score: 0.95,
+            market_state_lineage: None,
+            path_ranker_lineage: None,
             axial_trace: None,
         };
         let output = DefaultExecutionTreeScorer.score(&input).unwrap();
@@ -639,6 +835,8 @@ mod tests {
                 hmm_posterior: &posterior,
                 mece_recovery_confidence: Some(0.97),
                 prediction_vote_score: 0.7,
+                market_state_lineage: None,
+                path_ranker_lineage: None,
                 axial_trace: None,
             })
             .unwrap();
@@ -679,6 +877,8 @@ mod tests {
             hmm_posterior: &posterior,
             mece_recovery_confidence: Some(0.97),
             prediction_vote_score: 0.72,
+            market_state_lineage: None,
+            path_ranker_lineage: None,
             axial_trace: None,
         };
         let output = DefaultExecutionTreeScorer.score(&input).unwrap();
@@ -697,6 +897,199 @@ mod tests {
     }
 
     #[test]
+    fn execution_tree_surfaces_path_ranker_machine_fields() {
+        let features = baseline_features(0.80);
+        let overlay = flat_overlay();
+        let posterior = neutral_posterior();
+        let lineage = vec![
+            "Ranker runtime: runtime enabled=true ready=true source=registered_artifact status=enabled_registered_artifact_ready mode=prefer_history matches=3".to_string(),
+            "Ranker validation: calibration=true quality_ready=true raw_scored_mature=30/30 production_validation=30/30 observation_validation=0/30 ready=true".to_string(),
+            "ranker_machine=source=registered_artifact model_family=catboost validation_ready=true active_match_count=3 raw_path_score=0.83".to_string(),
+        ];
+        let output = DefaultExecutionTreeScorer
+            .score(&ExecutionTreeInput {
+                execution_features: &features,
+                physics_overlay: &overlay,
+                hmm_posterior: &posterior,
+                mece_recovery_confidence: Some(0.97),
+                prediction_vote_score: 0.7,
+                market_state_lineage: None,
+                path_ranker_lineage: Some(&lineage),
+                axial_trace: None,
+            })
+            .unwrap();
+
+        assert!(!output.path_ranker_score_used_by_execution_tree);
+        assert!(!output.path_ranker_score_visible_to_execution_tree);
+        assert_eq!(
+            output.path_ranker_runtime_source.as_deref(),
+            Some("registered_artifact")
+        );
+        assert_eq!(output.path_ranker_model_family.as_deref(), Some("catboost"));
+        assert!(output.ranker_validation_ready);
+    }
+
+    #[test]
+    fn execution_tree_surfaces_current_path_ranker_summary_fields() {
+        let features = baseline_features(0.80);
+        let overlay = flat_overlay();
+        let posterior = neutral_posterior();
+        let lineage = vec![
+            "Ranker runtime: structural_path_ranking_target rows=1 history_rows=10 mature_rows=1 history_mature_rows=4 raw_scored_mature=2/30 production_validation=2/30 observation_validation=117/30 calibration=evaluated trainer_artifact=ready trainer_status=present_validation_insufficient runtime_selection=enabled_registered_artifact_ready runtime_mode=candidate_set_only runtime_source=registered_artifact runtime_matches=1".to_string(),
+            "Ranker validation: calibration=true quality_ready=true raw_scored_mature=2/30 production_validation=2/30 observation_validation=117/30 ready=true".to_string(),
+            "ranker_machine=source=registered_artifact model_family=catboost validation_ready=true active_match_count=1 path_prob_lower_bound=0.72".to_string(),
+        ];
+        let output = DefaultExecutionTreeScorer
+            .score(&ExecutionTreeInput {
+                execution_features: &features,
+                physics_overlay: &overlay,
+                hmm_posterior: &posterior,
+                mece_recovery_confidence: Some(0.97),
+                prediction_vote_score: 0.7,
+                market_state_lineage: None,
+                path_ranker_lineage: Some(&lineage),
+                axial_trace: None,
+            })
+            .unwrap();
+
+        assert!(!output.path_ranker_score_used_by_execution_tree);
+        assert!(!output.path_ranker_score_visible_to_execution_tree);
+        assert_eq!(
+            output.path_ranker_runtime_source.as_deref(),
+            Some("registered_artifact")
+        );
+        assert_eq!(output.path_ranker_model_family.as_deref(), Some("catboost"));
+        assert!(output.ranker_validation_ready);
+    }
+
+    #[test]
+    fn execution_tree_consumes_current_path_ranker_score_without_bypassing_readiness() {
+        let features = baseline_features(0.40);
+        let overlay = flat_overlay();
+        let posterior = neutral_posterior();
+        let lineage = vec![
+            "Ranker runtime: runtime enabled=true ready=true source=registered_artifact status=enabled_registered_artifact_ready mode=prefer_history matches=3".to_string(),
+            "Ranker validation: calibration=true quality_ready=true raw_scored_mature=30/30 production_validation=30/30 observation_validation=0/30 ready=true".to_string(),
+            "ranker_score=path_id=path:scenario:NQ:belief_regime_node:range:range_mean_reversion:primary runtime_source=registered_artifact_path raw_path_score=0.91 calibrated_path_prob=none path_prob_lower_bound=none execution_gate_status=none".to_string(),
+        ];
+
+        let output = DefaultExecutionTreeScorer
+            .score(&ExecutionTreeInput {
+                execution_features: &features,
+                physics_overlay: &overlay,
+                hmm_posterior: &posterior,
+                mece_recovery_confidence: Some(0.97),
+                prediction_vote_score: 0.7,
+                market_state_lineage: None,
+                path_ranker_lineage: Some(&lineage),
+                axial_trace: None,
+            })
+            .unwrap();
+
+        assert!(
+            output.path_ranker_score_visible_to_execution_tree,
+            "current-path numeric ranker score should still be reported as visible"
+        );
+        assert!(
+            output.path_ranker_score_used_by_execution_tree,
+            "validated current-path score should be consumed by prediction-vote branch math"
+        );
+        assert_eq!(output.gate_status, "blocked");
+        assert_eq!(output.execution_bias, "skip");
+        assert!(output
+            .split_reason_lineage
+            .iter()
+            .any(|line| line.contains("path_ranker_score_input=0.9100")));
+        assert!(output
+            .split_reason_lineage
+            .iter()
+            .any(|line| line.contains("effective_prediction_vote_score=0.7525")));
+    }
+
+    #[test]
+    fn execution_tree_does_not_claim_path_ranker_score_used_from_runtime_visibility_only() {
+        let features = baseline_features(0.80);
+        let overlay = flat_overlay();
+        let posterior = neutral_posterior();
+        let lineage = vec![
+            "Ranker runtime: structural_path_ranking_target rows=3 history_rows=133 mature_rows=1 history_mature_rows=122 raw_scored_mature=119/30 production_validation=119/30 observation_validation=117/30 calibration=evaluated trainer_artifact=ready trainer_status=runtime_eligible runtime_selection=enabled_history_ready runtime_mode=prefer_history runtime_source=history runtime_matches=7".to_string(),
+            "Ranker validation: calibration=true quality_ready=true raw_scored_mature=119/30 production_validation=119/30 observation_validation=117/30 ready=true".to_string(),
+            "ranker_machine=source=history model_family=catboost validation_ready=true active_match_count=7".to_string(),
+        ];
+        let output = DefaultExecutionTreeScorer
+            .score(&ExecutionTreeInput {
+                execution_features: &features,
+                physics_overlay: &overlay,
+                hmm_posterior: &posterior,
+                mece_recovery_confidence: Some(0.97),
+                prediction_vote_score: 0.7,
+                market_state_lineage: None,
+                path_ranker_lineage: Some(&lineage),
+                axial_trace: None,
+            })
+            .unwrap();
+
+        assert!(!output.path_ranker_score_used_by_execution_tree);
+        assert!(!output.path_ranker_score_visible_to_execution_tree);
+        assert_eq!(
+            output.path_ranker_runtime_source.as_deref(),
+            Some("history")
+        );
+        assert_eq!(output.path_ranker_model_family.as_deref(), Some("catboost"));
+        assert!(output.ranker_validation_ready);
+    }
+
+    #[test]
+    fn triage_consumer_reason_merges_market_execution_and_ranker() {
+        let output = ExecutionTreeOutput {
+            gate_status: "ready".to_string(),
+            branch: "fill_viable".to_string(),
+            execution_bias: "aggressive".to_string(),
+            split_reason_lineage: vec![
+                "market_state=primary_regime=TrendExpansion secondary_regime=BullTrendExhaustion overall_confidence=0.553".to_string(),
+            ],
+            path_ranker_runtime_source: Some("registered_artifact".to_string()),
+            path_ranker_model_family: Some("catboost".to_string()),
+            ranker_validation_ready: true,
+            ..ExecutionTreeOutput::default()
+        };
+        let triage = build_execution_triage(&output);
+
+        assert_eq!(
+            triage.consumer_reason,
+            "market_state=TrendExpansion/BullTrendExhaustion | execution=ready/fill_viable/aggressive | ranker=registered_artifact/catboost/ready"
+        );
+    }
+
+    #[test]
+    fn triage_reason_summary_includes_regime_and_ranker_context() {
+        let output = ExecutionTreeOutput {
+            gate_status: "ready".to_string(),
+            branch: "fill_viable".to_string(),
+            execution_bias: "aggressive".to_string(),
+            decision_hint: "execution_first_fill".to_string(),
+            split_reason_lineage: vec![
+                "market_state=primary_regime=TrendExpansion secondary_regime=BullTrendExhaustion overall_confidence=0.553".to_string(),
+                "path_ranker=Ranker runtime: runtime enabled=true ready=true source=registered_artifact status=enabled_registered_artifact_ready mode=prefer_history matches=3".to_string(),
+            ],
+            path_ranker_score_used_by_execution_tree: true,
+            path_ranker_runtime_source: Some("registered_artifact".to_string()),
+            ranker_validation_ready: true,
+            ..ExecutionTreeOutput::default()
+        };
+        let triage = build_execution_triage(&output);
+
+        assert!(triage
+            .reason_summary
+            .iter()
+            .any(|line| line.contains("TrendExpansion")));
+        assert!(triage
+            .reason_summary
+            .iter()
+            .any(|line| line.contains("registered_artifact")));
+    }
+
+    #[test]
     fn triage_one_line_covers_core_fields() {
         let output = ExecutionTreeOutput {
             execution_score: 0.82,
@@ -708,6 +1101,7 @@ mod tests {
             split_reason_lineage: vec![],
             decision_hint: "execution_first_fill".to_string(),
             axial_attention_trace: Vec::new(),
+            ..ExecutionTreeOutput::default()
         };
         let triage = build_execution_triage(&output);
         assert!(triage.one_line.contains("ready"));

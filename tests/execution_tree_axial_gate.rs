@@ -83,6 +83,8 @@ fn force_observe_downgrades_aggressive_fill_to_passive() {
         hmm_posterior: &posterior,
         mece_recovery_confidence: Some(0.97),
         prediction_vote_score: 0.80,
+        market_state_lineage: None,
+        path_ranker_lineage: None,
         axial_trace: Some(&trace),
     };
     let output = DefaultExecutionTreeScorer.score(&input).unwrap();
@@ -113,6 +115,8 @@ fn concentrated_trace_leaves_aggressive_fill_intact() {
         hmm_posterior: &posterior,
         mece_recovery_confidence: Some(0.97),
         prediction_vote_score: 0.80,
+        market_state_lineage: None,
+        path_ranker_lineage: None,
         axial_trace: Some(&trace),
     };
     let output = DefaultExecutionTreeScorer.score(&input).unwrap();
@@ -133,6 +137,8 @@ fn absent_trace_preserves_legacy_behavior() {
         hmm_posterior: &posterior,
         mece_recovery_confidence: Some(0.97),
         prediction_vote_score: 0.80,
+        market_state_lineage: None,
+        path_ranker_lineage: None,
         axial_trace: None,
     };
     let output = DefaultExecutionTreeScorer.score(&input).unwrap();
@@ -154,6 +160,8 @@ fn force_observe_does_not_resurrect_blocked_executions() {
         hmm_posterior: &posterior,
         mece_recovery_confidence: Some(0.97),
         prediction_vote_score: 0.80,
+        market_state_lineage: None,
+        path_ranker_lineage: None,
         axial_trace: Some(&trace),
     };
     let output = DefaultExecutionTreeScorer.score(&input).unwrap();
