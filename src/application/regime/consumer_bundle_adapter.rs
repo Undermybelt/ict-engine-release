@@ -1,7 +1,10 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use crate::state::PreBayesEvidenceFilter;
 
@@ -193,6 +196,93 @@ impl RegimeConsumerBundleAdapter {
             .filter(|value| !value.is_null())
     }
 
+    pub fn path_ranker_branch_paths(&self) -> Vec<String> {
+        let mut seen = BTreeSet::new();
+        let mut paths = Vec::new();
+        let mut push_path = |raw: &str| {
+            let path = raw.trim();
+            if path.is_empty() || !path.contains(" -> ") {
+                return;
+            }
+            if seen.insert(path.to_string()) {
+                paths.push(path.to_string());
+            }
+        };
+
+        if let Some(context) = self
+            .consumer_hints
+            .as_ref()
+            .map(|hints| &hints.path_ranker_context)
+        {
+            for key in [
+                "regime_profit_branch_path",
+                "regime_bundle_branch_path",
+                "selected_regime_profit_branch_path",
+            ] {
+                if let Some(path) = context.get(key).and_then(Value::as_str) {
+                    push_path(path);
+                }
+            }
+            if let Some(items) = context.get("branch_paths").and_then(Value::as_array) {
+                for item in items {
+                    if let Some(path) = item.as_str() {
+                        push_path(path);
+                    }
+                }
+            }
+        }
+        if let Some(items) = self
+            .bbn_evidence_hint()
+            .and_then(|value| value.get("regime_label_set"))
+            .and_then(Value::as_array)
+        {
+            for item in items {
+                if let Some(path) = item.as_str() {
+                    push_path(path);
+                }
+            }
+        }
+        if let Some(decision) = self.latest_decision.as_ref() {
+            for path in &decision.label_set {
+                push_path(path);
+            }
+        }
+        paths
+    }
+
+    pub fn path_ranker_stable_profit_score(&self) -> Option<f64> {
+        self.consumer_hints
+            .as_ref()
+            .and_then(|hints| hints.path_ranker_context.get("stable_profit_score"))
+            .and_then(Value::as_f64)
+            .map(|score| if score > 1.0 { score / 100.0 } else { score }.clamp(0.0, 1.0))
+    }
+
+    pub fn path_ranker_assignment_entries(&self) -> Vec<(String, String)> {
+        let branch_paths = self.path_ranker_branch_paths();
+        let mut entries = Vec::new();
+        if !branch_paths.is_empty() {
+            entries.push((
+                "regime_bundle_branch_paths_json".to_string(),
+                serde_json::to_string(&branch_paths).unwrap_or_else(|_| "[]".to_string()),
+            ));
+            entries.push((
+                "regime_bundle_branch_path_count".to_string(),
+                branch_paths.len().to_string(),
+            ));
+            if let Some(primary_path) = branch_paths.first() {
+                entries.extend(regime_profit_branch_assignment_entries(primary_path));
+            }
+        }
+        if let Some(score) = self.path_ranker_stable_profit_score() {
+            entries.push((
+                "regime_bundle_stable_profit_score".to_string(),
+                format!("{score:.6}"),
+            ));
+        }
+        entries
+    }
+
     pub fn to_read_only_bbn_soft_evidence(&self) -> RegimeReadOnlyBbnSoftEvidence {
         let hint = self.bbn_evidence_hint();
         let decision_state = hint
@@ -331,12 +421,19 @@ impl RegimeConsumerBundleAdapter {
             bbn_trace_entries.join("|")
         ));
         artifact_action_summary.extend(bbn_trace_entries.iter().cloned());
-        pre_bayes_filter.rationale.extend(
-            bbn_trace_entries
-                .iter()
-                .map(|entry| format!("read_only_{entry}")),
-        );
+        self.append_read_only_bbn_filter_diagnostics(pre_bayes_filter);
+    }
+
+    pub fn append_read_only_bbn_filter_diagnostics(
+        &self,
+        pre_bayes_filter: &mut PreBayesEvidenceFilter,
+    ) {
+        let bbn_trace_entries = self.bbn_soft_evidence_trace_entries();
         for entry in bbn_trace_entries {
+            let rationale = format!("read_only_{entry}");
+            if !pre_bayes_filter.rationale.contains(&rationale) {
+                pre_bayes_filter.rationale.push(rationale);
+            }
             if let Some((key, value)) = entry.split_once('=') {
                 pre_bayes_filter
                     .evidence_assignments
@@ -485,21 +582,77 @@ impl RegimeReadOnlyBbnSoftEvidence {
     }
 
     fn bbn_market_regime_label(&self) -> Option<&'static str> {
-        self.label
+        let mut supported_labels = self
+            .label
             .as_deref()
-            .and_then(regime_bundle_label_to_bbn_market_regime)
+            .into_iter()
+            .chain(self.label_set.iter().map(String::as_str))
+            .filter_map(regime_bundle_label_to_bbn_market_regime)
+            .collect::<Vec<_>>();
+        supported_labels.sort_unstable();
+        supported_labels.dedup();
+        match supported_labels.as_slice() {
+            [label] => Some(*label),
+            _ => None,
+        }
     }
 }
 
 fn regime_bundle_label_to_bbn_market_regime(label: &str) -> Option<&'static str> {
-    let primary = label.split('/').next().unwrap_or(label);
+    let primary = label.split('/').next().unwrap_or(label).trim();
+    if primary == "Bull" || primary.starts_with("Bull ->") {
+        return Some("bull");
+    }
+    if primary == "Bear" || primary.starts_with("Bear ->") {
+        return Some("bear");
+    }
+    if primary == "Sideways" || primary.starts_with("Sideways ->") {
+        return Some("range");
+    }
+    if primary == "Crisis" || primary.starts_with("Crisis ->") {
+        return Some("range");
+    }
     match primary {
         "primary::TrendExpansion" | "TrendExpansion" => Some("bull"),
+        "primary::BearReliefCarry" | "BearReliefCarry" => Some("bear"),
         "primary::RangeConsolidation" | "RangeConsolidation" => Some("range"),
         "primary::ExtremeStress" | "ExtremeStress" => Some("range"),
         "primary::ReversalBrewing" | "ReversalBrewing" => Some("range"),
         _ => None,
     }
+}
+
+fn regime_profit_branch_assignment_entries(branch_path: &str) -> Vec<(String, String)> {
+    let segments = branch_path_segments(branch_path);
+    let mut entries = vec![(
+        "regime_profit_branch_path".to_string(),
+        branch_path.to_string(),
+    )];
+    if let Some(main) = segments.first() {
+        entries.push(("parent_regime_root".to_string(), (*main).to_string()));
+        entries.push(("main_regime".to_string(), (*main).to_string()));
+    }
+    if let Some(sub) = segments.get(1) {
+        entries.push(("sub_regime".to_string(), (*sub).to_string()));
+    }
+    if let Some(sub_sub) = segments.get(2) {
+        entries.push((
+            "sub_sub_regime_or_profit_factor".to_string(),
+            (*sub_sub).to_string(),
+        ));
+    }
+    if segments.len() > 3 {
+        entries.push(("profit_factor".to_string(), segments[3..].join(" -> ")));
+    }
+    entries
+}
+
+fn branch_path_segments(branch_path: &str) -> Vec<&str> {
+    branch_path
+        .split(" -> ")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect()
 }
 
 fn market_regime_distribution(selected: &str, weight: f64) -> BTreeMap<String, f64> {

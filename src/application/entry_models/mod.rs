@@ -137,8 +137,10 @@ pub use training_export::{
     policy_training_status_command, register_structural_path_ranking_trainer_artifact_command,
     BreakerRbEntryModelProvider, CisdRbBbnTrainingRow, CisdRbCatBoostTrainingRow,
     CisdRbEntryModelProvider, CisdRbTrainingExportSummary, CisdRbTrainingStatusSurface,
-    PolicyTrainingProviderStatusSurface, PolicyTrainingStatusSurface, CISD_RB_BBN_TRAINING_FILE,
-    CISD_RB_CATBOOST_TRAINING_FILE, CISD_RB_TRAINING_SUMMARY_FILE, POLICY_TRAINING_DIR,
+    FactorCandidatePackTrainingStatusSurface, PolicyTrainingProviderStatusSurface,
+    PolicyTrainingStatusSurface, RegimeConfidenceAssetTrainingStatusSurface,
+    CISD_RB_BBN_TRAINING_FILE, CISD_RB_CATBOOST_TRAINING_FILE, CISD_RB_TRAINING_SUMMARY_FILE,
+    POLICY_TRAINING_DIR,
 };
 
 #[cfg(test)]

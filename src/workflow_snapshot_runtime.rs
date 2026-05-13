@@ -1097,6 +1097,15 @@ pub(crate) fn workflow_phase_snapshot_from_backtest_run(
 pub(crate) fn workflow_phase_snapshot_from_update_run(
     run: &UpdateRunRecord,
 ) -> WorkflowPhaseSnapshot {
+    let structural_feedback_only_pre_bayes_gate = run
+        .consumed_pre_bayes_evidence_filter
+        .is_none()
+        .then_some(run.structural_feedback.as_ref())
+        .flatten()
+        .map(|_| "blocked".to_string());
+    let structural_feedback_only_pre_bayes_policy = structural_feedback_only_pre_bayes_gate
+        .as_ref()
+        .map(|_| "structural-feedback-branch-path-v1".to_string());
     let consumed_bridge_diff = run
         .consumed_pre_bayes_entry_quality_bridge
         .as_ref()
@@ -1150,6 +1159,28 @@ pub(crate) fn workflow_phase_snapshot_from_update_run(
                 .insert("market_regime".to_string(), canonical.probabilities.clone());
         }
     }
+    if let Some(refs) = run
+        .structural_feedback
+        .as_ref()
+        .filter(|_| structural_feedback_only_pre_bayes_gate.as_ref().is_some())
+    {
+        pre_bayes_filtered_assignments
+            .insert("parent_regime_root".to_string(), refs.node_id.clone());
+        pre_bayes_filtered_assignments.insert(
+            "regime_profit_branch_path".to_string(),
+            refs.path_id.clone(),
+        );
+        pre_bayes_filtered_assignments.insert(
+            "pre_bayes_branch_path_gate".to_string(),
+            "blocked_missing_consumed_pre_bayes_filter".to_string(),
+        );
+    }
+    let consumed_or_structural_gate = run
+        .consumed_pre_bayes_evidence_filter
+        .as_ref()
+        .map(|filter| filter.gating_status.clone())
+        .or_else(|| structural_feedback_only_pre_bayes_gate.clone())
+        .unwrap_or_default();
     let mut phase = WorkflowPhaseSnapshot {
         phase: "update".to_string(),
         source_command: run.source_command.clone(),
@@ -1181,10 +1212,7 @@ pub(crate) fn workflow_phase_snapshot_from_update_run(
             run.structural_learning_observation_weight.unwrap_or_default(),
             run.feedback_records_applied,
             run.duplicate_feedback_skipped,
-            run.consumed_pre_bayes_evidence_filter
-                .as_ref()
-                .map(|filter| filter.gating_status.clone())
-                .unwrap_or_default(),
+            consumed_or_structural_gate,
             multi_timeframe_phase_hint(&run.consumed_multi_timeframe_summary)
         ),
         top_actions: workflow_top_actions(&run.agent_action_plan),
@@ -1192,13 +1220,21 @@ pub(crate) fn workflow_phase_snapshot_from_update_run(
             &run.dataset_comparability,
             &run.promotion_decision,
             &run.rollback_recommendation,
-        ),
+        )
+        .into_iter()
+        .chain(
+            structural_feedback_only_pre_bayes_gate
+                .as_ref()
+                .map(|_| "pre_bayes:blocked_missing_consumed_pre_bayes_filter".to_string()),
+        )
+        .collect(),
         selected_direction: None,
         selected_entry_quality: Some(run.normalized_entry_quality.clone()),
         pre_bayes_gate_status: run
             .consumed_pre_bayes_evidence_filter
             .as_ref()
             .map(|filter| filter.gating_status.clone())
+            .or_else(|| structural_feedback_only_pre_bayes_gate.clone())
             .unwrap_or_default(),
         pre_bayes_uses_soft_evidence: run
             .consumed_pre_bayes_evidence_filter
@@ -1209,6 +1245,7 @@ pub(crate) fn workflow_phase_snapshot_from_update_run(
             .consumed_pre_bayes_evidence_filter
             .as_ref()
             .map(|filter| filter.policy.version.clone())
+            .or_else(|| structural_feedback_only_pre_bayes_policy.clone())
             .unwrap_or_default(),
         pre_bayes_evidence_quality_score: run
             .consumed_pre_bayes_evidence_filter
@@ -2392,5 +2429,48 @@ mod tests {
         assert!(snapshot
             .phase_summary
             .contains("regime_bundle_bbn=applied:bull"));
+    }
+
+    #[test]
+    fn update_snapshot_emits_fail_closed_branch_path_pre_bayes_gate() {
+        let branch_path = "Crisis -> CrisisReliefCarry -> StopManagedPanicRecovery -> SourceRootStopCarryLongHorizonV1:crisis_carry_h8_sl048_tp12";
+        let snapshot = workflow_phase_snapshot_from_update_run(&UpdateRunRecord {
+            run_id: "update:branch-feedback".to_string(),
+            source_command: "update".to_string(),
+            structural_feedback: Some(ict_engine::state::StructuralFeedbackRefs {
+                protocol_version: "board-b-source-root-stop-carry-longhorizon/v1".to_string(),
+                recommendation_id: "SourceRootStopCarryLongHorizonV1:crisis".to_string(),
+                recommended_at: "2022-11-07T00:00:00+00:00".to_string(),
+                node_id: "Crisis".to_string(),
+                branch_id: branch_path.to_string(),
+                scenario_id: "CrisisReliefCarry".to_string(),
+                path_id: branch_path.to_string(),
+                followed_path: true,
+                exit_reason: Some("time_stop".to_string()),
+                notes: Some("exact Board B regime_profit_branch_path".to_string()),
+            }),
+            consumed_pre_bayes_evidence_filter: None,
+            ..UpdateRunRecord::default()
+        });
+
+        assert_eq!(snapshot.pre_bayes_gate_status, "blocked");
+        assert_eq!(
+            snapshot.pre_bayes_policy_version,
+            "structural-feedback-branch-path-v1"
+        );
+        assert_eq!(
+            snapshot.pre_bayes_filtered_assignments["regime_profit_branch_path"],
+            branch_path
+        );
+        assert_eq!(
+            snapshot.pre_bayes_filtered_assignments["parent_regime_root"],
+            "Crisis"
+        );
+        assert!(snapshot
+            .risk_flags
+            .contains(&"pre_bayes:blocked_missing_consumed_pre_bayes_filter".to_string()));
+        assert!(snapshot
+            .phase_summary
+            .contains("consumed_pre_bayes_gate_status=blocked"));
     }
 }

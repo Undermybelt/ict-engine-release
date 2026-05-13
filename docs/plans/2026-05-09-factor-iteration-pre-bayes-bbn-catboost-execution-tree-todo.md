@@ -209,16 +209,30 @@ Auto-Quant output must feed two downstream lanes from the same artifact pack:
 
 ### Next Slice
 
-- [ ] Build the next Auto-Quant candidate pack around `regime_label + branch_id`, not around standalone Sharpe.
-- [ ] For the current QQQ anchor, start with `range_choppy / RangeConsolidation + WideRange` and compare:
+- [x] Build the next Auto-Quant candidate pack around `regime_label + branch_id`, not around standalone Sharpe.
+  - evidence: `/tmp/ict-regime-branch-iteration-20260510-1/candidate-pack/`
+  - candidate: `qqq_regime_branch_transition_confirmation_tomac_20260510`
+  - selected strategy: `TomacNQ_KillzoneBreakout`
+  - branch family: `transition_confirmation`
+- [x] For the current QQQ anchor, start with `range_choppy / RangeConsolidation + WideRange` and compare:
   - `range_mean_reversion`
   - `transition_confirmation`
   - `stress_de_risk`
-- [ ] Require each factor result to state which branch it separates and which downstream lane it supports:
+  - evidence: `/tmp/ict-regime-branch-iteration-20260510-1/branch_ranking_rows_qqq_20260510.json`
+  - correction: current provider evidence is split, not a single clean range label:
+    - IBKR: `RangeConsolidation/WideRange`, `observe/transition_guardrail/guarded`
+    - YF: `TrendExpansion/BullTrendAcceleration`, `observe/fill_viable/passive`
+    - TradingViewRemix/MCP: `TrendExpansion/BullTrendAcceleration`, `observe/fill_viable/passive`
+    - Kraken: provider reachability only for `PF_XBTUSD`, not QQQ branch-performance evidence
+- [x] Require each factor result to state which branch it separates and which downstream lane it supports:
   - BBN prior evidence
   - CatBoost branch scoring row
   - both
-- [ ] Export one branch-ranking row set with explicit `market_likelihood_evidence` before calling the loop closed.
+  - evidence: `/tmp/ict-regime-branch-iteration-20260510-1/candidate-pack/factor_expression.json`
+  - evidence: `/tmp/ict-regime-branch-iteration-20260510-1/candidate-pack/factor_eval_grid_summary.json`
+  - evidence: `/tmp/ict-regime-branch-iteration-20260510-1/candidate-pack/transfer_score.json`
+- [x] Export one branch-ranking row set with explicit `market_likelihood_evidence` before calling the loop closed.
+  - evidence: `/tmp/ict-regime-branch-iteration-20260510-1/branch_ranking_rows_qqq_20260510.json`
 - [x] Run the next candidate through the chain in this order, without skipping layers:
   - build/refresh explicit factor candidate artifact
   - check pre-bayes / bridge state from the same `/tmp/...` state
@@ -429,6 +443,316 @@ python3 scripts/research/factor_candidate_pack.py \
 - IBKR: plain repo runtime still lacks `redis`, but local gateway `127.0.0.1:4002` was reachable and an offline-`uv` IBKR SPY 1h fetch succeeded with `160` rows.
 - TradingViewRemix: current process has no `ICT_ENGINE_TVREMIX_MCP_API_KEY`; the `market-data-harness` fetch was attempted and failed at that credential boundary.
 - Rule for the next candidate: do not claim `data_blocked` from one provider; log YF, Kraken, IBKR, TradingViewRemix, local caches, and any reusable auxiliary artifacts separately.
+
+## 2026-05-10 QQQ Regime-Branch Chain Evidence
+
+Run root: `/tmp/ict-regime-branch-iteration-20260510-1`
+
+### Provider / regime root
+
+- YF QQQ 1h fetch and analyze succeeded:
+  - candles: `/tmp/ict-regime-branch-iteration-20260510-1/candles/yf_QQQ_1h.json`
+  - state: `/tmp/ict-regime-branch-iteration-20260510-1/state`
+  - result: `TrendExpansion/BullTrendAcceleration`, `observe/fill_viable/passive`
+- TradingViewRemix/MCP QQQ 1h fetch and analyze succeeded:
+  - candles: `/tmp/ict-regime-branch-iteration-20260510-1/candles/tv_QQQ_1h.json`
+  - state: `/tmp/ict-regime-branch-iteration-20260510-1/state_tv_QQQ_1h`
+  - result: `TrendExpansion/BullTrendAcceleration`, `observe/fill_viable/passive`
+- IBKR QQQ 1h fetch and analyze succeeded through the local gateway:
+  - candles: `/tmp/ict-regime-branch-iteration-20260510-1/candles/ibkr_QQQ_1h.json`
+  - state: `/tmp/ict-regime-branch-iteration-20260510-1/state_ibkr_QQQ_1h`
+  - result: `RangeConsolidation/WideRange`, `observe/transition_guardrail/guarded`
+- Kraken futures fetch succeeded for `PF_XBTUSD`:
+  - candles: `/tmp/ict-regime-branch-iteration-20260510-1/candles/kraken_PF_XBTUSD_1h.json`
+  - interpretation: provider reachability evidence only, not QQQ branch-performance evidence.
+
+Current root is therefore not a single clean `range_choppy` label. It is `range_consolidation_with_provider_disagreement`: IBKR supports the range/guardrail anchor, while YF and TradingView support trend expansion. This disagreement is encoded as `market_likelihood_evidence`, not hidden.
+
+### Auto-Quant candidate and branch rows
+
+- Auto-Quant command evidence:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/10_auto_quant_run_tomac_hist.out`
+  - strategy: `TomacNQ_KillzoneBreakout`
+  - pair: `QQQ/USD`
+  - trades: `74`
+  - total profit: `+6.98%`
+  - Sharpe: `0.2207`
+  - Sortino: `0.3825`
+  - max drawdown: `-4.2049%`
+  - win rate: `52.7027%`
+  - profit factor: `1.2501`
+- Strategy library artifact:
+  - `/tmp/ict-regime-branch-iteration-20260510-1/strategy_library_qqq_tomac_hist.json`
+  - import log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/11_auto_quant_results_import.out`
+  - import result: `n_ok=1`, `matched=1`, `manifest_only=[]`, `log_only=[]`
+- Candidate pack:
+  - `/tmp/ict-regime-branch-iteration-20260510-1/candidate-pack/factor_expression.json`
+  - `/tmp/ict-regime-branch-iteration-20260510-1/candidate-pack/factor_eval_grid_summary.json`
+  - `/tmp/ict-regime-branch-iteration-20260510-1/candidate-pack/transfer_score.json`
+  - aggregate density: `trade_count=74`, label `thin`
+  - transfer status: `single_market_only`, score `0.0`
+- Branch-ranking rows:
+  - `/tmp/ict-regime-branch-iteration-20260510-1/branch_ranking_rows_qqq_20260510.json`
+  - rows:
+    - `range_mean_reversion`: native control evidence only, `volatility_mean_reversion` return `-0.86%`, stopped at `factor_iteration`
+    - `transition_confirmation`: Auto-Quant breakout evidence, positive but weak, stopped at `path_ranking_or_execution_tree_pending`
+    - `stress_de_risk`: provider disagreement + observe/guardrail evidence, stopped at `execution_tree_observe`
+
+Interpretation: the first real Auto-Quant candidate is useful branch evidence for `transition_confirmation`, not proof that `range_mean_reversion` is viable and not a promotable high-Sharpe strategy.
+
+### Pre-Bayes / BBN
+
+- Pre-Bayes command:
+  - `/tmp/ict-regime-branch-iteration-20260510-1/logs/12_pre_bayes_status.out`
+  - result: `gate=pass_neutralized`, `soft_evidence=yes`
+  - bridge: `long=0.551`, `short=0.537`, `mtf=bullish`, `align=1.000`, `entry_align=0.839`
+- BBN dry-run:
+  - `/tmp/ict-regime-branch-iteration-20260510-1/logs/13_auto_quant_prior_init_dry_run.out`
+  - `evidence_value_gate_passed=true`
+  - `n_win=39`, `n_loss=35`, `trade_count=74`
+  - final probabilities preview: `[0.5731664390243902, 0.000002146341463414634, 0.42683141463414637]`
+- BBN apply in isolated `/tmp` state:
+  - `/tmp/ict-regime-branch-iteration-20260510-1/logs/21_auto_quant_prior_init_apply.out`
+  - `dry_run=false`
+  - same final probabilities as preview
+  - artifact: `/tmp/ict-regime-branch-iteration-20260510-1/state/auto-quant/QQQ/auto_quant_prior_init_QQQ_20260510T093548.477591000Z.json`
+
+No `realized_trades.jsonl` was produced in this slice, so `auto-quant-ingest-real-trades` was not run. The BBN evidence here comes from the imported strategy-library aggregate wins/losses, not realized live trades.
+
+### CatBoost / path-ranking / execution tree
+
+- Structural path target export before and after BBN apply stayed at:
+  - logs:
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/14_export_structural_path_ranking_target.out`
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/22_export_structural_path_ranking_target_after_bbn_apply.out`
+  - `rows=3`
+  - `history_rows=3`
+  - `mature_rows=0`
+  - `history_mature_rows=0`
+  - `rows_with_raw_path_score=0`
+  - `rows_with_calibrated_path_prob=0`
+  - `rows_with_training_weight=0`
+- Policy training / CatBoost status:
+  - logs:
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/15_policy_training_status.out`
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/23_policy_training_status_after_bbn_apply.out`
+  - `raw_scored_mature=0/30`
+  - `production_validation=0/30`
+  - `observation_validation=0/30`
+  - `trainer_artifact=missing`
+  - `runtime_selection=disabled`
+  - `score_model_family=unknown`
+
+CatBoost branch score is therefore not available for this run. Do not fabricate it from the weak Auto-Quant Sharpe; the correct stop layer is `stopped_at_path_ranking_validation_floor`.
+
+- Workflow / execution-tree outcome after BBN apply:
+  - `/tmp/ict-regime-branch-iteration-20260510-1/logs/24_workflow_status_after_bbn_apply.out`
+  - `/tmp/ict-regime-branch-iteration-20260510-1/logs/25_workflow_structural_recommended_path_bundle_after_bbn_apply.out`
+  - `/tmp/ict-regime-branch-iteration-20260510-1/logs/26_workflow_ensemble_vote_after_bbn_apply.out`
+  - `workflow-status --human`: `action_blocked`
+  - block: `user_selected_historical_data_missing`
+  - structural path: `trend_follow_through`, `posterior=0.568`, `selected_prob=0.367`
+  - ensemble vote: `action=Observe`, `confidence=0.568`
+  - trace summary: `branch=fill_viable`, `execution_bias=passive`, `gate_status=observe`, `ranker_validation_ready=false`
+
+### Slice verdict
+
+- Real chain order executed:
+  - provider-backed market data
+  - regime inference
+  - regime-rooted branch rows
+  - Auto-Quant backtest evidence
+  - strategy-library import
+  - pre-bayes check
+  - BBN prior preview and apply
+  - structural path target export
+  - policy-training / CatBoost readiness check
+  - workflow-status / execution-tree readback
+- Candidate judgment:
+  - `TomacNQ_KillzoneBreakout` is branch evidence for `transition_confirmation`.
+  - It is not a promoted factor and not a generic high-Sharpe strategy.
+  - `range_mean_reversion` remains unproven for this QQQ slice.
+  - `stress_de_risk` remains live because all workflow surfaces are observe/blocked and providers disagree.
+- Stopping layer:
+  - `stopped_at_path_ranking_validation_floor`
+  - execution tree also remains `observe/action_blocked`
+- Next smallest honest action:
+  - generate more branch-labeled structural feedback rows for the same `regime_label + branch_id` surface, or run additional branch-specific Auto-Quant candidates for `range_mean_reversion_viability` and `stress_de_risk` before attempting CatBoost training.
+
+## 2026-05-10 QQQ Structural Feedback + CatBoost Replay Evidence
+
+Run root: `/tmp/ict-regime-branch-iteration-20260510-1`
+
+### Completion-audit checklist for the user objective
+
+- Named board updated:
+  - target file: `docs/plans/2026-05-09-factor-iteration-pre-bayes-bbn-catboost-execution-tree-todo.md`
+  - status: covered by this section and the prior `2026-05-10 QQQ Regime-Branch Chain Evidence` section.
+- Real provider use:
+  - IBKR: `/tmp/ict-regime-branch-iteration-20260510-1/candles/ibkr_QQQ_1h.json`
+  - TradingViewRemix/MCP: `/tmp/ict-regime-branch-iteration-20260510-1/candles/tv_QQQ_1h.json`
+  - YF: `/tmp/ict-regime-branch-iteration-20260510-1/candles/yf_QQQ_1h.json` and `/tmp/ict-regime-branch-iteration-20260510-1/candles/yf_QQQ_1h_2024_2025.json`
+  - Kraken: `/tmp/ict-regime-branch-iteration-20260510-1/candles/kraken_PF_XBTUSD_1h.json`
+  - status: covered. Kraken remains provider reachability / cross-market evidence, not QQQ branch-performance evidence.
+- Auto-Quant operated:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/10_auto_quant_run_tomac_hist.out`
+  - imported library: `/tmp/ict-regime-branch-iteration-20260510-1/strategy_library_qqq_tomac_hist.json`
+  - status: covered. The imported candidate is branch evidence for `transition_confirmation`, not a promoted high-Sharpe factor.
+- Filter / pre-bayes operated:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/12_pre_bayes_status.out`
+  - status: covered, `gate=pass_neutralized`.
+- BBN operated:
+  - dry-run log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/13_auto_quant_prior_init_dry_run.out`
+  - apply log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/21_auto_quant_prior_init_apply.out`
+  - status: covered, applied once in isolated `/tmp` state.
+- CatBoost operated:
+  - replay target: `/tmp/ict-regime-branch-iteration-20260510-1/structural-replay-qqq-36/state/QQQ/policy_training/structural_path_ranking_target_history.csv`
+  - mature-only trainer input: `/tmp/ict-regime-branch-iteration-20260510-1/structural-replay-qqq-36/state/QQQ/policy_training/structural_path_ranking_target_history_mature_only.csv`
+  - trained model: `/tmp/ict-regime-branch-iteration-20260510-1/catboost-path-ranker-qqq-replay-36-mature-only/catboost_model.cbm`
+  - trainer artifact: `/tmp/ict-regime-branch-iteration-20260510-1/catboost-path-ranker-qqq-replay-36-mature-only/trainer_artifact.json`
+  - status: covered for path-ranking training/runtime eligibility; direct execution-tree trace still does not mark the CatBoost score as visible.
+- Execution tree / workflow operated:
+  - workflow logs:
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/38_workflow_status_after_catboost_enable_qqq.out`
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/42_workflow_status_refresh_after_catboost_enable_qqq.out`
+  - trace summary:
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/46_execution_tree_trace_after_workflow_refresh_qqq.out`
+  - status: covered; final action remains observe/guarded at execution-tree level.
+
+### Structural feedback replay
+
+- Command:
+  - `python3 scripts/auto_quant_external/structural_feedback_replay_harness.py --candles /tmp/ict-regime-branch-iteration-20260510-1/candles/yf_QQQ_1h_2024_2025.json --output-root /tmp/ict-regime-branch-iteration-20260510-1/structural-replay-qqq-36 --symbol QQQ --count 36 --lookback 120 --horizon 16 --threshold 0.001 --prior-state /tmp/ict-regime-branch-iteration-20260510-1/state`
+- Log:
+  - `/tmp/ict-regime-branch-iteration-20260510-1/logs/27_structural_feedback_replay_qqq_36.out`
+- Summary:
+  - observations: `36`
+  - outcomes: `24 win`, `11 loss`, `1 invalidated`
+  - final path from workflow: `range_mean_reversion`
+  - path history: `total=36`, `wins=24`, `losses=11`, `invalidated=1`, `avg_pnl=0.0037`
+- Target export after replay:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/28_export_structural_path_ranking_target_replay_qqq.out`
+  - `history_rows=1375`
+  - `history_mature_rows=1367`
+  - `history_rows_with_raw_path_score=1366`
+  - `history_rows_with_calibrated_path_prob=1366`
+  - `history_rows_with_training_weight=1367`
+- Policy status after replay:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/29_policy_training_status_replay_qqq.out`
+  - `raw_scored_mature=1366/30`
+  - `production_validation=1366/30`
+  - `observation_validation=36/30`
+  - `calibration=evaluated`
+  - `quality_ready=true`
+
+This replay removes the prior `path-ranking_validation_floor` blocker for the replay state.
+
+### CatBoost training and runtime wiring
+
+- Non-authoritative first trainer run:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/30_catboost_path_ranker_train_qqq_replay_36.out`
+  - rejected reason: the unfiltered history CSV contained censored blank labels, and the trainer fell back to pseudo-labels from `structural_baseline_score`.
+  - status: do not use this as CatBoost evidence.
+- Mature-only input:
+  - file: `/tmp/ict-regime-branch-iteration-20260510-1/structural-replay-qqq-36/state/QQQ/policy_training/structural_path_ranking_target_history_mature_only.csv`
+  - rows: `1367`
+  - label counts: `1.0=881`, `0.0=486`
+- Authoritative CatBoost training:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/32_catboost_path_ranker_train_qqq_replay_36_mature_only_offline.out`
+  - model: `/tmp/ict-regime-branch-iteration-20260510-1/catboost-path-ranker-qqq-replay-36-mature-only/catboost_model.cbm`
+  - trained rows: `1367`
+  - label distribution: `0.0=486`, `1.0=881`
+  - feature set: `structural_baseline_score`
+  - note: this is a real CatBoost fit on mature calibrated labels, but the feature set is still thin.
+- Apply current CatBoost scores:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/33_catboost_path_ranker_apply_qqq_current.out`
+  - scores file: `/tmp/ict-regime-branch-iteration-20260510-1/catboost-path-ranker-qqq-replay-36-mature-only/path_scores_catboost_current.csv`
+  - note: the apply helper still prints a label fallback line for the one-row current target; that affects helper diagnostics, not the already-trained model.
+- Import CatBoost scores into ict-engine:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/34_apply_catboost_scores_qqq_replay_state.out`
+- Register trainer artifact:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/35_register_catboost_trainer_artifact_qqq_replay_state.out`
+  - `trainer_artifact_status=runtime_eligible`
+  - `trainer_artifact_model_family=catboost`
+  - `trainer_artifact_trained_rows=1367`
+  - `production_validation_ready=true`
+  - `observation_validation_ready=true`
+- Enable runtime reuse:
+  - logs:
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/36_enable_structural_path_ranking_runtime_qqq_replay_state.out`
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/41_enable_structural_path_ranking_runtime_prefer_history_qqq.out`
+  - final status:
+    - `runtime_selection=enabled_candidate_set_ready`
+    - `runtime_mode=prefer_history`
+    - `runtime_source=candidate_set`
+    - `score_model_family=catboost`
+    - `score_source=external_model`
+    - `runtime_matches=1`
+- Policy status after runtime enable:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/37_policy_training_status_after_runtime_enable_qqq.out`
+  - `raw_scored_mature=1367/30`
+  - `production_validation=1367/30`
+  - `observation_validation=36/30`
+  - `trainer_artifact=ready`
+  - `trainer_status=runtime_eligible`
+  - `runtime_selection=enabled_candidate_set_ready`
+  - `score_model_family=catboost`
+  - `score_source=external_model`
+  - `runtime_matches=1`
+
+### Workflow / execution-tree after CatBoost
+
+- Workflow status after CatBoost runtime enable:
+  - logs:
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/38_workflow_status_after_catboost_enable_qqq.out`
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/42_workflow_status_refresh_after_catboost_enable_qqq.out`
+  - result:
+    - `Block: none`
+    - `Ranker: status=using_candidate_set_scores source=candidate_set applied=1 artifact=0 candidate=1 history=0 lb=0.567 gate=pass`
+    - `Path: ...range_mean_reversion... total=36 wins=24 losses=11 invalidated=1 avg_pnl=0.0037`
+- Structural recommended path:
+  - logs:
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/39_workflow_structural_path_after_catboost_enable_qqq.out`
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/43_workflow_structural_path_refresh_after_catboost_enable_qqq.out`
+  - result:
+    - `range_mean_reversion`
+    - `posterior=0.787`
+    - `selected_prob=1.000`
+- Ensemble vote:
+  - logs:
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/40_workflow_ensemble_after_catboost_enable_qqq.out`
+    - `/tmp/ict-regime-branch-iteration-20260510-1/logs/44_workflow_ensemble_refresh_after_catboost_enable_qqq.out`
+  - result:
+    - `action=favor_mean_reversion_only`
+    - `confidence=0.787`
+- Execution tree trace:
+  - log: `/tmp/ict-regime-branch-iteration-20260510-1/logs/46_execution_tree_trace_after_workflow_refresh_qqq.out`
+  - result:
+    - `branch=transition_guardrail`
+    - `execution_bias=guarded`
+    - `gate_status=observe`
+    - `decision_hint=execution_guarded_due_to_low_remaining_regime_duration`
+    - `ranker_validation_ready=true`
+    - `path_ranker_score_visible_to_execution_tree=false`
+    - `path_ranker_score_used_by_execution_tree=false`
+
+### Updated slice verdict
+
+- The first QQQ slice stopped at `path-ranking_validation_floor`.
+- This replay slice moved past that floor:
+  - structural feedback maturity is ready
+  - CatBoost trained on mature labels
+  - trainer artifact is registered
+  - runtime reuse is enabled
+  - workflow reads ranker support through candidate-set scores
+- New stop layer:
+  - `stopped_at_execution_tree_guardrail_and_trace_visibility_gap`
+- Interpretation:
+  - `range_mean_reversion` now has replay-backed branch evidence in this QQQ state.
+  - This is still retrospective replay evidence, not live production proof.
+  - The direct `execution_tree_trace.json` still does not expose CatBoost as used by the execution tree, even though `policy-training-status` shows `score_model_family=catboost` and workflow ranker support is active.
+- Next honest action:
+  - either inspect/fix the execution-tree trace visibility gap if direct trace consumption is required, or run another provider-backed forward slice to check whether the CatBoost-backed `range_mean_reversion` branch survives outside YF replay.
 
 ## Success Standard
 

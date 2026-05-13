@@ -3,7 +3,10 @@ use anyhow::Result;
 use crate::application::multi_timeframe_inputs::{
     detected_multi_timeframe_clean_root, detected_tomac_root, detected_tomac_root_or_placeholder,
 };
-use crate::application::provider_catalog::provider_status_agent_surface;
+use crate::application::provider_catalog::{
+    load_provider_profile, provider_status_agent_surface, provider_status_surface,
+    ProviderCatalogAgentSurface, ProviderProfileReferenceSurface,
+};
 use crate::state::{
     load_ensemble_executor_scorecards, load_learning_state, load_workflow_snapshot,
     migrate_ensemble_executor_scorecards, recommended_next_command_meta,
@@ -44,6 +47,33 @@ fn hydrate_workflow_snapshot_recommended_next_command_meta(snapshot: &mut Workfl
             &mut phase.recommended_next_command_meta,
         );
     }
+}
+
+fn profile_reference_matches_symbol(
+    profile: &ProviderProfileReferenceSurface,
+    symbol: &str,
+) -> bool {
+    let Ok(document) = load_provider_profile(&profile.selector) else {
+        return false;
+    };
+    document.data_contracts.iter().any(|contract| {
+        contract.symbols.is_empty() || contract.symbols.iter().any(|item| item == symbol)
+    })
+}
+
+fn attach_workflow_opt_in_profile_refs(
+    surface: &mut ProviderCatalogAgentSurface,
+    symbol: &str,
+) -> Result<()> {
+    if surface.selected_profile.is_some() || !surface.available_opt_in_profiles.is_empty() {
+        return Ok(());
+    }
+    surface.available_opt_in_profiles = provider_status_surface(None, None, None)?
+        .available_opt_in_profiles
+        .into_iter()
+        .filter(|profile| profile_reference_matches_symbol(profile, symbol))
+        .collect();
+    Ok(())
 }
 
 pub struct WorkflowStatusCommandInput<'a> {
@@ -94,8 +124,11 @@ where
     let persisted_scorecards =
         load_ensemble_executor_scorecards(state_dir, symbol).unwrap_or_default();
     let learning_state = load_learning_state(state_dir, symbol).unwrap_or_default();
-    let provider_status_agent =
+    let mut provider_status_agent =
         provider_status_agent_surface(None, None, provider_profile).unwrap_or_default();
+    if provider_profile.is_none() {
+        attach_workflow_opt_in_profile_refs(&mut provider_status_agent, symbol)?;
+    }
     let (detected_tomac_root, multi_timeframe_clean_root, tomac_root_placeholder) =
         if provider_status_agent.selected_profile.is_some() {
             let detected_tomac_root = detected_tomac_root();

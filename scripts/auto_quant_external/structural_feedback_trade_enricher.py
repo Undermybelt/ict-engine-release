@@ -76,6 +76,165 @@ def _first_present(row: pd.Series, keys: list[str], default: Any = None) -> Any:
     return default
 
 
+def _clean_text(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _branch_segments(branch_path: str | None) -> list[str]:
+    if not branch_path:
+        return []
+    return [part.strip() for part in branch_path.split(" -> ") if part.strip()]
+
+
+def _branch_path_from_row(row: pd.Series) -> str | None:
+    explicit = _clean_text(_first_present(row, ["regime_profit_branch_path"]))
+    if explicit:
+        return explicit
+    main = _clean_text(_first_present(row, ["main_regime", "parent_regime_root"]))
+    sub = _clean_text(_first_present(row, ["sub_regime"]))
+    sub_sub = _clean_text(_first_present(row, ["sub_sub_regime_or_profit_factor"]))
+    profit = _clean_text(_first_present(row, ["profit_factor"]))
+    if main and sub and sub_sub and profit:
+        return f"{main} -> {sub} -> {sub_sub} -> {profit}"
+    path_id = _clean_text(_first_present(row, ["path_id"]))
+    if path_id and " -> " in path_id:
+        return path_id
+    return None
+
+
+def _is_present(value: Any) -> bool:
+    return value is not None and value != "" and value != [] and value != {}
+
+
+def _branch_path_from_mapping(row: dict[str, Any]) -> str | None:
+    explicit = row.get("regime_profit_branch_path") or row.get("branch_path")
+    if explicit:
+        return str(explicit)
+    main = row.get("main_regime") or row.get("parent_regime_root")
+    sub = row.get("sub_regime")
+    sub_sub = row.get("sub_sub_regime_or_profit_factor")
+    profit = row.get("profit_factor")
+    if main and sub and sub_sub and profit:
+        return f"{main} -> {sub} -> {sub_sub} -> {profit}"
+    return None
+
+
+def _fill_branch_fields(row: dict[str, Any]) -> dict[str, Any]:
+    branch_path = _branch_path_from_mapping(row)
+    if not branch_path:
+        return row
+    parts = _branch_segments(branch_path)
+    row["regime_profit_branch_path"] = branch_path
+    row.setdefault("branch_path", branch_path)
+    if parts:
+        row.setdefault("main_regime", parts[0])
+        row.setdefault("parent_regime_root", parts[0])
+    if len(parts) > 1:
+        row.setdefault("sub_regime", parts[1])
+    if len(parts) > 2:
+        row.setdefault("sub_sub_regime_or_profit_factor", parts[2])
+    if len(parts) > 3:
+        row.setdefault("profit_factor", " -> ".join(parts[3:]))
+    return row
+
+
+def enrich_trade_with_layer_contract(
+    trade: dict[str, Any],
+    *,
+    auto_quant_run_id: str,
+    symbol: str | None = None,
+    provider_provenance: dict[str, Any],
+    pre_bayes_filter_state: dict[str, Any],
+    bbn_posterior: dict[str, Any],
+    catboost_path_ranker_label: dict[str, Any],
+    execution_tree_decision: dict[str, Any],
+    failure_reason: str,
+    quality_weight: float,
+) -> dict[str, Any]:
+    required = {
+        "auto_quant_run_id": auto_quant_run_id,
+        "provider_provenance": provider_provenance,
+        "pre_bayes_filter_state": pre_bayes_filter_state,
+        "bbn_posterior": bbn_posterior,
+        "catboost_path_ranker_label": catboost_path_ranker_label,
+        "execution_tree_decision": execution_tree_decision,
+        "failure_reason": failure_reason,
+        "quality_weight": quality_weight,
+    }
+    missing = [key for key, value in required.items() if not _is_present(value)]
+    if missing:
+        raise ValueError(f"missing layer contract fields: {', '.join(missing)}")
+
+    enriched = dict(trade)
+    enriched["auto_quant_run_id"] = auto_quant_run_id
+    if symbol:
+        enriched["symbol"] = symbol
+    enriched["provider_provenance"] = provider_provenance
+    enriched["pre_bayes_filter_state"] = pre_bayes_filter_state
+    enriched["bbn_posterior"] = bbn_posterior
+    enriched["catboost_path_ranker_label"] = catboost_path_ranker_label
+    enriched["execution_tree_decision"] = execution_tree_decision
+    enriched["failure_reason"] = failure_reason
+    enriched["quality_weight"] = quality_weight
+    enriched["layer_contract_version"] = "board-b-layered-feedback-v1"
+    return _fill_branch_fields(enriched)
+
+
+def _json_arg(value: str) -> dict[str, Any]:
+    path = Path(value)
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    loaded = json.loads(value)
+    if not isinstance(loaded, dict):
+        raise ValueError("JSON argument must decode to an object")
+    return loaded
+
+
+def enrich_real_trades_jsonl_with_layer_contract(
+    *,
+    trades_path: Path,
+    output_path: Path,
+    auto_quant_run_id: str,
+    symbol: str | None,
+    provider_provenance: dict[str, Any],
+    pre_bayes_filter_state: dict[str, Any],
+    bbn_posterior: dict[str, Any],
+    catboost_path_ranker_label: dict[str, Any],
+    execution_tree_decision: dict[str, Any],
+    failure_reason: str,
+    quality_weight: float,
+) -> dict[str, Any]:
+    trades = load_jsonl(trades_path)
+    enriched_rows = [
+        enrich_trade_with_layer_contract(
+            trade,
+            auto_quant_run_id=auto_quant_run_id,
+            symbol=symbol,
+            provider_provenance=provider_provenance,
+            pre_bayes_filter_state=pre_bayes_filter_state,
+            bbn_posterior=bbn_posterior,
+            catboost_path_ranker_label=catboost_path_ranker_label,
+            execution_tree_decision=execution_tree_decision,
+            failure_reason=failure_reason,
+            quality_weight=quality_weight,
+        )
+        for trade in trades
+    ]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        "".join(json.dumps(row, ensure_ascii=True) + "\n" for row in enriched_rows),
+        encoding="utf-8",
+    )
+    return {
+        "total_trades": len(trades),
+        "enriched": len(enriched_rows),
+        "output_path": str(output_path),
+    }
+
+
 def build_structural_feedback_from_target_row(
     row: pd.Series,
     *,
@@ -86,8 +245,29 @@ def build_structural_feedback_from_target_row(
     notes: str = "caller-owned structural feedback probe",
 ) -> dict[str, Any]:
     symbol = str(_first_present(row, ["symbol"], "NQ"))
-    path_id = str(_first_present(row, ["path_id"], "path:unknown"))
-    scenario_id = str(_first_present(row, ["scenario_id"], "scenario:unknown"))
+    branch_path = _branch_path_from_row(row)
+    branch_parts = _branch_segments(branch_path)
+    main_regime = _clean_text(_first_present(row, ["main_regime", "parent_regime_root"]))
+    sub_regime = _clean_text(_first_present(row, ["sub_regime"]))
+    sub_sub_regime = _clean_text(_first_present(row, ["sub_sub_regime_or_profit_factor"]))
+    profit_factor = _clean_text(_first_present(row, ["profit_factor"]))
+    if branch_parts:
+        main_regime = main_regime or branch_parts[0]
+        sub_regime = sub_regime or (branch_parts[1] if len(branch_parts) > 1 else None)
+        sub_sub_regime = sub_sub_regime or (branch_parts[2] if len(branch_parts) > 2 else None)
+        profit_factor = profit_factor or (" -> ".join(branch_parts[3:]) if len(branch_parts) > 3 else None)
+
+    path_id = branch_path or str(_first_present(row, ["path_id"], "path:unknown"))
+    branch_id = (
+        f"{main_regime} -> {sub_regime}"
+        if main_regime and sub_regime
+        else f"{symbol}:path_ranker:{_first_present(row, ['path_label'], 'unknown')}"
+    )
+    scenario_id = (
+        f"{branch_id} -> {sub_sub_regime}"
+        if main_regime and sub_regime and sub_sub_regime
+        else str(_first_present(row, ["scenario_id"], "scenario:unknown"))
+    )
     path_label = str(_first_present(row, ["path_label"], "unknown"))
     candidate_set_id = str(_first_present(row, ["candidate_set_id"], "structural-candidates:unknown"))
     recommended_at = str(
@@ -107,13 +287,13 @@ def build_structural_feedback_from_target_row(
     raw_path_score = float(_first_present(row, ["raw_path_score", "structural_baseline_score"], selected_probability))
     current_posterior = float(_first_present(row, ["current_posterior"], selected_probability))
 
-    return {
+    payload = {
         "protocol_version": "structural-feedback-v1",
         "recommendation_id": f"structural-feedback:{symbol}:{candidate_set_id}:{path_id}",
         "recommended_at": recommended_at,
         "symbol": symbol,
-        "node_id": str(_first_present(row, ["regime_calibration_bucket"], f"{symbol}:belief_regime_node:unknown")),
-        "branch_id": f"{symbol}:path_ranker:{path_label}",
+        "node_id": main_regime or str(_first_present(row, ["regime_calibration_bucket"], f"{symbol}:belief_regime_node:unknown")),
+        "branch_id": branch_id,
         "scenario_id": scenario_id,
         "path_id": path_id,
         "direction": str(_first_present(row, ["direction"], "Observe")),
@@ -141,6 +321,18 @@ def build_structural_feedback_from_target_row(
             "uncertainty": max(0.0, 1.0 - abs(selected_probability - 0.5) * 2.0),
         },
     }
+    if branch_path:
+        payload.update(
+            {
+                "regime_profit_branch_path": branch_path,
+                "parent_regime_root": main_regime,
+                "main_regime": main_regime,
+                "sub_regime": sub_regime,
+                "sub_sub_regime_or_profit_factor": sub_sub_regime,
+                "profit_factor": profit_factor,
+            }
+        )
+    return payload
 
 
 def emit_structural_feedback_probe(
@@ -191,6 +383,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     enrich.add_argument("--pending-update-history", required=True)
     enrich.add_argument("--output", required=True)
 
+    layer = subparsers.add_parser("enrich-layer-contract")
+    layer.add_argument("--trades", required=True)
+    layer.add_argument("--output", required=True)
+    layer.add_argument("--auto-quant-run-id", required=True)
+    layer.add_argument("--symbol")
+    layer.add_argument("--provider-provenance-json", required=True)
+    layer.add_argument("--pre-bayes-filter-state-json", required=True)
+    layer.add_argument("--bbn-posterior-json", required=True)
+    layer.add_argument("--catboost-path-ranker-label-json", required=True)
+    layer.add_argument("--execution-tree-decision-json", required=True)
+    layer.add_argument("--failure-reason", required=True)
+    layer.add_argument("--quality-weight", type=float, required=True)
+
     probe = subparsers.add_parser("emit-probe")
     probe.add_argument("--target-csv", required=True)
     probe.add_argument("--output", required=True)
@@ -211,6 +416,20 @@ def main(argv: list[str] | None = None) -> int:
             trades_path=Path(args.trades),
             pending_update_history_path=Path(args.pending_update_history),
             output_path=Path(args.output),
+        )
+    elif args.command == "enrich-layer-contract":
+        summary = enrich_real_trades_jsonl_with_layer_contract(
+            trades_path=Path(args.trades),
+            output_path=Path(args.output),
+            auto_quant_run_id=args.auto_quant_run_id,
+            symbol=args.symbol,
+            provider_provenance=_json_arg(args.provider_provenance_json),
+            pre_bayes_filter_state=_json_arg(args.pre_bayes_filter_state_json),
+            bbn_posterior=_json_arg(args.bbn_posterior_json),
+            catboost_path_ranker_label=_json_arg(args.catboost_path_ranker_label_json),
+            execution_tree_decision=_json_arg(args.execution_tree_decision_json),
+            failure_reason=args.failure_reason,
+            quality_weight=args.quality_weight,
         )
     else:
         summary = emit_structural_feedback_probe(

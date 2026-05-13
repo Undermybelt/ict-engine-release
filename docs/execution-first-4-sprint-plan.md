@@ -90,7 +90,7 @@ pub struct ExecutionArtifact {
 ```
 
 集成点：
-- `CatBoost/XGBoost voting` 之后
+- `CatBoost voting` 之后
 - `reflection_bundle` 生成之前
 - `workflow_snapshot` 写盘之前
 
@@ -367,7 +367,7 @@ fn hmm_viterbi_mece_recovery_stays_above_threshold() {
 ### 具体怎么做
 
 #### 1. Execution Score + physics features 全部喂入 voting
-现有 `CatBoost/XGBoost voting` 后面不再只看 prediction-family features。
+现有 `CatBoost voting` 后面不再只看 prediction-family features。
 新增统一输入面：
 - execution features
 - OU metrics

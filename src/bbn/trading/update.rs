@@ -19,11 +19,20 @@ pub fn apply_family_overlay_from_filter(
     network: &mut BayesianNetwork,
     filter: &PreBayesEvidenceFilter,
 ) -> Result<bool> {
+    let search_paths = logic_family_overlay_search_paths();
+    apply_family_overlay_from_filter_with_paths(network, filter, &search_paths)
+}
+
+fn apply_family_overlay_from_filter_with_paths(
+    network: &mut BayesianNetwork,
+    filter: &PreBayesEvidenceFilter,
+    search_paths: &[PathBuf],
+) -> Result<bool> {
     let Some(family) = filter.logic_family.as_deref() else {
         return Ok(false);
     };
-    for path in logic_family_overlay_search_paths() {
-        if let Ok(overlays) = load_logic_family_overlays(&path) {
+    for path in search_paths {
+        if let Ok(overlays) = load_logic_family_overlays(path) {
             return apply_trading_cpt_family_overlay(network, &overlays, family);
         }
     }
@@ -288,6 +297,13 @@ mod tests {
     use super::*;
     use crate::bbn::trading::topology::build_trading_network;
     use crate::state::PreBayesEvidenceFilter;
+    use std::path::PathBuf;
+
+    fn policy_training_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/policy_training")
+            .join(name)
+    }
 
     #[test]
     fn inference_smoke_test_with_loaded_tomac_cpt() {
@@ -334,7 +350,11 @@ mod tests {
             logic_family: Some("purified_sweep".to_string()),
             ..PreBayesEvidenceFilter::default()
         };
-        let applied = apply_family_overlay_from_filter(&mut network, &filter).unwrap();
+        let paths = [policy_training_fixture(
+            "repo_bbn_logic_family_overlays.json",
+        )];
+        let applied =
+            apply_family_overlay_from_filter_with_paths(&mut network, &filter, &paths).unwrap();
         assert!(applied);
 
         let after = infer_trade_outcome(&network, &evidence).unwrap();

@@ -1,7 +1,7 @@
-**✅ ICT 完整入场形态决策树（专为 `ict-engine` 的 CatBoost/XGBoost 执行层设计）**
+**✅ ICT 完整入场形态决策树（专为 `ict-engine` 的 CatBoost 执行层设计）**
 
 以下是我根据 ICT 核心 PD Array（Price Delivery Array / Premium-Discount Array）完整清单 + 主流入场模型，**纯推演**出的**树状执行逻辑**。  
-结构完全适配 CatBoost/XGBoost 的 leaf-wise 分裂逻辑：  
+结构完全适配 CatBoost 的 leaf-wise 分裂逻辑：
 - **特征节点**：PDA 类型、Signal Bar 是否出现、是否 overlap（PDA 与 Signal K 同时/重叠出现）、背景条件（liquidity sweep、时间窗口、更高 TF 结构）。  
 - **叶子节点**：具体执行动作（limit order 挂单价位、预期回踩、SL、TP）。  
 - 所有分支都遵循 ICT 黄金规则：**只在正确阵列（Discount 买 / Premium 卖）交易**，并结合更高 TF bias。
@@ -13,7 +13,7 @@
 
 ---
 
-### **分支 1：PDA 类型检测（CatBoost/XGBoost 第一层分裂）**
+### **分支 1：PDA 类型检测（CatBoost 第一层分裂）**
 
 #### 1.1 PDA = **Order Block (OB)**（最高优先级 PD Array）
 - **背景**：更高 TF 趋势一致 + 最近有 liquidity sweep（止损猎杀）
@@ -26,7 +26,7 @@
     执行：Signal K 收盘后 **市价入场** 或 aggressive Buy Stop 挂在 Signal K 高点上方  
     SL：OB 低点下方  
     TP：同上
-- **额外子分支**（XGBoost 可继续分裂）：是否有 Reclaimed OB / Hidden OB → 优先级更高，SL 收紧至 Hidden OB 边缘
+- **额外子分支**（CatBoost 当前执行层继续分裂）：是否有 Reclaimed OB / Hidden OB → 优先级更高，SL 收紧至 Hidden OB 边缘
 
 #### 1.2 PDA = **Fair Value Gap (FVG / BISI / SIBI)**
 - **背景**：价格快速位移后形成 inefficiency + 趋势一致
@@ -98,7 +98,7 @@
 
 ---
 
-### **CatBoost/XGBoost 可直接使用的特征分裂建议（便于你直接嵌入 voting layer）**
+### **CatBoost 可直接使用的特征分裂建议（便于你直接嵌入 voting layer）**
 1. `has_PDA_OB` / `has_PDA_FVG` / `has_PDA_Breaker`（one-hot）
 2. `signal_bar_present`（0/1）
 3. `pda_signal_overlap`（0/1）← 核心分裂节点
@@ -112,7 +112,7 @@
 - `Long_Limit_OB` / `Short_Limit_FVG` / `Aggressive_Market_Entry` / `Wait_For_Pullback`
 - 回归头：`entry_price_offset`、`sl_distance`、`tp_rr_ratio`
 
-这样你的 **HMM posterior → CatBoost/XGBoost voting** 就能直接输出 **reflection_bundle** 里的可解释执行指令（“PDA=OB + overlap=1 → Limit @ 1.0850, SL 1.0840, TP 1.0920”），同时保持 artifact ledger 可追踪。
+这样你的 **HMM posterior → CatBoost voting** 就能直接输出 **reflection_bundle** 里的可解释执行指令（“PDA=OB + overlap=1 → Limit @ 1.0850, SL 1.0840, TP 1.0920”），同时保持 artifact ledger 可追踪。
 
 这个树已经覆盖 ICT 所有主流 PD Array + 入场模型（包括 Hidden OB、IFVG、Volume Imbalance 等子类型），可直接作为 `factor-research` / `update` 命令的执行层 schema 使用。  
 
@@ -123,7 +123,7 @@
 我**不再用模糊描述**，而是：
 
 - **先给一个假设的 OHLCV 序列示例**（10 根 K 线，具体数值，便于你直接复制测试）
-- **再给出 Rust + Python 的完整定义 + 检测条件**（条件全部基于 OHLCV 量化规则，可直接放进你的 `factor-research` 或 `ICTFeatures` 里喂给 CatBoost/XGBoost）
+- **再给出 Rust + Python 的完整定义 + 检测条件**（条件全部基于 OHLCV 量化规则，可直接放进你的 `factor-research` 或 `ICTFeatures` 里喂给 CatBoost）
 - 每个 PDA 都写成**可执行的检测逻辑**，其他类型可举一反三
 
 ### 1. 假设的 OHLCV 示例数据（方便你直接测试）
@@ -320,6 +320,6 @@ def detect_pda(candles: list[Candle], index: int) -> Optional[Tuple[PDArrayType,
 
 这些规则**全部基于真实 ICT 社区的量化实现**（3 根 K 线不重叠、最后反向蜡烛、位移比例、成交量倍数等），可直接嵌入你的 `ICTFeatures`、`PDASetup` 和执行树 voting layer。
 
-现在你的 CatBoost/XGBoost 就能用 `detect_pda(...)` 自动生成特征（`has_order_block`、`fvg_gap_size`、`volume_imbalance_ratio` 等），**reflection_bundle** 里也会直接输出“PDA=OrderBlock @ 1.0800-1.0790”这种可读结果。
+现在你的 CatBoost 就能用 `detect_pda(...)` 自动生成特征（`has_order_block`、`fvg_gap_size`、`volume_imbalance_ratio` 等），**reflection_bundle** 里也会直接输出“PDA=OrderBlock @ 1.0800-1.0790”这种可读结果。
 
 需要我再给你**「完整 ICTFeatures 自动生成函数」**（把上面 detect 全部跑一遍，返回 Vec<PDASetup>），随时说。

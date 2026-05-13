@@ -12,7 +12,7 @@
       "label": "Tomac cleaned multi-timeframe futures root",
       "symbols": ["NQ"],
       "timeframes": ["1d", "1h", "15m"],
-      "path_hint": "/Users/thrill3r/Downloads/Tomac/ict-cleaned-mtf",
+      "path_hint": "<cleaned-mtf-root>",
       "notes": [
         "Optional deeper drill-down uses 5m and 1m if available."
       ]

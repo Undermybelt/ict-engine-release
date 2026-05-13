@@ -17,6 +17,13 @@ fn trading_cpt_init_search_paths() -> Vec<PathBuf> {
 }
 
 pub fn build_trading_network() -> Result<BayesianNetwork> {
+    let search_paths = trading_cpt_init_search_paths();
+    build_trading_network_with_cpt_search_paths(&search_paths)
+}
+
+fn build_trading_network_with_cpt_search_paths(
+    search_paths: &[PathBuf],
+) -> Result<BayesianNetwork> {
     let mut network = BayesianNetwork::new();
 
     let nodes = vec![
@@ -86,8 +93,8 @@ pub fn build_trading_network() -> Result<BayesianNetwork> {
     populate_entry_quality_cpt(&mut network, None)?;
     populate_trade_outcome_cpt(&mut network, None)?;
 
-    for path in trading_cpt_init_search_paths() {
-        if let Ok(init) = load_trading_cpt_init(&path) {
+    for path in search_paths {
+        if let Ok(init) = load_trading_cpt_init(path) {
             apply_trading_cpt_init(&mut network, &init)?;
             break;
         }
@@ -380,6 +387,12 @@ fn normalize(values: &mut [f64]) {
 mod tests {
     use super::*;
 
+    fn policy_training_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/policy_training")
+            .join(name)
+    }
+
     #[test]
     fn test_build_trading_network_includes_factor_nodes() {
         let network = build_trading_network().unwrap();
@@ -407,7 +420,11 @@ mod tests {
 
     #[test]
     fn test_trading_network_prefers_smoothed_tomac_cpt_when_available() {
-        let network = build_trading_network().unwrap();
+        let paths = [
+            policy_training_fixture("repo_bbn_trading_cpt_init_smoothed.json"),
+            policy_training_fixture("repo_bbn_trading_cpt_init.json"),
+        ];
+        let network = build_trading_network_with_cpt_search_paths(&paths).unwrap();
         let trade_outcome = network.nodes.get("trade_outcome").unwrap();
         let high = trade_outcome.cpt.get(&vec![0, 0, 0]).unwrap();
         assert!(high[0] < 1.0);

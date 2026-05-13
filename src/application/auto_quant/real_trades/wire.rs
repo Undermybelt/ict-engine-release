@@ -50,6 +50,16 @@ pub struct RealTradeRecord {
     pub model_probabilities_before_trade: Option<RealTradeProbabilitySnapshot>,
     #[serde(default)]
     pub structural_feedback: Option<RealTradeStructuralFeedbackRefs>,
+    #[serde(default)]
+    pub regime_profit_branch_path: Option<String>,
+    #[serde(default)]
+    pub main_regime: Option<String>,
+    #[serde(default)]
+    pub sub_regime: Option<String>,
+    #[serde(default)]
+    pub sub_sub_regime_or_profit_factor: Option<String>,
+    #[serde(default)]
+    pub profit_factor: Option<String>,
 }
 
 /// Per-factor diagnostic captured at trade entry. Mirrors the
@@ -138,6 +148,10 @@ impl RealTradeRecord {
     /// Convert this validated record into a [`FeedbackRecord`] ready
     /// for `apply_feedback_to_trade_outcome_network`.
     pub fn into_feedback_record(self, source: &str) -> FeedbackRecord {
+        let record_level_branch_path = self.record_level_branch_path();
+        let synthetic_structural_feedback = record_level_branch_path
+            .as_ref()
+            .map(|branch_path| self.synthetic_structural_feedback_refs(branch_path));
         let realized_outcome = self
             .realized_outcome
             .clone()
@@ -149,11 +163,14 @@ impl RealTradeRecord {
         );
         let _entry_quality =
             normalize_entry_quality_label(self.entry_signal.as_deref().unwrap_or("medium"));
-        let factors_used = self
+        let mut factors_used = self
             .factors_used
             .into_iter()
             .map(|f| f.into_feedback_factor_usage())
             .collect::<Vec<_>>();
+        if let Some(branch_path) = record_level_branch_path.as_ref() {
+            push_branch_path_factor_usage(&mut factors_used, branch_path, &self.direction);
+        }
         let model = match self.model_probabilities_before_trade {
             Some(snap) => snap.into_model_probability_snapshot(),
             None => ModelProbabilitySnapshot {
@@ -184,10 +201,116 @@ impl RealTradeRecord {
             regime_at_entry,
             structural_feedback: self
                 .structural_feedback
-                .map(|refs| refs.into_structural_feedback_refs()),
+                .map(|refs| refs.into_structural_feedback_refs())
+                .or(synthetic_structural_feedback),
             reflection_mismatch_tags: Vec::new(),
         }
     }
+
+    fn record_level_branch_path(&self) -> Option<String> {
+        self.regime_profit_branch_path
+            .as_deref()
+            .and_then(non_empty)
+            .map(ToString::to_string)
+            .or_else(|| {
+                let main = self.main_regime.as_deref().and_then(non_empty)?;
+                let sub = self.sub_regime.as_deref().and_then(non_empty)?;
+                let sub_sub = self
+                    .sub_sub_regime_or_profit_factor
+                    .as_deref()
+                    .and_then(non_empty)?;
+                let profit = self.profit_factor.as_deref().and_then(non_empty)?;
+                Some(format!("{main} -> {sub} -> {sub_sub} -> {profit}"))
+            })
+    }
+
+    fn synthetic_structural_feedback_refs(
+        &self,
+        branch_path: &str,
+    ) -> crate::state::StructuralFeedbackRefs {
+        let path_segments = branch_path_segments(branch_path);
+        let main = self
+            .main_regime
+            .as_deref()
+            .and_then(non_empty)
+            .or_else(|| path_segments.first().copied())
+            .unwrap_or("unknown");
+        let sub = self
+            .sub_regime
+            .as_deref()
+            .and_then(non_empty)
+            .or_else(|| path_segments.get(1).copied());
+        let sub_sub = self
+            .sub_sub_regime_or_profit_factor
+            .as_deref()
+            .and_then(non_empty)
+            .or_else(|| path_segments.get(2).copied());
+        let branch_id = sub
+            .map(|sub| format!("{main} -> {sub}"))
+            .unwrap_or_else(|| main.to_string());
+        let scenario_id = sub_sub
+            .map(|sub_sub| format!("{branch_id} -> {sub_sub}"))
+            .unwrap_or_else(|| branch_id.clone());
+
+        crate::state::StructuralFeedbackRefs {
+            protocol_version: "structural-feedback-v1".to_string(),
+            recommendation_id: format!(
+                "auto-quant-real-trade-branch:{}:{}",
+                self.symbol, self.trade_id
+            ),
+            recommended_at: ms_to_utc(self.open_ts_ms).to_rfc3339(),
+            node_id: main.to_string(),
+            branch_id,
+            scenario_id,
+            path_id: branch_path.to_string(),
+            followed_path: true,
+            exit_reason: self.realized_outcome.clone(),
+            notes: Some("record_level_regime_profit_branch_path".to_string()),
+        }
+    }
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn branch_path_segments(branch_path: &str) -> Vec<&str> {
+    branch_path.split(" -> ").filter_map(non_empty).collect()
+}
+
+fn push_branch_path_factor_usage(
+    factors_used: &mut Vec<FeedbackFactorUsage>,
+    branch_path: &str,
+    trade_direction: &str,
+) {
+    if factors_used.iter().any(|factor| {
+        factor.category == "regime_profit_branch_path" && factor.factor_name == branch_path
+    }) {
+        return;
+    }
+    let direction = normalize_direction_label(trade_direction);
+    let long_support = if direction == Direction::Bull {
+        1.0
+    } else {
+        0.0
+    };
+    let short_support = if direction == Direction::Bear {
+        1.0
+    } else {
+        0.0
+    };
+    factors_used.push(FeedbackFactorUsage {
+        factor_name: branch_path.to_string(),
+        category: "regime_profit_branch_path".to_string(),
+        direction,
+        value: 1.0,
+        confidence: 1.0,
+        weight: 1.0,
+        long_support,
+        short_support,
+        uncertainty_contribution: 0.0,
+    });
 }
 
 impl RealTradeFactorUsage {
@@ -355,6 +478,11 @@ mod tests {
                 uncertainty: 0.18,
             }),
             structural_feedback: None,
+            regime_profit_branch_path: None,
+            main_regime: None,
+            sub_regime: None,
+            sub_sub_regime_or_profit_factor: None,
+            profit_factor: None,
         }
     }
 
@@ -456,5 +584,83 @@ mod tests {
         assert_eq!(refs.path_id, "path-1");
         assert!(refs.followed_path);
         assert_eq!(refs.exit_reason.as_deref(), Some("target_hit"));
+    }
+
+    #[test]
+    fn record_level_regime_profit_branch_path_becomes_structural_feedback_and_factor_usage() {
+        let branch_path = "Crisis -> ExtremeStress -> NQFlushRebound -> NQRootAdaptiveCostCrisisRepairV3:crisis_flush_rebound_h72";
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "symbol": "NQ",
+            "trade_id": "t-branch-1",
+            "strategy_name": "NQRootAdaptiveCostCrisisRepairV3_Crisis",
+            "strategy_mutation_id": "m-branch-1",
+            "auto_quant_run_id": "run-branch-1",
+            "open_ts_ms": 1745423100000_i64,
+            "close_ts_ms": 1745427900000_i64,
+            "direction": "Bull",
+            "pnl": 0.0123,
+            "realized_outcome": "win",
+            "regime_at_entry": "Crisis",
+            "entry_signal": "strong_buy",
+            "regime_profit_branch_path": branch_path,
+            "main_regime": "Crisis",
+            "sub_regime": "ExtremeStress",
+            "sub_sub_regime_or_profit_factor": "NQFlushRebound",
+            "profit_factor": "NQRootAdaptiveCostCrisisRepairV3:crisis_flush_rebound_h72",
+            "factors_used": []
+        })
+        .to_string();
+        let record: RealTradeRecord = serde_json::from_str(&raw).unwrap();
+
+        let feedback = record.into_feedback_record("auto_quant_real_trades");
+
+        let refs = feedback
+            .structural_feedback
+            .expect("record-level branch path should synthesize structural feedback refs");
+        assert_eq!(refs.path_id, branch_path);
+        assert_eq!(refs.node_id, "Crisis");
+        assert_eq!(refs.branch_id, "Crisis -> ExtremeStress");
+        assert!(refs.followed_path);
+        assert!(feedback.factors_used.iter().any(|factor| {
+            factor.category == "regime_profit_branch_path" && factor.factor_name == branch_path
+        }));
+    }
+
+    #[test]
+    fn explicit_regime_profit_branch_path_recovers_structural_segments_without_split_fields() {
+        let branch_path = "Bear -> BearMarketDrawdown -> NQHighVixOversoldRebound -> NQRootAdaptiveCostCrisisRepairV3:bear_oversold_high_vix_rebound_h72";
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "symbol": "NQ",
+            "trade_id": "t-branch-2",
+            "strategy_name": "NQRootAdaptiveCostCrisisRepairV3_Bear",
+            "strategy_mutation_id": "m-branch-2",
+            "auto_quant_run_id": "run-branch-2",
+            "open_ts_ms": 1745423100000_i64,
+            "close_ts_ms": 1745427900000_i64,
+            "direction": "Bear",
+            "pnl": 0.0081,
+            "realized_outcome": "win",
+            "regime_at_entry": "Bear",
+            "entry_signal": "strong_sell",
+            "regime_profit_branch_path": branch_path,
+            "factors_used": []
+        })
+        .to_string();
+        let record: RealTradeRecord = serde_json::from_str(&raw).unwrap();
+
+        let feedback = record.into_feedback_record("auto_quant_real_trades");
+
+        let refs = feedback
+            .structural_feedback
+            .expect("record-level branch path should synthesize structural feedback refs");
+        assert_eq!(refs.node_id, "Bear");
+        assert_eq!(refs.branch_id, "Bear -> BearMarketDrawdown");
+        assert_eq!(
+            refs.scenario_id,
+            "Bear -> BearMarketDrawdown -> NQHighVixOversoldRebound"
+        );
+        assert_eq!(refs.path_id, branch_path);
     }
 }

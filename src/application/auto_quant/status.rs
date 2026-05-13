@@ -2,15 +2,13 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use super::config::{default_config, load_config};
+use super::config::resolved_config;
 use super::health::{required_files, verify_checkout};
 use super::repo_manager::{current_commit, is_git_repo, upstream_commit};
 use super::types::AutoQuantDependencyStatus;
 
 pub fn auto_quant_status(state_dir: &str) -> Result<AutoQuantDependencyStatus> {
-    let config = load_config(state_dir)?;
-    let config_present = config.is_some();
-    let config = config.unwrap_or_else(|| default_config(state_dir));
+    let (config_present, config) = resolved_config(state_dir)?;
     let managed_dir = PathBuf::from(&config.managed_dir);
     let managed_repo_present = managed_dir.exists() && is_git_repo(&managed_dir);
     let bootstrap_needed = !managed_repo_present;

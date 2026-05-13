@@ -7,8 +7,7 @@ Priority order:
 2. `evidence-quality-breakdown`
 3. script family convergence + archive legacy scripts
 4. paired-data admission gate / quality report
-5. XGBoost skipped by user decision
-
+5.
 ## 1. research-verdict
 
 Purpose:

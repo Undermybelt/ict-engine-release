@@ -206,7 +206,7 @@
   - `ExecutionTreeOutput`: `execution_score` / `branch` / `execution_bias` / `gate_status`。
   - `DefaultExecutionTreeScorer` impl：Bayesian Decision Tree 风格，记录 branch probability / posterior uncertainty / split reason lineage。
 - 产物：`state/<SYMBOL>/execution_tree_trace.json` + `execution_tree_artifact` kind。
-- 集成点：CatBoost/XGBoost voting 之后、`reflection_bundle` 之前、`workflow_snapshot` 写盘之前。
+- 集成点：CatBoost voting 之后、`reflection_bundle` 之前、`workflow_snapshot` 写盘之前。
 
 #### 3.2 SHAP → `reflection_bundle`
 - `struct ExecutionShapAttribution { feature, contribution, feature_value }`

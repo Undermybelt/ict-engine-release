@@ -179,6 +179,86 @@ class StructuralFeedbackEnricherTests(unittest.TestCase):
             self.assertEqual(payload["realized_outcome"], "win")
             self.assertEqual(payload["model_probabilities_before_trade"]["selected_probability"], 0.37)
 
+    def test_emit_structural_feedback_probe_prefers_explicit_branch_path_fields(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            target_csv = tmp / "target.csv"
+            output_path = tmp / "feedback.json"
+            branch_path = "Bull -> ProviderTrend -> EmaRsiContinuation -> ProviderBtcEmaRsiHold12"
+            target_csv.write_text(
+                "symbol,candidate_set_id,candidate_set_size,rank,path_id,regime_profit_branch_path,main_regime,sub_regime,sub_sub_regime_or_profit_factor,profit_factor,direction,generated_at,behavior_policy_probability,current_posterior,raw_path_score\n"
+                f"NQ,set-1,3,1,path:scenario:generic,{branch_path},Bull,ProviderTrend,EmaRsiContinuation,ProviderBtcEmaRsiHold12,Bull,2026-05-09T00:00:00Z,0.37,0.46,0.47\n",
+                encoding="utf-8",
+            )
+
+            enricher.emit_structural_feedback_probe(
+                target_csv=target_csv,
+                output_path=output_path,
+                realized_outcome="win",
+                pnl=0.03,
+            )
+
+            payload = __import__("json").loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["path_id"], branch_path)
+            self.assertEqual(payload["regime_profit_branch_path"], branch_path)
+            self.assertEqual(payload["main_regime"], "Bull")
+            self.assertEqual(payload["sub_regime"], "ProviderTrend")
+            self.assertEqual(payload["sub_sub_regime_or_profit_factor"], "EmaRsiContinuation")
+            self.assertEqual(payload["profit_factor"], "ProviderBtcEmaRsiHold12")
+            self.assertEqual(payload["branch_id"], "Bull -> ProviderTrend")
+            self.assertEqual(payload["scenario_id"], "Bull -> ProviderTrend -> EmaRsiContinuation")
+
+    def test_layer_contract_enrichment_overrides_stale_source_and_keeps_branch(self) -> None:
+        trade = {
+            "schema_version": "1.0",
+            "symbol": "B2R_YAHOO_BTC_PULLBACK_PRECISION_104902",
+            "trade_id": "trade-1",
+            "strategy_name": "ProviderCryptoMomentumStateV1",
+            "auto_quant_run_id": "stale-run",
+            "open_ts_ms": 1,
+            "close_ts_ms": 2,
+            "direction": "Bull",
+            "pnl": 0.01,
+            "realized_outcome": "win",
+            "regime_profit_branch_path": "Bull -> ProviderCryptoMomentum -> RsiMidlineExpansion -> ProviderCryptoMomentumStateV1",
+        }
+
+        enriched = enricher.enrich_trade_with_layer_contract(
+            trade,
+            auto_quant_run_id="20260512T115700+0800-codex-same-root-six-provider-1h-aq-v1",
+            symbol="BTC_USDT",
+            provider_provenance={
+                "provider": "yfinance",
+                "provider_symbol": "BTC-USD",
+                "timeframe": "1h",
+                "source_csv": "provider-csv/yfinance_btc_usd_1h.csv",
+            },
+            pre_bayes_filter_state={"gate": "pass_neutralized", "canonical_regime": "range"},
+            bbn_posterior={"canonical_regime": "range", "confidence": 0.52},
+            catboost_path_ranker_label={"score_model_family": "catboost", "label": "observed_win"},
+            execution_tree_decision={"ready": False, "actionable": False, "review": "observe"},
+            failure_reason="execution_tree_observe_only",
+            quality_weight=0.25,
+        )
+
+        self.assertEqual(
+            enriched["auto_quant_run_id"],
+            "20260512T115700+0800-codex-same-root-six-provider-1h-aq-v1",
+        )
+        self.assertEqual(enriched["symbol"], "BTC_USDT")
+        self.assertEqual(enriched["provider_provenance"]["provider"], "yfinance")
+        self.assertEqual(enriched["pre_bayes_filter_state"]["gate"], "pass_neutralized")
+        self.assertEqual(enriched["bbn_posterior"]["canonical_regime"], "range")
+        self.assertEqual(enriched["catboost_path_ranker_label"]["label"], "observed_win")
+        self.assertEqual(enriched["execution_tree_decision"]["review"], "observe")
+        self.assertEqual(enriched["failure_reason"], "execution_tree_observe_only")
+        self.assertEqual(enriched["quality_weight"], 0.25)
+        self.assertEqual(enriched["main_regime"], "Bull")
+        self.assertEqual(enriched["sub_regime"], "ProviderCryptoMomentum")
+        self.assertEqual(enriched["sub_sub_regime_or_profit_factor"], "RsiMidlineExpansion")
+        self.assertEqual(enriched["profit_factor"], "ProviderCryptoMomentumStateV1")
+        self.assertNotIn("104902", enriched["symbol"])
+
 
 class StructuralFeedbackReplayHarnessTests(unittest.TestCase):
     def test_outcome_from_forward_window_labels_directional_move(self) -> None:

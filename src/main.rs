@@ -157,13 +157,16 @@ use ict_engine::application::{
         resolve_multi_timeframe_inputs, MultiTimeframeInputPaths,
     },
     orchestration::{
-        build_execution_tree_artifact, build_execution_triage, build_stub_ensemble_vote_from_input,
-        build_stub_ensemble_vote_from_research, persist_execution_tree_artifact,
-        refresh_consumer_reason, run_stage_plan, staged_orchestration_enabled,
-        AnalyzeEnsembleVoteInput, CatBoostCompatiblePolicyEngine, DefaultExecutionTreeScorer,
-        ExecutionShapProvider, ExecutionTreeArtifact, ExecutionTreeInput, ExecutionTreeScorer,
-        FinalOutputAdapter, FinalSurfaceAdapter, PipelineState, StagePlan, StagedArtifactsInput,
-        StructuralExecutionShap, EXECUTION_TREE_TRACE_FILE,
+        build_execution_tree_artifact,
+        build_execution_tree_closed_loop_branch_admission_from_ranker_or_output_lineage,
+        build_execution_triage, build_stub_ensemble_vote_from_input,
+        build_stub_ensemble_vote_from_research, execution_tree_branch_admission_gate_status,
+        persist_execution_tree_artifact, refresh_consumer_reason, run_stage_plan,
+        staged_orchestration_enabled, AnalyzeEnsembleVoteInput, CatBoostCompatiblePolicyEngine,
+        DefaultExecutionTreeScorer, ExecutionShapProvider, ExecutionTreeArtifact,
+        ExecutionTreeInput, ExecutionTreeScorer, FinalOutputAdapter, FinalSurfaceAdapter,
+        PipelineState, StagePlan, StagedArtifactsInput, StructuralExecutionShap,
+        EXECUTION_TREE_TRACE_FILE,
     },
     provider_catalog::provider_status_command,
     reflection::{build_reflection_bundle, ReflectionBundleInput},
@@ -286,13 +289,13 @@ use ict_engine::state::{
     load_workflow_snapshot, mark_artifact_consumed, migrate_ensemble_executor_scorecards,
     recommended_next_command_meta, save_ensemble_executor_scorecards, save_ensemble_vote_artifact,
     save_execution_candidate_artifact, save_learning_state, save_pending_update_artifact,
-    save_state, save_workflow_snapshot, state_exists, AgentActionItem, AgentActionPlan,
-    AgentContextBundle, AgentContextBundleMinimal, AnalyzeRunRecord, ArtifactLedgerEntry,
-    BacktestRunRecord, CommandRecommendations, DatasetComparability, DecisionHistorySummary,
-    DecisionThresholds, EnsembleExecutorScorecard, EnsembleVoteRecord, ExecutionCandidateArtifact,
-    ExecutionCandidateArtifactDecision, ExecutionCandidateArtifactDiff, ExpectedStateChange,
-    FactorFamilyDecision, FactorFamilyDiff, FactorFamilyHistory, FactorFamilyOutcome,
-    FactorIterationPrompt, FactorMutationEvaluation, FactorMutationMetricSet,
+    save_state, save_text_state, save_workflow_snapshot, state_exists, AgentActionItem,
+    AgentActionPlan, AgentContextBundle, AgentContextBundleMinimal, AnalyzeRunRecord,
+    ArtifactLedgerEntry, BacktestRunRecord, CommandRecommendations, DatasetComparability,
+    DecisionHistorySummary, DecisionThresholds, EnsembleExecutorScorecard, EnsembleVoteRecord,
+    ExecutionCandidateArtifact, ExecutionCandidateArtifactDecision, ExecutionCandidateArtifactDiff,
+    ExpectedStateChange, FactorFamilyDecision, FactorFamilyDiff, FactorFamilyHistory,
+    FactorFamilyOutcome, FactorIterationPrompt, FactorMutationEvaluation, FactorMutationMetricSet,
     FactorMutationRunRecord, FactorMutationSpec, FeedbackHistorySummary, FeedbackRecord,
     LearningState, LiveDataSourceProvenance, ModelProbabilitySnapshot, PendingUpdateArtifact,
     PendingUpdateArtifactDecision, PendingUpdateArtifactDiff, PersistedFactorRanking,
@@ -334,7 +337,7 @@ impl OutputFormat {
     }
 }
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 
 type AnalyzeReport = ict_engine::analyze_report_shell::AnalyzeReport;
@@ -887,6 +890,99 @@ enum Commands {
             help = "Research backend: auto-quant (default) or native; pass --backend native for the Rust-only first-run path"
         )]
         backend: String,
+    },
+    /// List repo-local curated factor candidate packs
+    FactorCandidatePacks {
+        #[arg(
+            long,
+            default_value = "examples/factor_candidate_packs/curated-auto-quant-v1",
+            help = "Directory containing repo-local factor candidate packs"
+        )]
+        candidate_pack_root: String,
+        #[arg(
+            long,
+            help = "Optional symbol bucket used when persisting the inventory into workflow state"
+        )]
+        symbol: Option<String>,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            help = "Optional state directory; when present, the inventory is written into the artifact ledger"
+        )]
+        state_dir: Option<String>,
+        #[arg(long, default_value = "human", help = "Output format: human or json")]
+        output_format: String,
+    },
+    /// Export repo-local factor candidate packs as structural path ranking admission targets
+    FactorCandidateAdmissionTargets {
+        #[arg(
+            long,
+            default_value = "examples/factor_candidate_packs/curated-auto-quant-v1",
+            help = "Directory containing repo-local factor candidate packs"
+        )]
+        candidate_pack_root: String,
+        #[arg(
+            long,
+            help = "Symbol bucket for the structural admission target export"
+        )]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory for the exported structural path ranking target"
+        )]
+        state_dir: String,
+        #[arg(long, default_value = "human", help = "Output format: human or json")]
+        output_format: String,
+    },
+    /// List recovered Board A regime-confidence assets and fail-closed provenance
+    RegimeConfidenceAssets {
+        #[arg(
+            long,
+            default_value = "config/regime_confidence_assets_v1.csv",
+            help = "CSV ledger containing recovered positive and fail-closed regime-confidence assets"
+        )]
+        asset_ledger: String,
+        #[arg(
+            long,
+            help = "Optional symbol bucket used when persisting the inventory into workflow state"
+        )]
+        symbol: Option<String>,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            help = "Optional state directory; when present, the inventory is written into the artifact ledger"
+        )]
+        state_dir: Option<String>,
+        #[arg(long, default_value = "human", help = "Output format: human or json")]
+        output_format: String,
+    },
+    /// Write all recovered factor assets into the closed-loop admission surfaces
+    FactorAssetClosureIntake {
+        #[arg(
+            long,
+            default_value = "examples/factor_candidate_packs/curated-auto-quant-v1",
+            help = "Directory containing repo-local factor candidate packs"
+        )]
+        candidate_pack_root: String,
+        #[arg(
+            long,
+            default_value = "config/regime_confidence_assets_v1.csv",
+            help = "CSV ledger containing recovered positive and fail-closed regime-confidence assets"
+        )]
+        asset_ledger: String,
+        #[arg(long, help = "Symbol bucket for the combined closed-loop intake")]
+        symbol: String,
+        #[arg(
+            long,
+            env = "ICT_ENGINE_STATE_DIR",
+            default_value = "state",
+            help = "State directory for the combined closed-loop intake"
+        )]
+        state_dir: String,
+        #[arg(long, default_value = "human", help = "Output format: human or json")]
+        output_format: String,
     },
     /// [Experimental/Internal] Promote a PB12 discovery candidate into the repo-versioned canonical setup manifest
     AutoQuantPromoteCanonicalSetup {
@@ -1535,10 +1631,7 @@ enum Commands {
             help = "Explicit external trainer artifact URI or path to register; runtime reuse remains disabled until explicitly enabled"
         )]
         artifact_uri: String,
-        #[arg(
-            long,
-            help = "External model family label, for example catboost or xgboost"
-        )]
+        #[arg(long, help = "External model family label, for example catboost")]
         model_family: String,
         #[arg(
             long,
@@ -2423,6 +2516,52 @@ fn main() -> Result<()> {
             human,
             backend: &backend,
         })?,
+        Commands::FactorCandidatePacks {
+            candidate_pack_root,
+            symbol,
+            state_dir,
+            output_format,
+        } => factor_candidate_packs_command(
+            &candidate_pack_root,
+            symbol.as_deref(),
+            state_dir.as_deref(),
+            &output_format,
+        )?,
+        Commands::FactorCandidateAdmissionTargets {
+            candidate_pack_root,
+            symbol,
+            state_dir,
+            output_format,
+        } => factor_candidate_admission_targets_command(
+            &candidate_pack_root,
+            &symbol,
+            &state_dir,
+            &output_format,
+        )?,
+        Commands::RegimeConfidenceAssets {
+            asset_ledger,
+            symbol,
+            state_dir,
+            output_format,
+        } => regime_confidence_assets_command(
+            &asset_ledger,
+            symbol.as_deref(),
+            state_dir.as_deref(),
+            &output_format,
+        )?,
+        Commands::FactorAssetClosureIntake {
+            candidate_pack_root,
+            asset_ledger,
+            symbol,
+            state_dir,
+            output_format,
+        } => factor_asset_closure_intake_command(
+            &candidate_pack_root,
+            &asset_ledger,
+            &symbol,
+            &state_dir,
+            &output_format,
+        )?,
         Commands::AutoQuantPromoteCanonicalSetup {
             symbol,
             setup_name,
@@ -3214,6 +3353,1054 @@ fn build_env_report() -> Value {
         "default_state_dir": DEFAULT_STATE_DIR,
         "variables": variables,
     })
+}
+
+fn factor_candidate_packs_command(
+    candidate_pack_root: &str,
+    symbol: Option<&str>,
+    state_dir: Option<&str>,
+    output_format: &str,
+) -> Result<()> {
+    let mut payload = build_factor_candidate_pack_inventory(candidate_pack_root)?;
+    let persisted_path = if let Some(state_dir) = state_dir {
+        let symbol = symbol.unwrap_or("FACTOR_CANDIDATES");
+        let path = persist_factor_candidate_pack_inventory(state_dir, symbol, &payload)?;
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "persisted".to_string(),
+                serde_json::json!({
+                    "symbol": symbol,
+                    "state_dir": state_dir,
+                    "path": path,
+                }),
+            );
+        }
+        Some(path)
+    } else {
+        None
+    };
+    match output_format {
+        "human" | "" => {
+            let summary = payload
+                .get("summary")
+                .and_then(Value::as_object)
+                .ok_or_else(|| anyhow!("candidate pack inventory missing summary"))?;
+            println!(
+                "candidate_pack_count={} candidate_pack_root={}",
+                summary
+                    .get("candidate_pack_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                candidate_pack_root
+            );
+            if let Some(path) = persisted_path {
+                println!("persisted_artifact={path}");
+            }
+            if let Some(candidates) = payload.get("candidates").and_then(Value::as_array) {
+                for candidate in candidates {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        value_str(candidate, "candidate_id").unwrap_or("unknown"),
+                        value_u64(candidate, "aggregate_trade_count")
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "n/a".to_string()),
+                        value_str(candidate, "aggregate_label").unwrap_or("n/a"),
+                        value_str(candidate, "transfer_status").unwrap_or("n/a"),
+                        value_str(candidate, "pack_dir").unwrap_or("n/a"),
+                    );
+                }
+            }
+        }
+        "json" => println!("{}", serde_json::to_string_pretty(&payload)?),
+        other => bail!(
+            "unsupported output format '{}': expected human or json",
+            other
+        ),
+    }
+    Ok(())
+}
+
+fn factor_candidate_admission_targets_command(
+    candidate_pack_root: &str,
+    symbol: &str,
+    state_dir: &str,
+    output_format: &str,
+) -> Result<()> {
+    let summary =
+        export_factor_candidate_admission_targets(candidate_pack_root, symbol, state_dir)?;
+    match output_format {
+        "human" | "" => {
+            println!(
+                "factor_candidate_admission_targets rows={} candidate_set_id={}",
+                summary.rows, summary.candidate_set_id
+            );
+            println!("jsonl_path={}", summary.jsonl_path);
+            println!("summary_line={}", summary.summary_line);
+            println!("promotion=blocked_until_pre_bayes_bbn_catboost_execution_tree_gates_pass");
+        }
+        "json" => println!("{}", serde_json::to_string_pretty(&summary)?),
+        other => bail!(
+            "unsupported output format '{}': expected human or json",
+            other
+        ),
+    }
+    Ok(())
+}
+
+fn regime_confidence_assets_command(
+    asset_ledger: &str,
+    symbol: Option<&str>,
+    state_dir: Option<&str>,
+    output_format: &str,
+) -> Result<()> {
+    let mut payload = build_regime_confidence_asset_inventory(asset_ledger)?;
+    let persisted_path = if let Some(state_dir) = state_dir {
+        let symbol = symbol.unwrap_or("REGIME_CONFIDENCE_ASSETS");
+        let path = persist_regime_confidence_asset_inventory(state_dir, symbol, &payload)?;
+        if let Some(object) = payload.as_object_mut() {
+            object.insert(
+                "persisted".to_string(),
+                serde_json::json!({
+                    "symbol": symbol,
+                    "state_dir": state_dir,
+                    "path": path,
+                }),
+            );
+        }
+        Some(path)
+    } else {
+        None
+    };
+    match output_format {
+        "human" | "" => {
+            let summary = payload
+                .get("summary")
+                .and_then(Value::as_object)
+                .ok_or_else(|| anyhow!("regime confidence asset inventory missing summary"))?;
+            println!(
+                "regime_confidence_asset_count={} board_a_gate={} direct_event={} diagnostic={} contrast_evidence={} asset_ledger={}",
+                summary
+                    .get("asset_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                summary
+                    .get("board_a_regime_gate_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                summary
+                    .get("direct_event_overlay_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                summary
+                    .get("diagnostic_after_source_control_unlock_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                summary
+                    .get("contrast_evidence_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                asset_ledger
+            );
+            if let Some(path) = persisted_path {
+                println!("persisted_artifact={path}");
+            }
+            if let Some(assets) = payload.get("assets").and_then(Value::as_array) {
+                for asset in assets {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        value_str(asset, "asset_id").unwrap_or("unknown"),
+                        value_str(asset, "label").unwrap_or("unknown"),
+                        value_str(asset, "usable_as").unwrap_or("unknown"),
+                        value_str(asset, "status").unwrap_or("unknown"),
+                        value_str(asset, "ingestion_state").unwrap_or("unknown"),
+                    );
+                }
+            }
+            if let Some(evidence_rows) = payload.get("contrast_evidence").and_then(Value::as_array)
+            {
+                for evidence in evidence_rows {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}",
+                        value_str(evidence, "asset_id").unwrap_or("unknown"),
+                        value_str(evidence, "label").unwrap_or("unknown"),
+                        value_str(evidence, "usable_as").unwrap_or("unknown"),
+                        value_str(evidence, "status").unwrap_or("unknown"),
+                        value_str(evidence, "ingestion_state").unwrap_or("unknown"),
+                    );
+                }
+            }
+        }
+        "json" => println!("{}", serde_json::to_string_pretty(&payload)?),
+        other => bail!(
+            "unsupported output format '{}': expected human or json",
+            other
+        ),
+    }
+    Ok(())
+}
+
+fn factor_asset_closure_intake_command(
+    candidate_pack_root: &str,
+    asset_ledger: &str,
+    symbol: &str,
+    state_dir: &str,
+    output_format: &str,
+) -> Result<()> {
+    let target_summary =
+        export_factor_candidate_admission_targets(candidate_pack_root, symbol, state_dir)?;
+    let regime_inventory = build_regime_confidence_asset_inventory(asset_ledger)?;
+    let regime_inventory_path =
+        persist_regime_confidence_asset_inventory(state_dir, symbol, &regime_inventory)?;
+    let policy_status =
+        ict_engine::application::entry_models::policy_training_status(state_dir, symbol, None)?;
+    let payload = serde_json::json!({
+        "schema_version": "factor-asset-closure-intake/v1",
+        "symbol": symbol,
+        "state_dir": state_dir,
+        "candidate_pack_root": candidate_pack_root,
+        "asset_ledger": asset_ledger,
+        "factor_candidate_admission": {
+            "rows": target_summary.rows,
+            "candidate_set_id": target_summary.candidate_set_id.clone(),
+            "mature_rows": target_summary.mature_rows,
+            "training_weight_rows": target_summary.rows_with_training_weight,
+            "runtime_selection_enabled": policy_status.structural_path_ranking_target.runtime_selection_enabled,
+            "summary_line": target_summary.summary_line.clone(),
+        },
+        "regime_confidence_assets": {
+            "inventory_path": regime_inventory_path,
+            "asset_count": policy_status.regime_confidence_assets.asset_count,
+            "board_a_regime_gate_count": policy_status.regime_confidence_assets.board_a_regime_gate_count,
+            "direct_event_overlay_count": policy_status.regime_confidence_assets.direct_event_overlay_count,
+            "contrast_evidence_count": policy_status.regime_confidence_assets.contrast_evidence_count,
+            "promotion_allowed": policy_status.regime_confidence_assets.promotion_allowed,
+            "runtime_selection_enabled": policy_status.regime_confidence_assets.runtime_selection_enabled,
+            "summary_line": policy_status.regime_confidence_assets.summary_line.clone(),
+        },
+        "policy_training_summary_line": policy_status.summary_line.clone(),
+        "decision": "assets_entered_closed_loop_surfaces_fail_closed_until_runtime_promotion_gates_pass",
+    });
+    match output_format {
+        "human" | "" => {
+            println!(
+                "factor_asset_closure_intake symbol={} candidate_rows={} regime_assets={} board_a_gate={} contrast_evidence={}",
+                symbol,
+                target_summary.rows,
+                policy_status.regime_confidence_assets.asset_count,
+                policy_status.regime_confidence_assets.board_a_regime_gate_count,
+                policy_status.regime_confidence_assets.contrast_evidence_count
+            );
+            println!("candidate_summary={}", target_summary.summary_line);
+            println!(
+                "regime_summary={}",
+                policy_status.regime_confidence_assets.summary_line
+            );
+            println!("promotion=blocked_until_pre_bayes_bbn_catboost_execution_tree_gates_pass");
+        }
+        "json" => println!("{}", serde_json::to_string_pretty(&payload)?),
+        other => bail!(
+            "unsupported output format '{}': expected human or json",
+            other
+        ),
+    }
+    Ok(())
+}
+
+fn export_factor_candidate_admission_targets(
+    candidate_pack_root: &str,
+    symbol: &str,
+    state_dir: &str,
+) -> Result<ict_engine::application::orchestration::StructuralPathRankingTargetExportSummary> {
+    let inventory = build_factor_candidate_pack_inventory(candidate_pack_root)?;
+    persist_factor_candidate_pack_inventory(state_dir, symbol, &inventory)?;
+    let artifact = build_factor_candidate_admission_target_artifact(candidate_pack_root, symbol)?;
+
+    let csv_name = "policy_training/structural_path_ranking_target.csv";
+    let jsonl_name = "policy_training/structural_path_ranking_target.jsonl";
+    let history_csv_name = "policy_training/structural_path_ranking_target_history.csv";
+    let history_jsonl_name = "policy_training/structural_path_ranking_target_history.jsonl";
+    let summary_name = "policy_training/structural_path_ranking_target_summary.json";
+    std::fs::create_dir_all(
+        std::path::Path::new(state_dir)
+            .join(symbol)
+            .join("policy_training"),
+    )?;
+    let history_jsonl_path = std::path::Path::new(state_dir)
+        .join(symbol)
+        .join(history_jsonl_name);
+    let history_rows =
+        ict_engine::application::orchestration::upsert_structural_path_ranking_target_history(
+            &history_jsonl_path,
+            &artifact.rows,
+        )?;
+    let history_csv =
+        ict_engine::application::orchestration::render_structural_path_ranking_target_rows_csv(
+            &artifact.protocol_version,
+            &artifact.symbol,
+            &artifact.generated_at,
+            &history_rows,
+        );
+    let history_jsonl =
+        ict_engine::application::orchestration::render_structural_path_ranking_target_rows_jsonl(
+            &history_rows,
+        )?;
+    let summary =
+        ict_engine::application::orchestration::structural_path_ranking_target_export_summary(
+            ict_engine::application::orchestration::StructuralPathRankingTargetExportSummaryInput {
+                state_dir,
+                symbol,
+                artifact: &artifact,
+                csv_name,
+                jsonl_name,
+                history_csv_name,
+                history_jsonl_name,
+                history_rows: &history_rows,
+                summary_name,
+            },
+        );
+    save_text_state(
+        state_dir,
+        symbol,
+        csv_name,
+        &ict_engine::application::orchestration::render_structural_path_ranking_target_csv(
+            &artifact,
+        ),
+    )?;
+    save_text_state(
+        state_dir,
+        symbol,
+        jsonl_name,
+        &ict_engine::application::orchestration::render_structural_path_ranking_target_jsonl(
+            &artifact,
+        )?,
+    )?;
+    save_text_state(state_dir, symbol, history_csv_name, &history_csv)?;
+    save_text_state(state_dir, symbol, history_jsonl_name, &history_jsonl)?;
+    save_text_state(
+        state_dir,
+        symbol,
+        summary_name,
+        &serde_json::to_string_pretty(&summary)?,
+    )?;
+    write_factor_candidate_trainer_artifacts(state_dir, symbol, &summary)?;
+    append_artifact_ledger_entry(
+        state_dir,
+        symbol,
+        ArtifactLedgerEntry {
+            entry_id: format!("ledger:factor-candidate-admission-target:{symbol}"),
+            artifact_kind: "structural_path_ranking_target".to_string(),
+            artifact_id: summary.candidate_set_id.clone(),
+            version: 1,
+            generated_at: Utc::now(),
+            symbol: symbol.to_string(),
+            source_phase: "factor-candidate-admission-targets".to_string(),
+            source_run_id: None,
+            path: summary.summary_path.clone(),
+            status: "admission_pending".to_string(),
+            promote_candidate: false,
+            actionable: false,
+            decision_hint: "factor_candidate_pack_targets_visible_but_not_execution_promoted"
+                .to_string(),
+            review_reason: format!(
+                "rows={} mature_rows={} training_weight_rows={}",
+                summary.rows, summary.mature_rows, summary.rows_with_training_weight
+            ),
+            review_rule_version: "factor-candidate-admission-target/v1".to_string(),
+            top_factor_name: None,
+            top_factor_action: Some("observe".to_string()),
+            family_scores: BTreeMap::new(),
+            supersedes_artifact_id: None,
+            quality_score: summary.rows.min(i32::MAX as usize) as i32,
+            consumed_by_update_run_id: None,
+            consumed_at: None,
+            consumed_outcome: None,
+            regraded_at: None,
+            consumption_regrade_status: None,
+            consumption_regrade_reason: None,
+        },
+    )?;
+    refresh_workflow_snapshot(state_dir, symbol)?;
+    Ok(summary)
+}
+
+fn write_factor_candidate_trainer_artifacts(
+    state_dir: &str,
+    symbol: &str,
+    summary: &ict_engine::application::orchestration::StructuralPathRankingTargetExportSummary,
+) -> Result<()> {
+    let model_name = "factor_candidate_ranker_direct_model.json";
+    let model = serde_json::json!({
+        "protocol_version": "structural-path-ranker-direct-model-v1",
+        "model_family": "weighted_feature_sum_v1",
+        "feature_schema_version": "structural-path-ranking-target-v1",
+        "output_transform": "identity_clamped",
+        "intercept": 0.0,
+        "numerical_feature_weights": {
+            "raw_path_score": 0.70,
+            "training_weight": 0.05,
+            "experience_prior": 0.15,
+            "current_posterior": 0.10
+        },
+        "lower_bound_margin": 0.0,
+        "notes": [
+            "generated_by=factor-candidate-admission-targets",
+            "runtime_not_enabled_by_default",
+            "scores rank offline candidate-pack observations only; execution gates remain disabled"
+        ]
+    });
+    save_text_state(
+        state_dir,
+        symbol,
+        &format!("policy_training/{model_name}"),
+        &serde_json::to_string_pretty(&model)?,
+    )?;
+    let trainer = serde_json::json!({
+        "protocol_version": "structural-path-ranking-trainer-artifact-v1",
+        "dataset_role": summary.trainer_manifest.dataset_role.clone(),
+        "model_family": "weighted_feature_sum_v1",
+        "artifact_uri": model_name,
+        "model_artifact_uri": model_name,
+        "score_column": "raw_path_score",
+        "trained_rows": summary.rows_with_training_weight,
+        "history_rows": summary.history_rows,
+        "calibration_rows": summary.history_rows_with_calibrated_path_prob,
+        "selected_features": summary.trainer_manifest.feature_columns.clone(),
+        "validation_metrics": {
+            "raw_scored_mature_rows": summary.history_rows_with_raw_path_score,
+            "raw_scored_mature_min_rows": 30,
+            "production_validation_rows": 0,
+            "production_validation_min_rows": 30
+        },
+        "calibration_metrics": {
+            "eligible_rows": 0
+        },
+        "created_at": Utc::now().to_rfc3339(),
+        "notes": [
+            "generated_by=factor-candidate-admission-targets",
+            "trainer_ready_for_observation_only",
+            "runtime_not_enabled_by_default",
+            "production_validation_still_required"
+        ]
+    });
+    save_text_state(
+        state_dir,
+        symbol,
+        "policy_training/structural_path_ranking_trainer_artifact.json",
+        &serde_json::to_string_pretty(&trainer)?,
+    )?;
+    append_artifact_ledger_entry(
+        state_dir,
+        symbol,
+        ArtifactLedgerEntry {
+            entry_id: format!("ledger:factor-candidate-trainer-artifact:{symbol}"),
+            artifact_kind: "structural_path_ranking_trainer_artifact".to_string(),
+            artifact_id: format!("factor-candidate-trainer:{symbol}"),
+            version: 1,
+            generated_at: Utc::now(),
+            symbol: symbol.to_string(),
+            source_phase: "factor-candidate-admission-targets".to_string(),
+            source_run_id: None,
+            path: ict_engine::state::artifact_state_path(
+                state_dir,
+                symbol,
+                "policy_training/structural_path_ranking_trainer_artifact.json",
+            ),
+            status: "ready_observation_only".to_string(),
+            promote_candidate: false,
+            actionable: false,
+            decision_hint: "trainer_ready_but_runtime_not_enabled".to_string(),
+            review_reason: format!(
+                "trained_rows={} production_validation_rows=0 runtime_selection=disabled",
+                summary.rows_with_training_weight
+            ),
+            review_rule_version: "factor-candidate-trainer-artifact/v1".to_string(),
+            top_factor_name: None,
+            top_factor_action: Some("observe".to_string()),
+            family_scores: BTreeMap::new(),
+            supersedes_artifact_id: None,
+            quality_score: summary.rows_with_training_weight.min(i32::MAX as usize) as i32,
+            consumed_by_update_run_id: None,
+            consumed_at: None,
+            consumed_outcome: None,
+            regraded_at: None,
+            consumption_regrade_status: None,
+            consumption_regrade_reason: None,
+        },
+    )?;
+    Ok(())
+}
+
+fn build_factor_candidate_admission_target_artifact(
+    candidate_pack_root: &str,
+    symbol: &str,
+) -> Result<ict_engine::application::orchestration::StructuralPathRankingTargetArtifact> {
+    let root = std::path::Path::new(candidate_pack_root);
+    if !root.exists() {
+        bail!(
+            "candidate pack root does not exist: '{}'",
+            candidate_pack_root
+        );
+    }
+    let mut pack_dirs = std::fs::read_dir(root)
+        .with_context(|| {
+            format!(
+                "failed to read candidate pack root '{}'",
+                candidate_pack_root
+            )
+        })?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    pack_dirs.sort();
+
+    let candidate_set_id = format!("factor-candidate-admission:{symbol}:curated-auto-quant-v1");
+    let generated_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let mut rows = Vec::new();
+    for pack_dir in pack_dirs.iter() {
+        let expression = read_candidate_pack_json(pack_dir, "factor_expression.json")?;
+        let eval_summary = read_candidate_pack_json(pack_dir, "factor_eval_grid_summary.json")?;
+        let transfer = read_candidate_pack_json(pack_dir, "transfer_score.json")?;
+        let candidate_id = expression
+            .get("candidate_id")
+            .and_then(Value::as_str)
+            .or_else(|| pack_dir.file_name().and_then(|name| name.to_str()))
+            .unwrap_or("unknown");
+        let family = value_str(&expression, "family").unwrap_or("candidate_family");
+        let paradigm = value_str(&expression, "paradigm").unwrap_or("candidate_pack");
+        let timeframe = value_str(&expression, "base_timeframe").unwrap_or("unknown_timeframe");
+        let main_regime = value_str(&expression, "expected_regime")
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("candidate_pack");
+        let family_key = family.replace(' ', "_").to_lowercase();
+        let base_profit_factor = candidate_id.to_string();
+        let breadth_matrix = eval_summary
+            .get("breadth_matrix")
+            .and_then(Value::as_object);
+        let market_evidence = transfer.get("market_evidence").and_then(Value::as_object);
+        let mut markets = BTreeSet::new();
+        if let Some(matrix) = breadth_matrix {
+            markets.extend(matrix.keys().cloned());
+        }
+        if let Some(evidence) = market_evidence {
+            markets.extend(evidence.keys().cloned());
+        }
+        if markets.is_empty() {
+            markets.insert("candidate_market".to_string());
+        }
+        markets.insert("AGGREGATE".to_string());
+        let transfer_candidate =
+            transfer.get("status").and_then(Value::as_str) == Some("cross_market_candidate");
+        for market in markets {
+            let market_eval = breadth_matrix.and_then(|matrix| matrix.get(&market));
+            let market_transfer = market_evidence.and_then(|evidence| evidence.get(&market));
+            let metric = |key: &str| -> Option<f64> {
+                market_eval
+                    .and_then(|value| value.get(key))
+                    .and_then(Value::as_f64)
+                    .or_else(|| {
+                        market_transfer
+                            .and_then(|value| value.get(key))
+                            .and_then(Value::as_f64)
+                    })
+                    .or_else(|| {
+                        eval_summary
+                            .pointer(&format!("/aggregate_metrics/{key}"))
+                            .and_then(Value::as_f64)
+                    })
+            };
+            let trade_count = metric("trade_count").unwrap_or(0.0);
+            let aggregate_profit_factor = metric("profit_factor");
+            let total_profit_pct = metric("total_profit_pct");
+            let sharpe = metric("sharpe");
+            let density_label = market_eval
+                .and_then(|value| value.get("trade_density_label"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    eval_summary
+                        .pointer("/trade_density_summary/aggregate_label")
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or("unknown");
+            let preferred_density = density_label == "preferred_density";
+            let full_profit_observation = trade_count >= 30.0
+                && aggregate_profit_factor.is_some()
+                && total_profit_pct.is_some();
+            let external_score_observation = !full_profit_observation && sharpe.is_some();
+            let pending_reward_state = if full_profit_observation
+                && aggregate_profit_factor.is_some_and(|value| value > 1.0)
+                && total_profit_pct.is_some_and(|value| value > 0.0)
+            {
+                "matured_success"
+            } else if full_profit_observation {
+                "matured_failure"
+            } else if external_score_observation && sharpe.is_some_and(|value| value > 0.0) {
+                "matured_success"
+            } else if external_score_observation {
+                "matured_failure"
+            } else {
+                "candidate_pack_admission_pending"
+            };
+            let calibrated_label =
+                ict_engine::application::orchestration::structural_path_ranking_reward_label(
+                    pending_reward_state,
+                );
+            let maturity_mask = calibrated_label.is_some();
+            let maturity_weight = if full_profit_observation {
+                1.0
+            } else if external_score_observation {
+                0.5
+            } else {
+                0.0
+            };
+            let behavior_policy_probability = if preferred_density && transfer_candidate {
+                0.50
+            } else if preferred_density {
+                0.35
+            } else {
+                0.20
+            };
+            let propensity_estimate = maturity_mask.then_some(behavior_policy_probability);
+            let ips_weight =
+                ict_engine::application::orchestration::structural_path_ranking_ips_weight(
+                    propensity_estimate,
+                );
+            let training_weight =
+                ict_engine::application::orchestration::structural_path_ranking_training_weight(
+                    calibrated_label,
+                    maturity_weight,
+                    ips_weight,
+                );
+            let raw_path_score = transfer
+                .get("overall_transfer_score")
+                .and_then(Value::as_f64)
+                .or_else(|| sharpe.map(|value| (value + 1.0) / 2.0))
+                .map(|value| value.clamp(0.0, 1.0));
+            let calibrated_path_prob = maturity_mask.then_some(raw_path_score.unwrap_or(0.5));
+            let baseline = raw_path_score.unwrap_or(0.0);
+            let market_key = market.replace(['/', ' '], "_").to_lowercase();
+            let sub_regime = market_key;
+            let sub_sub_regime_or_profit_factor =
+                format!("{}:{}:{}", family_key, paradigm, timeframe);
+            let profit_factor = format!("{base_profit_factor}@{market}");
+            let branch_path = format!(
+                "{main_regime} -> {sub_regime} -> {sub_sub_regime_or_profit_factor} -> {profit_factor}"
+            );
+            rows.push(
+                ict_engine::application::orchestration::StructuralPathRankingTargetRow {
+                    rank: rows.len() + 1,
+                    candidate_set_id: candidate_set_id.clone(),
+                    candidate_set_size: 0,
+                    path_id: branch_path.clone(),
+                    scenario_id: format!("factor_candidate:{candidate_id}:{market}"),
+                    path_label: format!(
+                        "{} [{}]",
+                        value_str(&expression, "display_name").unwrap_or(candidate_id),
+                        market
+                    ),
+                    regime_profit_branch_path: Some(branch_path),
+                    parent_regime_root: Some(main_regime.to_string()),
+                    main_regime: Some(main_regime.to_string()),
+                    sub_regime: Some(sub_regime),
+                    sub_sub_regime_or_profit_factor: Some(sub_sub_regime_or_profit_factor),
+                    profit_factor: Some(profit_factor),
+                    direction: "Observe".to_string(),
+                    raw_path_score,
+                    calibrated_path_prob,
+                    path_prob_lower_bound: None,
+                    execution_gate_status: None,
+                    execution_gate_min_path_prob: None,
+                    execution_gate_reason: None,
+                    pending_reward_state: pending_reward_state.to_string(),
+                    maturity_mask,
+                    maturity_weight,
+                    calibrated_label,
+                    propensity_estimate,
+                    ips_weight,
+                    training_weight,
+                    regime_calibration_bucket: format!("{symbol}:factor_candidate_admission"),
+                    behavior_policy_probability,
+                    execution_propensity: None,
+                    target_policy_probability_confidence: None,
+                    target_policy_probability_lower_bound: None,
+                    target_policy_reward_prior: None,
+                    target_policy_reward_lower_bound: None,
+                    experience_prior: (trade_count / 2500.0).clamp(0.0, 1.0),
+                    current_posterior: baseline,
+                    structural_baseline_score: baseline,
+                    score_model_family: Some("candidate_pack_transfer_score_v1".to_string()),
+                    score_source_kind: Some("factor_candidate_pack_admission_seed".to_string()),
+                    score_model_artifact_uri: Some(pack_dir.to_string_lossy().to_string()),
+                    score_generator: Some("factor-candidate-admission-targets".to_string()),
+                },
+            );
+        }
+    }
+    let candidate_set_size = rows.len();
+    for row in &mut rows {
+        row.candidate_set_size = candidate_set_size;
+    }
+    Ok(
+        ict_engine::application::orchestration::StructuralPathRankingTargetArtifact {
+            protocol_version: "structural-path-ranking-target-v1".to_string(),
+            symbol: symbol.to_string(),
+            candidate_set_id,
+            candidate_set_size,
+            generated_at,
+            rows,
+        },
+    )
+}
+
+fn persist_factor_candidate_pack_inventory(
+    state_dir: &str,
+    symbol: &str,
+    payload: &Value,
+) -> Result<String> {
+    let filename = "factor_candidate_pack_inventory.json";
+    save_state(state_dir, symbol, filename, payload)?;
+    let path = ict_engine::state::artifact_state_path(state_dir, symbol, filename);
+    let generated_at = Utc::now();
+    let candidate_count = payload
+        .pointer("/summary/candidate_pack_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    append_artifact_ledger_entry(
+        state_dir,
+        symbol,
+        ArtifactLedgerEntry {
+            entry_id: format!("ledger:factor-candidate-pack-inventory:{symbol}"),
+            artifact_kind: "factor_candidate_pack_inventory".to_string(),
+            artifact_id: format!(
+                "factor-candidate-pack-inventory:{symbol}:{}",
+                generated_at.format("%Y%m%dT%H%M%SZ")
+            ),
+            version: 1,
+            generated_at,
+            symbol: symbol.to_string(),
+            source_phase: "factor-candidate-packs".to_string(),
+            source_run_id: None,
+            path: path.clone(),
+            status: "ready".to_string(),
+            promote_candidate: false,
+            actionable: false,
+            decision_hint: "inspect_candidate_packs_before_admission".to_string(),
+            review_reason: format!("candidate_pack_count={candidate_count}"),
+            review_rule_version: "factor-candidate-pack-inventory/v1".to_string(),
+            top_factor_name: None,
+            top_factor_action: Some("inspect".to_string()),
+            family_scores: BTreeMap::new(),
+            supersedes_artifact_id: None,
+            quality_score: candidate_count.min(i32::MAX as u64) as i32,
+            consumed_by_update_run_id: None,
+            consumed_at: None,
+            consumed_outcome: None,
+            regraded_at: None,
+            consumption_regrade_status: None,
+            consumption_regrade_reason: None,
+        },
+    )?;
+    refresh_workflow_snapshot(state_dir, symbol)?;
+    Ok(path)
+}
+
+fn persist_regime_confidence_asset_inventory(
+    state_dir: &str,
+    symbol: &str,
+    payload: &Value,
+) -> Result<String> {
+    let filename = "regime_confidence_asset_inventory.json";
+    save_state(state_dir, symbol, filename, payload)?;
+    let path = ict_engine::state::artifact_state_path(state_dir, symbol, filename);
+    let generated_at = Utc::now();
+    let asset_count = payload
+        .pointer("/summary/asset_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let board_a_gate_count = payload
+        .pointer("/summary/board_a_regime_gate_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let direct_event_count = payload
+        .pointer("/summary/direct_event_overlay_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let contrast_evidence_count = payload
+        .pointer("/summary/contrast_evidence_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    append_artifact_ledger_entry(
+        state_dir,
+        symbol,
+        ArtifactLedgerEntry {
+            entry_id: format!("ledger:regime-confidence-asset-inventory:{symbol}"),
+            artifact_kind: "regime_confidence_asset_inventory".to_string(),
+            artifact_id: format!(
+                "regime-confidence-asset-inventory:{symbol}:{}",
+                generated_at.format("%Y%m%dT%H%M%SZ")
+            ),
+            version: 1,
+            generated_at,
+            symbol: symbol.to_string(),
+            source_phase: "regime-confidence-assets".to_string(),
+            source_run_id: None,
+            path: path.clone(),
+            status: "ready_preserved".to_string(),
+            promote_candidate: false,
+            actionable: false,
+            decision_hint: "board_a_regime_confidence_assets_and_contrast_evidence_visible_to_aq_live_loop"
+                .to_string(),
+            review_reason: format!(
+                "asset_count={asset_count} board_a_gate={board_a_gate_count} direct_event={direct_event_count} contrast_evidence={contrast_evidence_count} consumers=aq_admission,filtering,belief_update,path_tree,execution_review"
+            ),
+            review_rule_version: "regime-confidence-asset-inventory/v1".to_string(),
+            top_factor_name: None,
+            top_factor_action: Some("preserve".to_string()),
+            family_scores: BTreeMap::new(),
+            supersedes_artifact_id: None,
+            quality_score: asset_count.min(i32::MAX as u64) as i32,
+            consumed_by_update_run_id: None,
+            consumed_at: None,
+            consumed_outcome: None,
+            regraded_at: None,
+            consumption_regrade_status: None,
+            consumption_regrade_reason: None,
+        },
+    )?;
+    refresh_workflow_snapshot(state_dir, symbol)?;
+    Ok(path)
+}
+
+fn build_factor_candidate_pack_inventory(candidate_pack_root: &str) -> Result<Value> {
+    let root = std::path::Path::new(candidate_pack_root);
+    if !root.exists() {
+        bail!(
+            "candidate pack root does not exist: '{}'",
+            candidate_pack_root
+        );
+    }
+    if !root.is_dir() {
+        bail!(
+            "candidate pack root is not a directory: '{}'",
+            candidate_pack_root
+        );
+    }
+    let mut pack_dirs = std::fs::read_dir(root)
+        .with_context(|| {
+            format!(
+                "failed to read candidate pack root '{}'",
+                candidate_pack_root
+            )
+        })?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    pack_dirs.sort();
+
+    let mut candidates = Vec::new();
+    for pack_dir in pack_dirs {
+        let expression = read_candidate_pack_json(&pack_dir, "factor_expression.json")?;
+        let eval_summary = read_candidate_pack_json(&pack_dir, "factor_eval_grid_summary.json")?;
+        let transfer = read_candidate_pack_json(&pack_dir, "transfer_score.json")?;
+        let trade_density = eval_summary
+            .get("trade_density_summary")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                anyhow!(
+                    "candidate pack '{}' missing trade_density_summary",
+                    pack_dir.display()
+                )
+            })?;
+        let candidate_id = expression
+            .get("candidate_id")
+            .and_then(Value::as_str)
+            .or_else(|| pack_dir.file_name().and_then(|name| name.to_str()))
+            .unwrap_or("unknown");
+        candidates.push(serde_json::json!({
+            "candidate_id": candidate_id,
+            "display_name": expression.get("display_name").cloned().unwrap_or(Value::Null),
+            "family": expression.get("family").cloned().unwrap_or(Value::Null),
+            "strategy_name": expression.get("strategy_name").cloned().unwrap_or(Value::Null),
+            "promotion_state": expression.get("promotion_state").cloned().unwrap_or(Value::Null),
+            "base_timeframe": expression.get("base_timeframe").cloned().unwrap_or(Value::Null),
+            "expression_text": expression.get("expression_text").cloned().unwrap_or(Value::Null),
+            "pack_dir": pack_dir.to_string_lossy(),
+            "aggregate_trade_count": trade_density
+                .get("aggregate_trade_count")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "aggregate_label": trade_density
+                .get("aggregate_label")
+                .cloned()
+                .unwrap_or(Value::Null),
+            "transfer_status": transfer.get("status").cloned().unwrap_or(Value::Null),
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "schema_version": "factor-candidate-pack-inventory/v1",
+        "summary": {
+            "candidate_pack_root": candidate_pack_root,
+            "candidate_pack_count": candidates.len(),
+        },
+        "candidates": candidates,
+    }))
+}
+
+fn build_regime_confidence_asset_inventory(asset_ledger: &str) -> Result<Value> {
+    let path = std::path::Path::new(asset_ledger);
+    if !path.exists() {
+        bail!("regime confidence asset ledger does not exist: '{asset_ledger}'");
+    }
+    if !path.is_file() {
+        bail!("regime confidence asset ledger is not a file: '{asset_ledger}'");
+    }
+    let mut reader = csv::Reader::from_path(path).with_context(|| {
+        format!("failed to read regime confidence asset ledger '{asset_ledger}'")
+    })?;
+    let headers = reader
+        .headers()
+        .with_context(|| format!("failed to read CSV headers from '{asset_ledger}'"))?
+        .clone();
+    let required = [
+        "asset_id",
+        "label",
+        "asset_class",
+        "status",
+        "usable_as",
+        "rule_or_condition",
+        "source_run_root",
+        "primary_artifact",
+        "ingestion_state",
+        "next_action",
+    ];
+    for field in required {
+        if !headers.iter().any(|header| header == field) {
+            bail!("regime confidence asset ledger missing required column '{field}'");
+        }
+    }
+
+    let mut assets = Vec::new();
+    for record in reader.deserialize::<BTreeMap<String, String>>() {
+        let record =
+            record.with_context(|| format!("failed to parse CSV row from '{asset_ledger}'"))?;
+        let asset_id = record
+            .get("asset_id")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim();
+        if asset_id.is_empty() {
+            bail!("regime confidence asset ledger contains a row with empty asset_id");
+        }
+        let asset = serde_json::json!({
+            "asset_id": asset_id,
+            "label": record.get("label").cloned().unwrap_or_default(),
+            "asset_class": record.get("asset_class").cloned().unwrap_or_default(),
+            "status": record.get("status").cloned().unwrap_or_default(),
+            "usable_as": record.get("usable_as").cloned().unwrap_or_default(),
+            "rule_or_condition": record.get("rule_or_condition").cloned().unwrap_or_default(),
+            "calibration_wilson95_lcb": parse_optional_f64(record.get("calibration_wilson95_lcb")),
+            "test_wilson95_lcb": parse_optional_f64(record.get("test_wilson95_lcb")),
+            "min_split_wilson95_lcb": parse_optional_f64(record.get("min_split_wilson95_lcb")),
+            "calibration_support": parse_optional_u64(record.get("calibration_support")),
+            "test_support": parse_optional_u64(record.get("test_support")),
+            "min_split_support": parse_optional_u64(record.get("min_split_support")),
+            "validation_scope": record.get("validation_scope").cloned().unwrap_or_default(),
+            "source_run_root": record.get("source_run_root").cloned().unwrap_or_default(),
+            "primary_artifact": record.get("primary_artifact").cloned().unwrap_or_default(),
+            "ingestion_state": record.get("ingestion_state").cloned().unwrap_or_default(),
+            "next_action": record.get("next_action").cloned().unwrap_or_default(),
+        });
+        assets.push(asset);
+    }
+    let (assets, contrast_evidence): (Vec<Value>, Vec<Value>) =
+        assets.into_iter().partition(|asset| {
+            asset.get("usable_as").and_then(Value::as_str) != Some("contrast_evidence")
+        });
+
+    let count_usable_as = |name: &str| {
+        assets
+            .iter()
+            .filter(|asset| asset.get("usable_as").and_then(Value::as_str) == Some(name))
+            .count()
+    };
+    let count_contains_usable_as = |needle: &str| {
+        assets
+            .iter()
+            .filter(|asset| {
+                asset
+                    .get("usable_as")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .contains(needle)
+            })
+            .count()
+    };
+    let contrast_evidence_count = contrast_evidence.len();
+    let recovered_not_candidate_pack_count = assets
+        .iter()
+        .filter(|asset| {
+            asset.get("ingestion_state").and_then(Value::as_str)
+                == Some("recovered_not_candidate_pack")
+        })
+        .count();
+    Ok(serde_json::json!({
+        "schema_version": "regime-confidence-asset-inventory/v1",
+        "summary": {
+            "asset_ledger": asset_ledger,
+            "asset_count": assets.len(),
+            "board_a_regime_gate_count": count_usable_as("board_a_regime_gate"),
+            "direct_event_overlay_count": count_contains_usable_as("direct_event_overlay"),
+            "diagnostic_after_source_control_unlock_count": count_usable_as("diagnostic_after_source_control_unlock"),
+            "contrast_evidence_count": contrast_evidence_count,
+            "recovered_not_candidate_pack_count": recovered_not_candidate_pack_count,
+            "promotion_allowed": false,
+            "runtime_selection_enabled": false,
+            "closed_loop_consumers": [
+                "aq_admission_review",
+                "regime_filter_boundary_constraints",
+                "belief_update_contrast_examples",
+                "path_tree_branch_review",
+                "execution_preflight_review"
+            ],
+            "decision": "preserve_assets_and_use_contrast_evidence_across_aq_to_live_loop_without_trade_promotion"
+        },
+        "assets": assets,
+        "contrast_evidence": contrast_evidence,
+    }))
+}
+
+fn read_candidate_pack_json(pack_dir: &std::path::Path, file_name: &str) -> Result<Value> {
+    let path = pack_dir.join(file_name);
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read candidate pack file '{}'", path.display()))?;
+    serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse candidate pack file '{}'", path.display()))
+}
+
+fn value_str<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value.get(key).and_then(Value::as_str)
+}
+
+fn parse_optional_f64(value: Option<&String>) -> Value {
+    value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<f64>().ok())
+        .map(Value::from)
+        .unwrap_or(Value::Null)
+}
+
+fn parse_optional_u64(value: Option<&String>) -> Value {
+    value
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Value::from)
+        .unwrap_or(Value::Null)
+}
+
+fn value_u64(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(Value::as_u64)
 }
 
 fn env_command() -> Result<()> {
@@ -4287,6 +5474,12 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
         format!("{:?}", market_state_snapshot.secondary_regime),
     );
     if let Some(adapter) = regime_bundle_adapter {
+        for (key, value) in adapter.path_ranker_assignment_entries() {
+            pre_bayes_evidence_filter
+                .evidence_assignments
+                .insert(key, value);
+        }
+        adapter.append_read_only_bbn_filter_diagnostics(&mut pre_bayes_evidence_filter);
         let status = adapter.apply_bbn_soft_evidence_to_pre_bayes_filter(
             &mut pre_bayes_evidence_filter,
             apply_regime_bundle_bbn_soft_evidence,
@@ -4961,12 +6154,19 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
     } else {
         None
     };
-    let execution_tree_artifact = build_execution_tree_artifact(
+    let mut execution_tree_artifact = build_execution_tree_artifact(
         symbol,
         execution_tree_output,
         execution_shap_top_k,
         analyze_provenance.clone(),
     );
+    execution_tree_artifact.closed_loop_branch_admission =
+        build_execution_tree_closed_loop_branch_admission_from_ranker_or_output_lineage(
+            Some(&path_ranker_lineage),
+            &pre_bayes_evidence_filter.gating_status,
+            &execution_tree_branch_admission_gate_status(&execution_tree_artifact.output),
+            &execution_tree_artifact.output,
+        );
     persist_execution_tree_artifact(state_dir, &execution_tree_artifact, "analyze", None)?;
 
     let staged_orchestration_trace = if staged_orchestration_enabled() {
@@ -5124,13 +6324,35 @@ fn build_price_action_section(
     let swing_highs = find_swing_highs(mtf, 3);
     let swing_lows = find_swing_lows(mtf, 3);
     let breaks = detect_structure_breaks(mtf, &swing_highs, &swing_lows);
+    let latest_break_ref = breaks.last();
     let latest_break = breaks
         .last()
         .map(|brk| format!("{:?}_{:?}", brk.break_type, brk.direction));
+    let latest_break_level = latest_break_ref.map(|brk| brk.level);
+    let latest_swing_high = swing_highs.last().map(|swing| swing.price);
+    let latest_swing_low = swing_lows.last().map(|swing| swing.price);
+    let last_close = mtf.last().map(|candle| candle.close).unwrap_or_default();
+    let nearest_open_fvg = fvgs.iter().min_by(|left, right| {
+        fvg_distance_to_price(left, last_close)
+            .partial_cmp(&fvg_distance_to_price(right, last_close))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let nearest_untested_order_block = obs.iter().min_by(|left, right| {
+        order_block_distance_to_price(left, last_close)
+            .partial_cmp(&order_block_distance_to_price(right, last_close))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let recent_break_count = count_recent_breaks(&breaks, 20, mtf.len());
     let pools = detect_liquidity_pools(mtf, atr_ltf, 0.5, 2);
     let sweeps = detect_liquidity_sweep(mtf, &pools, 5);
     let liquidity_sweeps_recent = count_recent_sweeps(mtf, &sweeps, 20);
+    let nearest_liquidity_pool = pools.iter().min_by(|left, right| {
+        (left.price_level - last_close)
+            .abs()
+            .partial_cmp(&(right.price_level - last_close).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let latest_liquidity_sweep = sweeps.last();
     let bullish_cisds = detect_cisd(ltf, &detect_order_blocks(ltf), 1);
     let bullish_cisd = bullish_cisds.iter().any(|cisd| {
         cisd.direction == Direction::Bull && cisd.confirm_bar >= ltf.len().saturating_sub(10)
@@ -5163,6 +6385,9 @@ fn build_price_action_section(
         probability_role: "structural_evidence_for_probability_model".to_string(),
         structure_bias,
         latest_break,
+        latest_break_level,
+        latest_swing_high,
+        latest_swing_low,
         recent_break_count,
         swing_highs: swing_highs.len(),
         swing_lows: swing_lows.len(),
@@ -5170,13 +6395,27 @@ fn build_price_action_section(
         bear_expansion,
         expansion_strength: expansion_strength(mtf, 20),
         liquidity_sweeps_recent,
+        nearest_liquidity_pool_level: nearest_liquidity_pool.map(|pool| pool.price_level),
+        latest_liquidity_sweep_level: latest_liquidity_sweep.map(|sweep| sweep.pool_price),
         open_fvgs: fvgs.len(),
+        nearest_open_fvg_top: nearest_open_fvg.map(|fvg| fvg.top),
+        nearest_open_fvg_bottom: nearest_open_fvg.map(|fvg| fvg.bottom),
         untested_order_blocks: obs.len(),
+        nearest_untested_order_block_high: nearest_untested_order_block.map(|ob| ob.high),
+        nearest_untested_order_block_low: nearest_untested_order_block.map(|ob| ob.low),
         bullish_cisd,
         bearish_cisd,
         rejection_block_present,
         narrative,
     }
+}
+
+fn fvg_distance_to_price(fvg: &ict_engine::types::FairValueGap, price: f64) -> f64 {
+    ((fvg.top + fvg.bottom) / 2.0 - price).abs()
+}
+
+fn order_block_distance_to_price(ob: &ict_engine::types::OrderBlock, price: f64) -> f64 {
+    ((ob.high + ob.low) / 2.0 - price).abs()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9120,13 +10359,11 @@ mod tests {
     #[test]
     fn test_format_executor_summary_lines_clones_executor_summaries() {
         let lines = format_executor_summary_lines(&[
-            "executor=catboost_file action=observe confidence=0.55 weight=0.55".to_string(),
-            "executor=xgboost_file action=hold confidence=0.45 weight=0.45".to_string(),
+            "executor=catboost_file action=observe confidence=0.55 weight=1.0".to_string(),
         ]);
 
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("executor=catboost_file"));
-        assert!(lines[1].contains("executor=xgboost_file"));
     }
 
     #[test]
@@ -9230,7 +10467,7 @@ mod tests {
         assert!(!summary.is_empty());
         assert!(summary
             .iter()
-            .any(|line| line.contains("executor=catboost") || line.contains("executor=xgboost")));
+            .any(|line| line.contains("executor=catboost")));
     }
 
     #[test]
@@ -9386,6 +10623,93 @@ mod tests {
         let snapshot: WorkflowSnapshot =
             load_state(temp.path(), "NQ", ict_engine::state::WORKFLOW_SNAPSHOT_FILE).unwrap();
         assert!(snapshot.latest_execution_candidate.is_some());
+    }
+
+    #[test]
+    fn test_analyze_command_persists_regime_bundle_branch_path_on_execution_candidate() {
+        let temp = tempfile::tempdir().unwrap();
+        let htf = temp.path().join("htf.json");
+        let mtf = temp.path().join("mtf.json");
+        let ltf = temp.path().join("ltf.json");
+        let bundle = temp.path().join("regime_consumer_bundle.json");
+        let branch_path = "Crisis -> CrisisReliefCarry -> StopManagedPanicRecovery -> SourceRootStopCarryLongHorizonV1:crisis_carry_h8_sl048_tp12";
+
+        for (path, count) in [(&htf, 220usize), (&mtf, 180usize), (&ltf, 140usize)] {
+            std::fs::write(
+                path,
+                serde_json::to_string(&serde_json::json!({
+                    "candles": sample_candles(count)
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            &bundle,
+            serde_json::to_string(&serde_json::json!({
+                "schema_version": "regime-consumer-bundle/v1",
+                "latest_decision": {
+                    "decision_state": "single_label_95",
+                    "trade_usable": true,
+                    "final_label": "primary::ExtremeStress",
+                    "label_set": ["primary::ExtremeStress", branch_path],
+                    "abstain_reasons": ["branch_rc_spa_passed", "root=Crisis"]
+                },
+                "consumer_hints": {
+                    "execution_tree_hint": "accept_regime",
+                    "bbn_evidence_hint": {
+                        "regime_decision_state": "single_label_95",
+                        "regime_trade_usable": true,
+                        "regime_label": "primary::ExtremeStress",
+                        "regime_label_set": ["primary::ExtremeStress", branch_path],
+                        "regime_transition_hazard": 0.0,
+                        "regime_decision_reasons": ["branch_rc_spa_passed", "root=Crisis"]
+                    },
+                    "path_ranker_context": {
+                        "regime_profit_branch_path": branch_path,
+                        "stable_profit_score": 85.7407
+                    },
+                    "trade_usable": true
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        analyze_command(
+            "NQ",
+            htf.to_str().unwrap(),
+            mtf.to_str().unwrap(),
+            ltf.to_str().unwrap(),
+            temp.path().to_str().unwrap(),
+            OutputFormat::Json,
+            false,
+            true,
+            Some(bundle.to_str().unwrap()),
+            true,
+            true,
+        )
+        .unwrap();
+
+        let candidate: ExecutionCandidateArtifact = load_state(
+            temp.path(),
+            "NQ",
+            ict_engine::state::EXECUTION_CANDIDATE_FILE,
+        )
+        .unwrap();
+        let assignments = &candidate
+            .pre_bayes_evidence_filter
+            .as_ref()
+            .expect("execution candidate should embed pre-Bayes filter")
+            .evidence_assignments;
+
+        assert_eq!(
+            assignments.get("read_only_regime_bbn_trade_usable"),
+            Some(&"true".to_string())
+        );
+        assert!(assignments
+            .get("read_only_regime_bbn_label_set")
+            .is_some_and(|value| value.contains("Crisis_->_CrisisReliefCarry")));
     }
 
     #[test]
@@ -11268,6 +12592,19 @@ mod tests {
             .as_ref()
             .expect("update run structural refs");
         assert_eq!(run_refs.path_id, refs.path_id);
+        let consumed_filter = runs[0]
+            .consumed_pre_bayes_evidence_filter
+            .as_ref()
+            .expect("structural feedback pre-bayes filter");
+        assert_eq!(consumed_filter.gating_status, "pass_neutralized");
+        assert_eq!(
+            consumed_filter.evidence_assignments["regime_profit_branch_path"],
+            refs.path_id
+        );
+        assert_eq!(
+            consumed_filter.evidence_assignments["parent_regime_root"],
+            refs.node_id
+        );
         let snapshot_refs = snapshot
             .latest_update
             .as_ref()
@@ -11297,6 +12634,121 @@ mod tests {
             .iter()
             .filter(|prompt| prompt.id == "promotion_gate" || prompt.id == "rollback_review")
             .all(|prompt| prompt.user_prompt.contains("learning_semantics=")));
+    }
+
+    #[test]
+    fn test_update_command_merges_pending_update_structural_feedback_into_consumed_filter() {
+        let temp = tempfile::tempdir().unwrap();
+        let feedback_path = temp
+            .path()
+            .join("pending-update-with-structural-feedback.json");
+        let branch_path = "Sideways -> RangeCarry -> StopManagedRangeCarry -> SourceRootStopCarryLongHorizonV1:sideways_carry_h8_sl040_tp12";
+        let node_id = "Sideways";
+        let artifact = PendingUpdateArtifact {
+            artifact_id: "pending-update:NQ:branch".to_string(),
+            version: 1,
+            generated_at: Utc.with_ymd_and_hms(2026, 5, 12, 0, 0, 0).unwrap(),
+            symbol: "NQ".to_string(),
+            source_phase: "analyze-live".to_string(),
+            source_run_id: Some("analyze-live:NQ:branch".to_string()),
+            source_command: "ict-engine analyze".to_string(),
+            provenance: RunProvenance::default(),
+            decision_hint: "branch feedback pending update".to_string(),
+            entry_quality: "medium".to_string(),
+            factor_alignment: "mixed".to_string(),
+            factor_uncertainty: "low".to_string(),
+            selected_win_probability: 0.58,
+            top_factor_score: 0.12,
+            avg_family_score: 0.12,
+            pre_bayes_evidence_filter: Some(PreBayesEvidenceFilter {
+                raw_market_regime_label: "range".to_string(),
+                filtered_market_regime_label: "range".to_string(),
+                evidence_quality_score: 0.58,
+                gating_status: "pass_neutralized".to_string(),
+                pass_to_bbn: true,
+                evidence_assignments: BTreeMap::from([(
+                    "market_regime".to_string(),
+                    "range".to_string(),
+                )]),
+                ..PreBayesEvidenceFilter::default()
+            }),
+            template_feedback: FeedbackRecord {
+                timestamp: Utc.with_ymd_and_hms(2026, 5, 12, 0, 0, 0).unwrap(),
+                symbol: "NQ".to_string(),
+                source: "pending_update_artifact".to_string(),
+                run_id: Some("analyze-live:NQ:branch".to_string()),
+                trade_id: Some("trade:NQ:branch".to_string()),
+                prompt_version: None,
+                factor_version: None,
+                data_fingerprint: None,
+                factors_used: Vec::new(),
+                model_probabilities_before_trade: ModelProbabilitySnapshot {
+                    selected_direction: Direction::Bull,
+                    selected_probability: 0.58,
+                    long_score: 0.2,
+                    short_score: 0.1,
+                    win_prob_long: 0.58,
+                    win_prob_short: 0.49,
+                    uncertainty: 0.2,
+                },
+                realized_outcome: "win".to_string(),
+                pnl: 0.02,
+                regime_at_entry: Regime::ManipulationExpansion,
+                structural_feedback: Some(ict_engine::state::StructuralFeedbackRefs {
+                    protocol_version: "board-b-source-root-stop-carry-longhorizon/v1".to_string(),
+                    recommendation_id: "SourceRootStopCarryLongHorizonV1:sideways".to_string(),
+                    recommended_at: "2026-05-12T00:00:00+00:00".to_string(),
+                    node_id: node_id.to_string(),
+                    branch_id: branch_path.to_string(),
+                    scenario_id: "RangeCarry".to_string(),
+                    path_id: branch_path.to_string(),
+                    followed_path: true,
+                    exit_reason: Some("target_hit".to_string()),
+                    notes: Some("exact Board B regime_profit_branch_path".to_string()),
+                }),
+                reflection_mismatch_tags: Vec::new(),
+            },
+            ..PendingUpdateArtifact::default()
+        };
+        std::fs::write(&feedback_path, serde_json::to_string(&artifact).unwrap()).unwrap();
+
+        crate::update_command::update_command(UpdateCommandInput {
+            symbol: "NQ",
+            outcome: "loss",
+            entry_signal: Some("medium"),
+            feedback_file: Some(feedback_path.to_str().unwrap()),
+            state_dir: temp.path().to_str().unwrap(),
+            pnl: Some(-0.01),
+            regime: None,
+            direction: Some("long"),
+            ensemble: false,
+        })
+        .unwrap();
+
+        let runs: Vec<UpdateRunRecord> =
+            load_state(temp.path(), "NQ", ict_engine::state::UPDATE_RUNS_FILE).unwrap();
+        let consumed_filter = runs[0]
+            .consumed_pre_bayes_evidence_filter
+            .as_ref()
+            .expect("pending update consumed pre-bayes filter");
+
+        assert_eq!(consumed_filter.gating_status, "pass_neutralized");
+        assert_eq!(
+            consumed_filter.evidence_assignments["market_regime"],
+            "range"
+        );
+        assert_eq!(
+            consumed_filter.evidence_assignments["regime_profit_branch_path"],
+            branch_path
+        );
+        assert_eq!(
+            consumed_filter.evidence_assignments["parent_regime_root"],
+            node_id
+        );
+        assert_eq!(
+            consumed_filter.evidence_assignments["pre_bayes_branch_path_gate"],
+            "pass_neutralized"
+        );
     }
 
     #[test]
@@ -14885,7 +16337,7 @@ mod tests {
     #[test]
     fn test_redact_local_paths_covers_local_path_prefixes_and_delimiters() {
         let input = concat!(
-            "/Users/alice/file.json ",
+            "/home/alice/file.json ",
             "/home/bob/file.json,",
             "/tmp/run.json;",
             "/var/log/app.json|",
@@ -14901,7 +16353,7 @@ mod tests {
     #[test]
     fn test_redact_local_paths_in_value_walks_nested_strings() {
         let mut value = serde_json::json!({
-            "top": "/Users/alice/top.json",
+            "top": "/home/alice/top.json",
             "nested": [
                 "/tmp/a.json",
                 {"inner": "/Volumes/Data/demo.json"}
@@ -15041,7 +16493,7 @@ mod tests {
     fn test_workflow_status_human_view_prefers_persisted_scorecards() {
         let snapshot = ict_engine::application::orchestration::sample_human_workflow_snapshot();
         let persisted = vec![EnsembleExecutorScorecard {
-            executor: "xgboost_file".to_string(),
+            executor: "catboost_file".to_string(),
             latest_weight_hint: Some(0.72),
             wins: 3,
             ..EnsembleExecutorScorecard::default()
@@ -15051,7 +16503,7 @@ mod tests {
         );
         assert_eq!(
             value["ensemble_consensus"]["executor_scorecards"][0]["executor"],
-            "xgboost_file"
+            "catboost_file"
         );
         assert_eq!(
             value["ensemble_consensus"]["executor_scorecard_source"],
@@ -15070,7 +16522,7 @@ mod tests {
             ..EnsembleExecutorScorecard::default()
         }];
         let persisted = vec![EnsembleExecutorScorecard {
-            executor: "xgboost_file".to_string(),
+            executor: "catboost_file".to_string(),
             ..EnsembleExecutorScorecard::default()
         }];
 
@@ -15084,7 +16536,7 @@ mod tests {
                 &persisted, &fallback,
             );
         assert_eq!(persisted_source, "persisted");
-        assert_eq!(persisted_surface[0].executor, "xgboost_file");
+        assert_eq!(persisted_surface[0].executor, "catboost_file");
     }
 
     #[test]
@@ -15093,7 +16545,7 @@ mod tests {
             .latest_ensemble_vote
             .expect("sample ensemble vote");
         let persisted = vec![EnsembleExecutorScorecard {
-            executor: "xgboost_file".to_string(),
+            executor: "catboost_file".to_string(),
             latest_weight_hint: Some(0.80),
             ..EnsembleExecutorScorecard::default()
         }];
@@ -15125,7 +16577,7 @@ mod tests {
         );
         assert_eq!(
             value["history"][0]["executor_scorecards"][0]["executor"],
-            "xgboost_file"
+            "catboost_file"
         );
         assert_eq!(value["hard_block_only"][0]["artifact_id"], vote.artifact_id);
         assert_eq!(value["hard_block_summary"]["count"], 1);
@@ -15653,6 +17105,425 @@ mod tests {
             }
             other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
         }
+    }
+
+    #[test]
+    fn test_cli_factor_candidate_packs_accepts_output_format() {
+        let cli = parse_cli_from([
+            "ict-engine",
+            "factor-candidate-packs",
+            "--output-format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::FactorCandidatePacks { output_format, .. } => {
+                assert_eq!(output_format, "json");
+            }
+            other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_cli_factor_candidate_admission_targets_requires_symbol() {
+        let cli = parse_cli_from([
+            "ict-engine",
+            "factor-candidate-admission-targets",
+            "--symbol",
+            "FACTOR_CANDIDATES",
+            "--state-dir",
+            "/tmp/ict-engine-test",
+            "--output-format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::FactorCandidateAdmissionTargets {
+                symbol,
+                output_format,
+                ..
+            } => {
+                assert_eq!(symbol, "FACTOR_CANDIDATES");
+                assert_eq!(output_format, "json");
+            }
+            other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_cli_regime_confidence_assets_accepts_output_format() {
+        let cli = parse_cli_from([
+            "ict-engine",
+            "regime-confidence-assets",
+            "--output-format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::RegimeConfidenceAssets { output_format, .. } => {
+                assert_eq!(output_format, "json");
+            }
+            other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_cli_factor_asset_closure_intake_requires_symbol() {
+        let cli = parse_cli_from([
+            "ict-engine",
+            "factor-asset-closure-intake",
+            "--symbol",
+            "NQ",
+            "--state-dir",
+            "/tmp/ict-engine-test",
+            "--output-format",
+            "json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::FactorAssetClosureIntake {
+                symbol,
+                output_format,
+                ..
+            } => {
+                assert_eq!(symbol, "NQ");
+                assert_eq!(output_format, "json");
+            }
+            other => panic!("unexpected command: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_build_regime_confidence_asset_inventory_reads_recovered_assets() {
+        let payload =
+            build_regime_confidence_asset_inventory("config/regime_confidence_assets_v1.csv")
+                .unwrap();
+        assert_json_strings_do_not_contain(
+            &payload,
+            &[
+                "docs/plans/",
+                "docs/experiments/",
+                "experiments/",
+                "candidate_packs",
+                "candidate-pack",
+            ],
+        );
+        assert_eq!(payload["summary"]["asset_count"].as_u64(), Some(18));
+        assert_eq!(
+            payload["summary"]["contrast_evidence_count"].as_u64(),
+            Some(10)
+        );
+        assert_eq!(
+            payload["summary"]["board_a_regime_gate_count"].as_u64(),
+            Some(11)
+        );
+        assert_eq!(
+            payload["summary"]["direct_event_overlay_count"].as_u64(),
+            Some(2)
+        );
+        assert_eq!(
+            payload["summary"]["diagnostic_after_source_control_unlock_count"].as_u64(),
+            Some(4)
+        );
+        assert_eq!(
+            payload["summary"]["runtime_selection_enabled"].as_bool(),
+            Some(false)
+        );
+        let assets = payload["assets"].as_array().unwrap();
+        let contrast_evidence = payload["contrast_evidence"].as_array().unwrap();
+        assert!(assets
+            .iter()
+            .all(|asset| asset["usable_as"].as_str() != Some("contrast_evidence")));
+        assert!(contrast_evidence
+            .iter()
+            .all(|evidence| evidence["usable_as"].as_str() == Some("contrast_evidence")));
+        let bull = assets
+            .iter()
+            .find(|asset| {
+                asset["asset_id"].as_str() == Some("bull_sourcebacked_drawdown_volatility_v1")
+            })
+            .unwrap();
+        assert_eq!(bull["label"].as_str(), Some("Bull"));
+        assert_eq!(bull["usable_as"].as_str(), Some("board_a_regime_gate"));
+        assert_eq!(bull["calibration_wilson95_lcb"].as_f64(), Some(0.952516));
+    }
+
+    fn assert_json_strings_do_not_contain(value: &Value, forbidden: &[&str]) {
+        match value {
+            Value::String(text) => {
+                for needle in forbidden {
+                    assert!(
+                        !text.contains(needle),
+                        "inventory leaked non-engine provenance path '{needle}' in '{text}'"
+                    );
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_json_strings_do_not_contain(item, forbidden);
+                }
+            }
+            Value::Object(entries) => {
+                for item in entries.values() {
+                    assert_json_strings_do_not_contain(item, forbidden);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn test_build_factor_candidate_pack_inventory_reads_curated_packs() {
+        let payload = build_factor_candidate_pack_inventory(
+            "examples/factor_candidate_packs/curated-auto-quant-v1",
+        )
+        .unwrap();
+        assert_eq!(payload["summary"]["candidate_pack_count"].as_u64(), Some(7));
+        let candidates = payload["candidates"].as_array().unwrap();
+        let vrp = candidates
+            .iter()
+            .find(|candidate| {
+                candidate["candidate_id"].as_str() == Some("family_f_vrp_compression_15m_v1")
+            })
+            .unwrap();
+        assert_eq!(vrp["aggregate_trade_count"].as_u64(), Some(334));
+        assert_eq!(vrp["aggregate_label"].as_str(), Some("preferred_density"));
+        assert_eq!(
+            vrp["transfer_status"].as_str(),
+            Some("cross_market_candidate")
+        );
+    }
+
+    #[test]
+    fn test_build_factor_candidate_admission_target_artifact_preserves_branch_path() {
+        let artifact = build_factor_candidate_admission_target_artifact(
+            "examples/factor_candidate_packs/curated-auto-quant-v1",
+            "FACTOR_CANDIDATES",
+        )
+        .unwrap();
+        assert_eq!(artifact.rows.len(), 35);
+        let vrp = artifact
+            .rows
+            .iter()
+            .find(|row| {
+                row.profit_factor
+                    .as_deref()
+                    .is_some_and(|value| value == "family_f_vrp_compression_15m_v1@NQ/USD")
+            })
+            .unwrap();
+        assert_eq!(vrp.direction, "Observe");
+        assert_eq!(vrp.pending_reward_state, "matured_success");
+        assert!(vrp.maturity_mask);
+        assert_eq!(vrp.calibrated_label, Some(1.0));
+        assert!(vrp.training_weight.is_some());
+        assert!(vrp
+            .regime_profit_branch_path
+            .as_deref()
+            .unwrap()
+            .contains(" -> nq_usd -> family_f:"));
+        assert_eq!(
+            vrp.score_source_kind.as_deref(),
+            Some("factor_candidate_pack_admission_seed")
+        );
+        let probe = artifact
+            .rows
+            .iter()
+            .find(|row| {
+                row.profit_factor
+                    .as_deref()
+                    .is_some_and(|value| value == "family_a_fvg_retrace_1h_v1@GLD/USD")
+            })
+            .unwrap();
+        assert_eq!(probe.pending_reward_state, "matured_failure");
+        assert_eq!(probe.calibrated_label, Some(0.0));
+        assert!(probe.training_weight.is_some());
+    }
+
+    #[test]
+    fn test_export_factor_candidate_admission_targets_writes_policy_training_target() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let summary = export_factor_candidate_admission_targets(
+            "examples/factor_candidate_packs/curated-auto-quant-v1",
+            "FACTOR_CANDIDATES",
+            temp.path().to_str().unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(summary.rows, 35);
+        assert!(summary.mature_rows >= 30);
+        assert!(summary.rows_with_training_weight >= 30);
+        assert!(summary.rows_with_calibrated_path_prob >= 30);
+        assert_eq!(summary.rows_with_execution_gate_status, 0);
+        assert!(std::path::Path::new(&summary.jsonl_path).exists());
+        let status = ict_engine::application::entry_models::policy_training_status(
+            temp.path().to_str().unwrap(),
+            "FACTOR_CANDIDATES",
+            None,
+        )
+        .unwrap();
+        assert!(status.factor_candidate_packs.inventory_ready);
+        assert_eq!(status.factor_candidate_packs.candidate_pack_count, 7);
+        assert!(status.structural_path_ranking_target.export_ready);
+        assert_eq!(status.structural_path_ranking_target.rows, 35);
+        assert!(status.structural_path_ranking_target.mature_rows >= 30);
+        assert!(status.structural_path_ranking_target.trainer_artifact_ready);
+        assert_eq!(
+            status
+                .structural_path_ranking_target
+                .trainer_artifact_model_family
+                .as_deref(),
+            Some("weighted_feature_sum_v1")
+        );
+        assert!(!status.structural_path_ranking_runtime.enabled);
+        assert!(
+            status
+                .structural_path_ranking_validation
+                .production_validation_ready
+        );
+        assert!(!status.structural_path_ranking_validation.calibration_ready);
+        assert!(
+            status
+                .structural_path_ranking_validation
+                .calibration_quality_ready
+        );
+        assert_eq!(
+            status
+                .structural_path_ranking_target
+                .rows_with_execution_gate_status,
+            0
+        );
+        let ledger = load_artifact_ledger(temp.path(), "FACTOR_CANDIDATES").unwrap();
+        assert!(ledger.iter().any(
+            |entry| entry.artifact_kind == "structural_path_ranking_target"
+                && entry.status == "admission_pending"
+        ));
+        assert!(ledger
+            .iter()
+            .any(|entry| entry.artifact_kind == "factor_candidate_pack_inventory"));
+        assert!(ledger.iter().any(|entry| entry.artifact_kind
+            == "structural_path_ranking_trainer_artifact"
+            && entry.status == "ready_observation_only"));
+    }
+
+    #[test]
+    fn test_persist_factor_candidate_pack_inventory_writes_ledger_and_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let payload = build_factor_candidate_pack_inventory(
+            "examples/factor_candidate_packs/curated-auto-quant-v1",
+        )
+        .unwrap();
+
+        let path = persist_factor_candidate_pack_inventory(
+            temp.path().to_str().unwrap(),
+            "FACTOR_CANDIDATES",
+            &payload,
+        )
+        .unwrap();
+
+        assert!(std::path::Path::new(&path).exists());
+        let ledger = load_artifact_ledger(temp.path(), "FACTOR_CANDIDATES").unwrap();
+        assert!(ledger.iter().any(|entry| entry.artifact_kind
+            == "factor_candidate_pack_inventory"
+            && entry.status == "ready"));
+        let snapshot = load_workflow_snapshot(temp.path(), "FACTOR_CANDIDATES").unwrap();
+        assert!(snapshot
+            .recent_artifacts
+            .iter()
+            .any(|entry| entry.artifact_kind == "factor_candidate_pack_inventory"));
+    }
+
+    #[test]
+    fn test_persist_regime_confidence_asset_inventory_writes_ledger_snapshot_and_status() {
+        let temp = tempfile::tempdir().unwrap();
+        let payload =
+            build_regime_confidence_asset_inventory("config/regime_confidence_assets_v1.csv")
+                .unwrap();
+
+        let path = persist_regime_confidence_asset_inventory(
+            temp.path().to_str().unwrap(),
+            "REGIME_CONFIDENCE_ASSETS",
+            &payload,
+        )
+        .unwrap();
+
+        assert!(std::path::Path::new(&path).exists());
+        let ledger = load_artifact_ledger(temp.path(), "REGIME_CONFIDENCE_ASSETS").unwrap();
+        assert!(ledger.iter().any(|entry| entry.artifact_kind
+            == "regime_confidence_asset_inventory"
+            && entry.status == "ready_preserved"));
+        let snapshot = load_workflow_snapshot(temp.path(), "REGIME_CONFIDENCE_ASSETS").unwrap();
+        assert!(snapshot
+            .recent_artifacts
+            .iter()
+            .any(|entry| entry.artifact_kind == "regime_confidence_asset_inventory"));
+        let status = ict_engine::application::entry_models::policy_training_status(
+            temp.path().to_str().unwrap(),
+            "REGIME_CONFIDENCE_ASSETS",
+            None,
+        )
+        .unwrap();
+        assert!(status.regime_confidence_assets.inventory_ready);
+        assert_eq!(status.regime_confidence_assets.asset_count, 18);
+        assert_eq!(
+            status.regime_confidence_assets.board_a_regime_gate_count,
+            11
+        );
+        assert_eq!(
+            status.regime_confidence_assets.direct_event_overlay_count,
+            2
+        );
+        assert_eq!(status.regime_confidence_assets.contrast_evidence_count, 10);
+        assert!(!status.regime_confidence_assets.promotion_allowed);
+        assert!(!status.regime_confidence_assets.runtime_selection_enabled);
+    }
+
+    #[test]
+    fn test_factor_asset_closure_intake_writes_both_closed_loop_surfaces() {
+        let temp = tempfile::tempdir().unwrap();
+
+        factor_asset_closure_intake_command(
+            "examples/factor_candidate_packs/curated-auto-quant-v1",
+            "config/regime_confidence_assets_v1.csv",
+            "NQ",
+            temp.path().to_str().unwrap(),
+            "json",
+        )
+        .unwrap();
+
+        let status = ict_engine::application::entry_models::policy_training_status(
+            temp.path().to_str().unwrap(),
+            "NQ",
+            None,
+        )
+        .unwrap();
+        assert!(status.factor_candidate_packs.inventory_ready);
+        assert_eq!(status.factor_candidate_packs.candidate_pack_count, 7);
+        assert!(status.structural_path_ranking_target.export_ready);
+        assert_eq!(status.structural_path_ranking_target.rows, 35);
+        assert!(status.regime_confidence_assets.inventory_ready);
+        assert_eq!(status.regime_confidence_assets.asset_count, 18);
+        assert_eq!(
+            status.regime_confidence_assets.board_a_regime_gate_count,
+            11
+        );
+        assert_eq!(status.regime_confidence_assets.contrast_evidence_count, 10);
+        assert!(!status.regime_confidence_assets.promotion_allowed);
+        assert!(!status.structural_path_ranking_runtime.enabled);
+
+        let snapshot = load_workflow_snapshot(temp.path(), "NQ").unwrap();
+        assert!(snapshot
+            .recent_artifacts
+            .iter()
+            .any(|entry| entry.artifact_kind == "factor_candidate_pack_inventory"));
+        assert!(snapshot
+            .recent_artifacts
+            .iter()
+            .any(|entry| entry.artifact_kind == "structural_path_ranking_target"));
+        assert!(snapshot
+            .recent_artifacts
+            .iter()
+            .any(|entry| entry.artifact_kind == "regime_confidence_asset_inventory"));
     }
 
     #[test]

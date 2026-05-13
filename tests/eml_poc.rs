@@ -4,6 +4,7 @@ use ict_engine::factor_lab::{BacktestConfig, FactorBacktestEngine, FactorContext
 use ict_engine::factors::FactorRegistry;
 use ict_engine::types::{Candle, Regime};
 use std::collections::HashMap;
+use std::path::Path;
 
 #[derive(Debug)]
 struct PocResult {
@@ -142,21 +143,18 @@ fn run_config(
 
 #[test]
 fn eml_poc_nq_and_es() {
-    let home = std::env::var("HOME").expect("HOME env");
+    let Ok(root) = std::env::var("ICT_ENGINE_EML_POC_ROOT") else {
+        eprintln!("skipping eml_poc_nq_and_es: ICT_ENGINE_EML_POC_ROOT is not set");
+        return;
+    };
 
     let nq_after = TimeZone::with_ymd_and_hms(&Utc, 2023, 1, 1, 0, 0, 0).unwrap();
-    let nq_path = format!(
-        "{}/Downloads/tomac/poc-cleaned-15m/nq/nq.continuous-15m.json",
-        home
-    );
-    let nq = run_symbol("NQ", &nq_path, nq_after);
+    let nq_path = Path::new(&root).join("nq").join("nq.continuous-15m.json");
+    let nq = run_symbol("NQ", &nq_path.to_string_lossy(), nq_after);
 
     let es_after = TimeZone::with_ymd_and_hms(&Utc, 2024, 1, 1, 0, 0, 0).unwrap();
-    let es_path = format!(
-        "{}/Downloads/tomac/poc-cleaned-15m/es/es.continuous-15m.json",
-        home
-    );
-    let es = run_symbol("ES", &es_path, es_after);
+    let es_path = Path::new(&root).join("es").join("es.continuous-15m.json");
+    let es = run_symbol("ES", &es_path.to_string_lossy(), es_after);
 
     println!("\n========== EML PoC Baseline Snapshot ==========");
     for r in [&nq, &es] {

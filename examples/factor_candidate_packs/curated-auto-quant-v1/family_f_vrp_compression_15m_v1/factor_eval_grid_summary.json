@@ -1,0 +1,125 @@
+{
+  "schema_version": "factor-eval-grid-summary/v1",
+  "selected_strategy": "TomacNQ_RegimeVRPCompression15m",
+  "timeframe": "1h",
+  "candidate_status": "active",
+  "promotion_state": "promotable",
+  "breadth_matrix": {
+    "NQ/USD": {
+      "status": "covered",
+      "trade_count": 334,
+      "trade_density_label": "preferred_density",
+      "sharpe": 0.3391829705338019,
+      "win_rate_pct": 32.634731,
+      "profit_factor": 1.640360998053442,
+      "total_profit_pct": 28.95,
+      "max_drawdown_pct": 4.101209
+    },
+    "GLD/USD": {
+      "status": "external_evidence",
+      "trade_count": null,
+      "trade_density_label": "external_evidence",
+      "sharpe": 0.446,
+      "win_rate_pct": null,
+      "profit_factor": null,
+      "total_profit_pct": null,
+      "max_drawdown_pct": null,
+      "source_window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market",
+      "notes": []
+    },
+    "SPY/USD": {
+      "status": "external_evidence",
+      "trade_count": null,
+      "trade_density_label": "external_evidence",
+      "sharpe": -0.182,
+      "win_rate_pct": null,
+      "profit_factor": null,
+      "total_profit_pct": null,
+      "max_drawdown_pct": null,
+      "source_window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market",
+      "notes": []
+    },
+    "IWM/USD": {
+      "status": "covered",
+      "trade_count": 16,
+      "trade_density_label": "probe_only",
+      "sharpe": 0.897,
+      "win_rate_pct": null,
+      "profit_factor": 7.4,
+      "total_profit_pct": null,
+      "max_drawdown_pct": null,
+      "source_window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market",
+      "notes": []
+    },
+    "DIA/USD": {
+      "status": "external_evidence",
+      "trade_count": null,
+      "trade_density_label": "external_evidence",
+      "sharpe": -0.563,
+      "win_rate_pct": null,
+      "profit_factor": null,
+      "total_profit_pct": null,
+      "max_drawdown_pct": null,
+      "source_window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market",
+      "notes": []
+    }
+  },
+  "trade_density_summary": {
+    "aggregate_trade_count": 334,
+    "aggregate_label": "preferred_density",
+    "covered_market_count": 5
+  },
+  "aggregate_metrics": {
+    "sharpe": 0.3391829705338019,
+    "win_rate_pct": 32.634731,
+    "profit_factor": 1.640360998053442,
+    "total_profit_pct": 28.94944,
+    "max_drawdown_pct": 4.101209,
+    "trade_count": 334
+  },
+  "resonance_summary": {
+    "base_timeframe": "15m",
+    "context_stack": [
+      "4h",
+      "1d"
+    ],
+    "resonance_by_timeframe": {
+      "4h": "required_alignment",
+      "1d": "vol-regime-context"
+    }
+  },
+  "autoresearch": {
+    "effective_status": null,
+    "decision_counts": {},
+    "failure_tag_counts": {},
+    "best_attempt_score_delta": null
+  },
+  "cross_market_evidence": {
+    "GLD/USD": {
+      "sharpe": 0.446,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    },
+    "SPY/USD": {
+      "sharpe": -0.182,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    },
+    "IWM/USD": {
+      "sharpe": 0.897,
+      "trade_count": 16,
+      "profit_factor": 7.4,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    },
+    "DIA/USD": {
+      "sharpe": -0.563,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    }
+  }
+}

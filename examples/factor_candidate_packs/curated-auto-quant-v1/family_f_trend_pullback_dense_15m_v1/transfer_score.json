@@ -1,0 +1,55 @@
+{
+  "schema_version": "transfer-score/v1",
+  "strategy_name": "TomacNQ_RegimeTrendPullbackDense15m",
+  "covered_market_count": 5,
+  "covered_markets": [
+    "NQ/USD",
+    "GLD/USD",
+    "SPY/USD",
+    "IWM/USD",
+    "DIA/USD"
+  ],
+  "markets_without_trade_counts": [
+    "GLD/USD",
+    "SPY/USD",
+    "IWM/USD",
+    "DIA/USD"
+  ],
+  "status": "cross_market_candidate",
+  "overall_transfer_score": 0.679438,
+  "average_sharpe": 0.168218,
+  "average_trade_count": 2462,
+  "timeframe": "1h",
+  "market_evidence": {
+    "NQ/USD": {
+      "sharpe": 0.26109139321100866,
+      "trade_count": 2462,
+      "win_rate_pct": 29.285134,
+      "profit_factor": 1.0503742467011472,
+      "total_profit_pct": 18.11,
+      "max_drawdown_pct": 15.801901,
+      "evidence_source": "manifest"
+    },
+    "GLD/USD": {
+      "sharpe": 0.641,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    },
+    "SPY/USD": {
+      "sharpe": 0.605,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    },
+    "IWM/USD": {
+      "sharpe": -0.397,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    },
+    "DIA/USD": {
+      "sharpe": -0.269,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    }
+  },
+  "evidence_source": "manifest+candidate_spec"
+}

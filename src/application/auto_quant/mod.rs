@@ -111,6 +111,37 @@ mod tests {
     }
 
     #[test]
+    fn status_rebases_copied_state_config_to_state_local_workspace() {
+        let source_state = tempfile::tempdir().unwrap();
+        let copied_state = tempfile::tempdir().unwrap();
+        let source_workspace = source_state.path().join(".deps/auto-quant");
+        let copied_workspace = copied_state.path().join(".deps/auto-quant");
+        init_repo(&source_workspace);
+        init_repo(&copied_workspace);
+
+        let config = AutoQuantDependencyConfig {
+            repo_url: "repo".to_string(),
+            managed_dir: source_workspace.to_string_lossy().to_string(),
+            tracked_branch: "master".to_string(),
+            pinned_ref: None,
+            adapter_version: AUTO_QUANT_ADAPTER_VERSION.to_string(),
+            last_sync: None,
+        };
+        std::fs::write(
+            config_path(copied_state.path().to_str().unwrap()),
+            serde_json::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+
+        let status = auto_quant_status(copied_state.path().to_str().unwrap()).unwrap();
+
+        assert_eq!(
+            status.managed_dir,
+            copied_workspace.to_string_lossy().to_string()
+        );
+    }
+
+    #[test]
     fn readiness_reports_missing_dependency_with_bootstrap_next_step() {
         let temp = tempfile::tempdir().unwrap();
         let readiness =

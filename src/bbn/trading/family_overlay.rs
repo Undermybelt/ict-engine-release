@@ -79,14 +79,20 @@ pub fn apply_trading_cpt_family_overlay(
 mod tests {
     use super::*;
     use crate::bbn::trading::topology::build_trading_network;
+    use std::path::PathBuf;
+
+    fn policy_training_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/policy_training")
+            .join(name)
+    }
 
     #[test]
     fn applies_known_family_overlay() {
         let mut network = build_trading_network().unwrap();
-        let overlays = load_logic_family_overlays(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("state/policy_training/repo_bbn_logic_family_overlays.json"),
-        )
+        let overlays = load_logic_family_overlays(policy_training_fixture(
+            "repo_bbn_logic_family_overlays.json",
+        ))
         .unwrap();
         let applied =
             apply_trading_cpt_family_overlay(&mut network, &overlays, "purified_sweep").unwrap();

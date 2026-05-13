@@ -31,6 +31,10 @@ RELEASE_MIRROR_REPO="https://github.com/Undermybelt/ict-engine-release.git"
 
 ## Release flow
 
+For the current 2026-05-13 candidate, first read
+`docs/audits/2026-05-13-sanitized-release-candidate-manifest.md`. The current
+verified candidate is a sanitized export slice, not a broad dirty-worktree sync.
+
 1. Verify source repo from the repo root:
 
 ```bash

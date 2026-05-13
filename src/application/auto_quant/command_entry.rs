@@ -40,7 +40,7 @@ use super::{
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde_json::json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Ledger artifact_kind written by `auto-quant-consume-live-signals`.
@@ -365,11 +365,12 @@ pub fn auto_quant_prepare_workspace_command(state_dir: &str) -> Result<()> {
         );
     }
     let prepare_command = auto_quant_prepare_script_command(&readiness_before.workspace);
+    let workspace_root = absolute_path(&readiness_before.workspace.repo_root)?;
+    let prepare_script = absolute_path(&readiness_before.workspace.prepare_script)?;
     let output = if let Some(profile) = super::workspace_profile::materialize_workspace_profile(
         state_dir,
         &readiness_before.workspace,
     )? {
-        let workspace_root = PathBuf::from(&readiness_before.workspace.repo_root);
         let csv_path = workspace_root.join("profile_source.csv");
         let timeframes = std::iter::once(profile.base_timeframe.clone())
             .chain(profile.additional_timeframes.clone())
@@ -380,7 +381,7 @@ pub fn auto_quant_prepare_workspace_command(state_dir: &str) -> Result<()> {
                 "run",
                 "--with",
                 "ta-lib",
-                readiness_before.workspace.prepare_script.as_str(),
+                path_str(&prepare_script, "prepare script")?,
                 "--csv",
                 csv_path.to_str().unwrap_or("profile_source.csv"),
                 "--pair",
@@ -393,7 +394,7 @@ pub fn auto_quant_prepare_workspace_command(state_dir: &str) -> Result<()> {
                 "date:date,open:open,high:high,low:low,close:close,volume:volume",
                 "--no-clean",
             ])
-            .current_dir(&readiness_before.workspace.repo_root)
+            .current_dir(&workspace_root)
             .output()
             .with_context(|| format!("failed to launch {}", prepare_command))?
     } else {
@@ -402,9 +403,9 @@ pub fn auto_quant_prepare_workspace_command(state_dir: &str) -> Result<()> {
                 "run",
                 "--with",
                 "ta-lib",
-                readiness_before.workspace.prepare_script.as_str(),
+                path_str(&prepare_script, "prepare script")?,
             ])
-            .current_dir(&readiness_before.workspace.repo_root)
+            .current_dir(&workspace_root)
             .output()
             .with_context(|| format!("failed to launch {}", prepare_command))?
     };
@@ -435,6 +436,20 @@ pub fn auto_quant_prepare_workspace_command(state_dir: &str) -> Result<()> {
         }))?
     );
     Ok(())
+}
+
+fn absolute_path(path: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
+}
+
+fn path_str<'a>(path: &'a Path, label: &str) -> Result<&'a str> {
+    path.to_str()
+        .ok_or_else(|| anyhow!("{label} path is not valid UTF-8: {}", path.display()))
 }
 
 pub fn auto_quant_adoption_review_command(
@@ -1382,6 +1397,27 @@ mod tests {
             .contains("auto_quant_status missing_dependency"));
         assert_eq!(compact.status, "missing_dependency");
         assert!(!compact.dependency_healthy);
+    }
+
+    #[test]
+    fn auto_quant_prepare_resolves_relative_workspace_paths_before_chdir() {
+        let current_dir = std::env::current_dir().unwrap();
+        let resolved = absolute_path("state/.deps/auto-quant/prepare.py").unwrap();
+
+        assert!(resolved.is_absolute());
+        assert_eq!(
+            resolved,
+            current_dir.join("state/.deps/auto-quant/prepare.py")
+        );
+    }
+
+    #[test]
+    fn auto_quant_prepare_keeps_absolute_workspace_paths_unchanged() {
+        let temp = tempfile::tempdir().unwrap();
+        let script = temp.path().join("prepare.py");
+        let resolved = absolute_path(script.to_str().unwrap()).unwrap();
+
+        assert_eq!(resolved, script);
     }
 
     #[test]

@@ -1,0 +1,26 @@
+{
+  "schema_version": "transfer-score/v1",
+  "strategy_name": "TomacNQ_RegimeFVGRetrace5m",
+  "covered_market_count": 1,
+  "covered_markets": [
+    "NQ/USD"
+  ],
+  "markets_without_trade_counts": [],
+  "status": "single_market_only",
+  "overall_transfer_score": 0.0,
+  "average_sharpe": -0.019862,
+  "average_trade_count": 82,
+  "timeframe": "1h",
+  "market_evidence": {
+    "NQ/USD": {
+      "sharpe": -0.019861949257550405,
+      "trade_count": 82,
+      "win_rate_pct": 41.463415,
+      "profit_factor": 0.8398779191759544,
+      "total_profit_pct": -0.47,
+      "max_drawdown_pct": 1.716007,
+      "evidence_source": "manifest"
+    }
+  },
+  "evidence_source": "manifest_only"
+}

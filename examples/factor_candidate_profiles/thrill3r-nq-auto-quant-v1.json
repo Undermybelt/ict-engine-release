@@ -8,7 +8,7 @@
     {
       "candidate_id": "family_f_vrp_compression_15m_v1",
       "artifact_source": {
-        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-07_05-16-40.zip"
+        "freqtrade_backtest_zip": "user_data/backtest_results/backtest-result-2026-05-07_05-16-40.zip"
       },
       "target_market_hypothesis": [
         "NQ/USD",
@@ -43,7 +43,7 @@
     {
       "candidate_id": "family_f_trend_pullback_dense_15m_v1",
       "artifact_source": {
-        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-07_05-12-26.zip"
+        "freqtrade_backtest_zip": "user_data/backtest_results/backtest-result-2026-05-07_05-12-26.zip"
       },
       "cross_market_metrics": {
         "GLD/USD": {
@@ -71,7 +71,7 @@
     {
       "candidate_id": "family_d_liquidity_sweep_reclaim_15m_wide_v1",
       "artifact_source": {
-        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-07_05-16-11.zip"
+        "freqtrade_backtest_zip": "user_data/backtest_results/backtest-result-2026-05-07_05-16-11.zip"
       },
       "cross_market_metrics": {
         "GLD/USD": {
@@ -101,7 +101,7 @@
     {
       "candidate_id": "family_a_killzone_breakout_1h_v1",
       "artifact_source": {
-        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-08_22-34-12.zip"
+        "freqtrade_backtest_zip": "user_data/backtest_results/backtest-result-2026-05-08_22-34-12.zip"
       },
       "target_market_hypothesis": [
         "NQ/USD",
@@ -144,7 +144,7 @@
     {
       "candidate_id": "family_a_killzone_displacement_pending_v1",
       "artifact_source": {
-        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-08_23-06-31.zip"
+        "freqtrade_backtest_zip": "user_data/backtest_results/backtest-result-2026-05-08_23-06-31.zip"
       },
       "target_market_hypothesis": [
         "NQ/USD",
@@ -189,7 +189,7 @@
     {
       "candidate_id": "family_a_fvg_retrace_1h_v1",
       "artifact_source": {
-        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-08_23-46-20.zip"
+        "freqtrade_backtest_zip": "user_data/backtest_results/backtest-result-2026-05-08_23-46-20.zip"
       },
       "target_market_hypothesis": [
         "NQ/USD",
@@ -234,7 +234,7 @@
     {
       "candidate_id": "family_a_fvg_retrace_5m_v1",
       "artifact_source": {
-        "freqtrade_backtest_zip": "/Users/thrill3r/Auto-Quant/user_data/backtest_results/backtest-result-2026-05-08_23-55-11.zip"
+        "freqtrade_backtest_zip": "user_data/backtest_results/backtest-result-2026-05-08_23-55-11.zip"
       },
       "target_market_hypothesis": [
         "NQ/USD"

@@ -27,7 +27,7 @@ ict-engine has a large `src/main.rs`, growing workflow/reporting surfaces, and m
 - For `ict-engine`, external adapter scope is read-only market data, snapshot/replay, and sim-oriented research support. No live order execution, withdrawals, transfers, staking, or broker-shell command surfaces belong in the default adapter boundary.
 - Cross-source workflow intake should prefer minimal primitive modules, explicit data->analysis->report separation, reusable SOP/skill crystallization, and typed workflow surfaces; avoid importing speculative theory stacks directly into trading inference.
 - Reflection/reporting extensions should go through `application/reflection/*` or other application adapters first.
-- If adding CatBoost/XGBoost later, keep them behind executor traits/adapters so command surfaces depend on stable typed outputs, not crate-specific APIs.
+- If adding CatBoost later, keep them behind executor traits/adapters so command surfaces depend on stable typed outputs, not crate-specific APIs.
 
 ## Allowed adapter bridges
 - domain -> application

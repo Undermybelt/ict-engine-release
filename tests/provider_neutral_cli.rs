@@ -157,7 +157,7 @@ fn bootstrap_output_does_not_auto_reuse_personal_tomac_paths_without_profile() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(!stdout.contains("/Users/thrill3r/Downloads/Tomac"));
+    assert!(!stdout.contains(concat!("/", "Users", "/example/Downloads/Tomac")));
     assert!(!stdout.contains("ict-cleaned-mtf"));
     assert!(stdout.contains("<tomac-root>"));
     assert!(stdout.contains("<output-dir>"));
@@ -276,6 +276,60 @@ fn workflow_status_human_hides_opt_in_profile_hint_without_selecting_one() {
     assert!(stdout.contains("Provider: tradfi free fallback="));
     assert!(stdout.contains("Routes: replay="));
     assert!(stdout.contains("--phase bootstrap --human"));
+}
+
+#[test]
+fn workflow_status_human_surfaces_matching_opt_in_profile_choice_without_adopting_it() {
+    let binary = env!("CARGO_BIN_EXE_ict-engine");
+    let state = TempDir::new().unwrap();
+
+    let output = Command::new(binary)
+        .args([
+            "workflow-status",
+            "--symbol",
+            "NQ",
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--human",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Optional personal lane:"));
+    assert!(stdout.contains("--profile thrill3r-nq-closed-loop-v1"));
+    assert!(!stdout.contains("/Users/"));
+}
+
+#[test]
+fn workflow_status_agent_surfaces_matching_opt_in_profile_reference_without_adopting_it() {
+    let binary = env!("CARGO_BIN_EXE_ict-engine");
+    let state = TempDir::new().unwrap();
+
+    let output = Command::new(binary)
+        .args([
+            "workflow-status",
+            "--symbol",
+            "NQ",
+            "--state-dir",
+            state.path().to_str().unwrap(),
+            "--agent",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value["selected_profile_id"].is_null());
+    assert!(value["available_opt_in_profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|profile| profile["selector"] == "thrill3r-nq-closed-loop-v1"));
+    assert!(!String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("/Users/"));
 }
 
 #[test]

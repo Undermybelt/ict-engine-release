@@ -60,10 +60,8 @@ def python_runner_command(model_family: str, python_runner: str) -> list[str]:
     if python_runner not in {"auto", "uv"}:
         raise ValueError(f"unsupported python runner: {python_runner}")
     required = ["pandas", "numpy"]
-    if model_family in {"catboost", "both"}:
+    if model_family == "catboost":
         required.append("catboost")
-    if model_family in {"xgboost", "both"}:
-        required.append("xgboost")
     if python_runner == "auto" and current_python_has_modules(required):
         return [sys.executable]
     uv = shutil.which("uv")
@@ -75,8 +73,6 @@ def python_runner_command(model_family: str, python_runner: str) -> list[str]:
     cmd = [uv, "run", "--with", "pandas", "--with", "numpy"]
     if "catboost" in required:
         cmd.extend(["--with", "catboost"])
-    if "xgboost" in required:
-        cmd.extend(["--with", "xgboost"])
     cmd.append("python")
     return cmd
 
@@ -231,7 +227,7 @@ def main():
     parser.add_argument("--output-dir", default=None, help="Model output directory")
     parser.add_argument("--model-dir", default=None, help="Existing model directory (for apply)")
     parser.add_argument("--output-scores", default=None, help="Scores output path")
-    parser.add_argument("--model-family", default="catboost", choices=["catboost", "xgboost", "both"])
+    parser.add_argument("--model-family", default="catboost", choices=["catboost"])
     parser.add_argument(
         "--python-runner",
         default="auto",
@@ -241,7 +237,7 @@ def main():
     parser.add_argument(
         "--allow-direct-fallback",
         action="store_true",
-        help="Allow weighted_feature_sum_v1 fallback when no CatBoost/XGBoost model is available",
+        help="Allow weighted_feature_sum_v1 fallback when no CatBoost model is available",
     )
     parser.add_argument("--train-only", action="store_true", help="Only train, skip apply")
     parser.add_argument("--apply-only", action="store_true", help="Only apply, skip train")

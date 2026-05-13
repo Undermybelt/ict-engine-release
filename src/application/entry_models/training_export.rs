@@ -8,7 +8,8 @@ use std::path::Path;
 
 use crate::application::orchestration::{
     apply_structural_path_ranking_external_scores,
-    evaluate_structural_path_probability_calibration_rows, export_structural_path_ranking_target,
+    evaluate_structural_path_probability_calibration_rows,
+    export_structural_path_ranking_target_with_agent_material_rank,
     StructuralPathProbabilityCalibrationEvaluationReport, StructuralPathRankingExternalScoreInput,
     StructuralPathRankingTargetExportSummary, StructuralPathRankingTargetRow,
     StructuralPathRankingTrainerManifest, STRUCTURAL_PATH_RANKING_TARGET_SUMMARY_FILE,
@@ -30,8 +31,10 @@ use crate::belief_core::ranking_label::{
     STRUCTURAL_PATH_RANKING_RUNTIME_MODE_PREFER_HISTORY,
     STRUCTURAL_PATH_RANKING_RUNTIME_SELECTION_PROTOCOL_VERSION,
 };
+#[cfg(test)]
+use crate::state::{append_artifact_ledger_entry, ArtifactLedgerEntry};
 use crate::state::{
-    load_learning_state, load_pending_update_history, load_state_or_default,
+    load_artifact_ledger, load_learning_state, load_pending_update_history, load_state_or_default,
     load_workflow_snapshot, save_text_state, structural_feedback_counter_outcome,
     structural_feedback_outcome_is_unresolved, AnalyzeRunRecord, UpdateRunRecord,
     ANALYZE_RUNS_FILE, PENDING_UPDATE_ARTIFACT_FILE, UPDATE_RUNS_FILE,
@@ -256,12 +259,41 @@ pub struct PolicyTrainingStatusSurface {
     pub update_runs: usize,
     #[serde(rename = "entry_models")]
     pub providers: Vec<PolicyTrainingProviderStatusSurface>,
+    pub factor_candidate_packs: FactorCandidatePackTrainingStatusSurface,
+    pub regime_confidence_assets: RegimeConfidenceAssetTrainingStatusSurface,
     pub structural_path_ranking_runtime: StructuralPathRankingRuntimeSummarySurface,
     pub structural_path_ranking_validation: StructuralPathRankingValidationSummarySurface,
     pub structural_path_ranking_target: StructuralPathRankingTargetTrainingStatusSurface,
     pub structural_path_ranking_runtime_summary: String,
     pub structural_path_ranking_validation_summary: String,
     pub factor_hotplug_summary: String,
+    pub summary_line: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct FactorCandidatePackTrainingStatusSurface {
+    pub inventory_ready: bool,
+    pub inventory_status: String,
+    pub candidate_pack_count: usize,
+    pub preferred_density_count: usize,
+    pub cross_market_candidate_count: usize,
+    pub inventory_path: String,
+    pub summary_line: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct RegimeConfidenceAssetTrainingStatusSurface {
+    pub inventory_ready: bool,
+    pub inventory_status: String,
+    pub asset_count: usize,
+    pub board_a_regime_gate_count: usize,
+    pub direct_event_overlay_count: usize,
+    pub diagnostic_after_source_control_unlock_count: usize,
+    pub contrast_evidence_count: usize,
+    pub recovered_not_candidate_pack_count: usize,
+    pub promotion_allowed: bool,
+    pub runtime_selection_enabled: bool,
+    pub inventory_path: String,
     pub summary_line: String,
 }
 
@@ -881,6 +913,8 @@ pub fn policy_training_status(
     let cisd_rb = cisd_rb_training_status(state_dir, symbol)?;
     let structural_path_ranking_target =
         structural_path_ranking_target_training_status(state_dir, symbol)?;
+    let factor_candidate_packs = factor_candidate_pack_training_status(state_dir, symbol)?;
+    let regime_confidence_assets = regime_confidence_asset_training_status(state_dir, symbol)?;
     let providers = entry_model_providers()
         .into_iter()
         .filter(|provider| {
@@ -917,8 +951,11 @@ pub fn policy_training_status(
         )
     };
     let summary_line = format!(
-        "{} | {}",
-        provider_summary_line, structural_path_ranking_target.summary_line
+        "{} | {} | {} | {}",
+        provider_summary_line,
+        factor_candidate_packs.summary_line,
+        regime_confidence_assets.summary_line,
+        structural_path_ranking_target.summary_line
     );
     let structural_path_ranking_runtime_summary = format!(
         "Ranker runtime: {}",
@@ -963,6 +1000,8 @@ pub fn policy_training_status(
         analyze_runs: cisd_rb.analyze_runs,
         update_runs: cisd_rb.update_runs,
         providers,
+        factor_candidate_packs,
+        regime_confidence_assets,
         structural_path_ranking_runtime: StructuralPathRankingRuntimeSummarySurface {
             enabled: structural_path_ranking_target.runtime_selection_enabled,
             ready: structural_path_ranking_target.runtime_selection_ready,
@@ -1028,6 +1067,170 @@ pub fn policy_training_status(
         factor_hotplug_summary,
         structural_path_ranking_target,
         summary_line,
+    })
+}
+
+fn factor_candidate_pack_training_status(
+    state_dir: &str,
+    symbol: &str,
+) -> Result<FactorCandidatePackTrainingStatusSurface> {
+    let ledger = load_artifact_ledger(state_dir, symbol)?;
+    let Some(entry) = ledger
+        .iter()
+        .rev()
+        .find(|entry| entry.artifact_kind == "factor_candidate_pack_inventory")
+    else {
+        return Ok(FactorCandidatePackTrainingStatusSurface {
+            inventory_status: "missing".to_string(),
+            summary_line: "Factor candidate packs: inventory=missing count=0".to_string(),
+            ..FactorCandidatePackTrainingStatusSurface::default()
+        });
+    };
+    let path = Path::new(&entry.path);
+    if !path.exists() {
+        return Ok(FactorCandidatePackTrainingStatusSurface {
+            inventory_status: "missing_file".to_string(),
+            inventory_path: entry.path.clone(),
+            summary_line: "Factor candidate packs: inventory=missing_file count=0".to_string(),
+            ..FactorCandidatePackTrainingStatusSurface::default()
+        });
+    }
+    let raw = fs::read_to_string(path)?;
+    let inventory: serde_json::Value = serde_json::from_str(&raw)?;
+    let candidates = inventory
+        .get("candidates")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let candidate_pack_count = inventory
+        .pointer("/summary/candidate_pack_count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(candidates.len());
+    let preferred_density_count = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .get("aggregate_label")
+                .and_then(serde_json::Value::as_str)
+                == Some("preferred_density")
+        })
+        .count();
+    let cross_market_candidate_count = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .get("transfer_status")
+                .and_then(serde_json::Value::as_str)
+                == Some("cross_market_candidate")
+        })
+        .count();
+    Ok(FactorCandidatePackTrainingStatusSurface {
+        inventory_ready: candidate_pack_count > 0,
+        inventory_status: "ready".to_string(),
+        candidate_pack_count,
+        preferred_density_count,
+        cross_market_candidate_count,
+        inventory_path: entry.path.clone(),
+        summary_line: format!(
+            "Factor candidate packs: inventory=ready count={} preferred_density={} cross_market={}",
+            candidate_pack_count, preferred_density_count, cross_market_candidate_count
+        ),
+    })
+}
+
+fn regime_confidence_asset_training_status(
+    state_dir: &str,
+    symbol: &str,
+) -> Result<RegimeConfidenceAssetTrainingStatusSurface> {
+    let ledger = load_artifact_ledger(state_dir, symbol)?;
+    let Some(entry) = ledger
+        .iter()
+        .rev()
+        .find(|entry| entry.artifact_kind == "regime_confidence_asset_inventory")
+    else {
+        return Ok(RegimeConfidenceAssetTrainingStatusSurface {
+            inventory_status: "missing".to_string(),
+            summary_line: "Regime confidence assets: inventory=missing count=0".to_string(),
+            ..RegimeConfidenceAssetTrainingStatusSurface::default()
+        });
+    };
+    let path = Path::new(&entry.path);
+    if !path.exists() {
+        return Ok(RegimeConfidenceAssetTrainingStatusSurface {
+            inventory_status: "missing_file".to_string(),
+            inventory_path: entry.path.clone(),
+            summary_line: "Regime confidence assets: inventory=missing_file count=0".to_string(),
+            ..RegimeConfidenceAssetTrainingStatusSurface::default()
+        });
+    }
+    let raw = fs::read_to_string(path)?;
+    let inventory: serde_json::Value = serde_json::from_str(&raw)?;
+    let assets = inventory
+        .get("assets")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let asset_count = inventory
+        .pointer("/summary/asset_count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(assets.len());
+    let board_a_regime_gate_count = inventory
+        .pointer("/summary/board_a_regime_gate_count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or_default();
+    let direct_event_overlay_count = inventory
+        .pointer("/summary/direct_event_overlay_count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or_default();
+    let diagnostic_after_source_control_unlock_count = inventory
+        .pointer("/summary/diagnostic_after_source_control_unlock_count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or_default();
+    let contrast_evidence_count = inventory
+        .pointer("/summary/contrast_evidence_count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or_default();
+    let recovered_not_candidate_pack_count = inventory
+        .pointer("/summary/recovered_not_candidate_pack_count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or_default();
+    let promotion_allowed = inventory
+        .pointer("/summary/promotion_allowed")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let runtime_selection_enabled = inventory
+        .pointer("/summary/runtime_selection_enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    Ok(RegimeConfidenceAssetTrainingStatusSurface {
+        inventory_ready: asset_count > 0,
+        inventory_status: "ready".to_string(),
+        asset_count,
+        board_a_regime_gate_count,
+        direct_event_overlay_count,
+        diagnostic_after_source_control_unlock_count,
+        contrast_evidence_count,
+        recovered_not_candidate_pack_count,
+        promotion_allowed,
+        runtime_selection_enabled,
+        inventory_path: entry.path.clone(),
+        summary_line: format!(
+            "Regime confidence assets: inventory=ready count={} board_a_gate={} direct_event={} diagnostic={} contrast_evidence={} promotion_allowed={} runtime_selection={}",
+            asset_count,
+            board_a_regime_gate_count,
+            direct_event_overlay_count,
+            diagnostic_after_source_control_unlock_count,
+            contrast_evidence_count,
+            promotion_allowed,
+            if runtime_selection_enabled { "enabled" } else { "disabled" }
+        ),
     })
 }
 
@@ -2302,14 +2505,34 @@ fn export_structural_path_ranking_target_from_state_dir(
     let snapshot = load_workflow_snapshot(state_dir, symbol)?;
     let learning_state = load_learning_state(state_dir, symbol)?;
     let provider_status_agent = provider_status_agent_surface(None, None, None).unwrap_or_default();
-    export_structural_path_ranking_target(
+    let agent_material_rank = load_latest_agent_material_rank_artifact(state_dir, symbol)?;
+    export_structural_path_ranking_target_with_agent_material_rank(
         state_dir,
         symbol,
         &snapshot,
         &provider_status_agent,
         &learning_state.feedback_history,
         &learning_state.structural_prior_state,
+        agent_material_rank.as_ref(),
     )
+}
+
+fn load_latest_agent_material_rank_artifact(
+    state_dir: &str,
+    symbol: &str,
+) -> Result<Option<crate::application::auto_quant::AgentMaterialRankArtifact>> {
+    let ledger = load_artifact_ledger(state_dir, symbol)?;
+    let Some(entry) = ledger
+        .iter()
+        .rev()
+        .find(|entry| entry.artifact_kind == "auto_quant_agent_material_rank")
+    else {
+        return Ok(None);
+    };
+    let raw = fs::read_to_string(&entry.path)?;
+    serde_json::from_str::<crate::application::auto_quant::AgentMaterialRankArtifact>(&raw)
+        .map(Some)
+        .map_err(Into::into)
 }
 
 pub fn export_structural_path_ranking_target_command(state_dir: &str, symbol: &str) -> Result<()> {
@@ -2999,6 +3222,12 @@ mod tests {
             path_id: path_id.to_string(),
             scenario_id: format!("scenario:{path_id}"),
             path_label: path_id.to_string(),
+            regime_profit_branch_path: None,
+            parent_regime_root: None,
+            main_regime: None,
+            sub_regime: None,
+            sub_sub_regime_or_profit_factor: None,
+            profit_factor: None,
             direction: "bull".to_string(),
             raw_path_score: Some(calibrated_path_prob),
             calibrated_path_prob: Some(calibrated_path_prob),
@@ -3220,9 +3449,97 @@ mod tests {
         assert!(status
             .structural_path_ranking_validation_summary
             .contains("Ranker validation:"));
+        assert_eq!(status.factor_candidate_packs.inventory_status, "missing");
+        assert!(status
+            .factor_candidate_packs
+            .summary_line
+            .contains("inventory=missing"));
         assert!(status
             .summary_line
             .contains("structural path ranking target export missing"));
+    }
+
+    #[test]
+    fn policy_training_status_reads_factor_candidate_pack_inventory() {
+        let temp = tempfile::tempdir().unwrap();
+        let inventory = serde_json::json!({
+            "schema_version": "factor-candidate-pack-inventory/v1",
+            "summary": {
+                "candidate_pack_count": 2
+            },
+            "candidates": [
+                {
+                    "candidate_id": "a",
+                    "aggregate_label": "preferred_density",
+                    "transfer_status": "cross_market_candidate"
+                },
+                {
+                    "candidate_id": "b",
+                    "aggregate_label": "probe_only",
+                    "transfer_status": "single_market_only"
+                }
+            ]
+        });
+        crate::state::save_state(
+            temp.path(),
+            "FACTOR_CANDIDATES",
+            "factor_candidate_pack_inventory.json",
+            &inventory,
+        )
+        .unwrap();
+        append_artifact_ledger_entry(
+            temp.path(),
+            "FACTOR_CANDIDATES",
+            ArtifactLedgerEntry {
+                entry_id: "ledger:factor-candidate-pack-inventory:test".to_string(),
+                artifact_kind: "factor_candidate_pack_inventory".to_string(),
+                artifact_id: "factor-candidate-pack-inventory:test".to_string(),
+                version: 1,
+                generated_at: Utc::now(),
+                symbol: "FACTOR_CANDIDATES".to_string(),
+                source_phase: "factor-candidate-packs".to_string(),
+                source_run_id: None,
+                path: temp
+                    .path()
+                    .join("FACTOR_CANDIDATES")
+                    .join("factor_candidate_pack_inventory.json")
+                    .to_string_lossy()
+                    .to_string(),
+                status: "ready".to_string(),
+                promote_candidate: false,
+                actionable: false,
+                decision_hint: "inspect_candidate_packs_before_admission".to_string(),
+                review_reason: "candidate_pack_count=2".to_string(),
+                review_rule_version: "factor-candidate-pack-inventory/v1".to_string(),
+                top_factor_name: None,
+                top_factor_action: Some("inspect".to_string()),
+                family_scores: BTreeMap::new(),
+                supersedes_artifact_id: None,
+                quality_score: 2,
+                consumed_by_update_run_id: None,
+                consumed_at: None,
+                consumed_outcome: None,
+                regraded_at: None,
+                consumption_regrade_status: None,
+                consumption_regrade_reason: None,
+            },
+        )
+        .unwrap();
+
+        let status =
+            policy_training_status(temp.path().to_str().unwrap(), "FACTOR_CANDIDATES", None)
+                .unwrap();
+
+        assert!(status.factor_candidate_packs.inventory_ready);
+        assert_eq!(status.factor_candidate_packs.candidate_pack_count, 2);
+        assert_eq!(status.factor_candidate_packs.preferred_density_count, 1);
+        assert_eq!(
+            status.factor_candidate_packs.cross_market_candidate_count,
+            1
+        );
+        assert!(status
+            .summary_line
+            .contains("Factor candidate packs: inventory=ready count=2"));
     }
 
     #[test]

@@ -411,6 +411,13 @@ fn run_workspace_python_script(
     args: &[&str],
 ) -> Result<std::process::Output> {
     let mut command = if let Some(shared_python) = python_override {
+        let shared_python = if shared_python.is_absolute() {
+            shared_python.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .with_context(|| format!("resolving python runtime '{}'", shared_python.display()))?
+                .join(shared_python)
+        };
         let mut cmd = Command::new(shared_python);
         cmd.arg(script_name);
         cmd
@@ -966,6 +973,45 @@ profit_factor:    1.8700
     fn parse_group_indices_defaults_to_all_groups() {
         let indices = parse_group_indices(None, 4).unwrap();
         assert_eq!(indices, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn run_workspace_python_script_resolves_relative_runtime_before_changing_cwd() {
+        let dir = TempDir::new_in(".").unwrap();
+        let dir_path = fs::canonicalize(dir.path()).unwrap();
+        let runtime_dir = dir_path.join("runtime");
+        let workspace = dir_path.join("workspace");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        let python = runtime_dir.join("python");
+        fs::write(
+            &python,
+            "#!/bin/sh\nprintf 'runtime=%s script=%s cwd=%s\\n' \"$0\" \"$1\" \"$(pwd)\"\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&python).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o755);
+            fs::set_permissions(&python, perms).unwrap();
+        }
+        let relative_python = python
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap();
+
+        let output = run_workspace_python_script(
+            Some(relative_python),
+            &workspace,
+            "prepare_external.py",
+            &[],
+        )
+        .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("script=prepare_external.py"));
+        assert!(stdout.contains(&format!("cwd={}", workspace.display())));
     }
 
     #[test]

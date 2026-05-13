@@ -12,7 +12,7 @@
 - **MECE 标注模块**：新增 `manual_mece_labeler`（rule-based + 可视化校验），基于你的 `detect_pda` 函数 + BOS/CHOCH + 时间窗等生成标签（e.g. 0=Bull-Trend, 1=Bear-Trend, 2=Range）。
 - **因子搜索循环**：用 Feature Saliency / 包装法或简单 grid search 测试因子子集 → 跑 HMM → 计算标签恢复准确率（Viterbi 路径 vs 手动标签）。
 - **成功标准**：HMM posterior / Viterbi 能“完美”匹配 MECE 标签（confusion matrix 对角线接近 1）。
-- **输出**：锁定最优因子集 → 存入 `artifact ledger` → 生产 HMM 只用这组因子 → 驱动 CatBoost/XGBoost voting 和 `human-next` triage。
+- **输出**：锁定最优因子集 → 存入 `artifact ledger` → 生产 HMM 只用这组因子 → 驱动 CatBoost voting 和 `human-next` triage。
 - **集成点**：`factor-research --regime-discovery mece` → 生成 `mece_regime_map.json` + `factor_recovery_report`（包含清晰的“哪些因子让 HMM 完美分类”的解释）。
 
 ### 2. 指导 Prompt（直接复制给 Claude / Grok / GPT-4o）
@@ -22,7 +22,7 @@
 
 你现在是一位拥有 12 年 regime-aware 量化交易 + Rust HMM 经验的工程师，精通“手动 MECE regimes 定义 → 因子搜索 → HMM 完美恢复” pipeline。
 
-项目：`ict-engine`（Rust CLI，已有 HMM + ICT PD Array 检测 + CatBoost/XGBoost voting + artifact ledger）。
+项目：`ict-engine`（Rust CLI，已有 HMM + ICT PD Array 检测 + CatBoost voting + artifact ledger）。
 
 **任务**：完整复现以下成功案例（纯架构 skeleton + 可复制结构，不写完整可运行代码）：
 
@@ -44,7 +44,7 @@
 - **整体架构 skeleton**（Rust 文件/模块建议）
 - **每个模块的 trait / 函数签名 + 伪代码注释**
 - **如何处理“因子不完美 → 继续搜索”循环**
-- **与 CatBoost/XGBoost voting 的融合方式**
+- **与 CatBoost voting 的融合方式**
 - **Rust 依赖建议**（linfa / 你的 hmmm crate / feature selection 扩展）
 
 最后给出：如果我是技术 co-founder，这个 pipeline 如何分 3 个 sprint 落地。

@@ -11,6 +11,8 @@ use ict_engine::application::entry_models::{
 fn render_policy_training_status_low_token(surface: &PolicyTrainingStatusSurface) -> String {
     [
         surface.summary_line.as_str(),
+        surface.factor_candidate_packs.summary_line.as_str(),
+        surface.regime_confidence_assets.summary_line.as_str(),
         surface.structural_path_ranking_runtime_summary.as_str(),
         surface.structural_path_ranking_validation_summary.as_str(),
     ]
@@ -113,6 +115,16 @@ mod tests {
     fn render_policy_training_status_low_token_emits_three_summary_lines() {
         let surface = PolicyTrainingStatusSurface {
             summary_line: "top-level".to_string(),
+            factor_candidate_packs:
+                ict_engine::application::entry_models::FactorCandidatePackTrainingStatusSurface {
+                    summary_line: "candidate-packs".to_string(),
+                    ..Default::default()
+                },
+            regime_confidence_assets:
+                ict_engine::application::entry_models::RegimeConfidenceAssetTrainingStatusSurface {
+                    summary_line: "regime-assets".to_string(),
+                    ..Default::default()
+                },
             structural_path_ranking_runtime_summary: "runtime-line".to_string(),
             structural_path_ranking_validation_summary: "validation-line".to_string(),
             ..PolicyTrainingStatusSurface::default()
@@ -121,6 +133,15 @@ mod tests {
         let rendered = render_policy_training_status_low_token(&surface);
         let lines = rendered.lines().collect::<Vec<_>>();
 
-        assert_eq!(lines, vec!["top-level", "runtime-line", "validation-line"]);
+        assert_eq!(
+            lines,
+            vec![
+                "top-level",
+                "candidate-packs",
+                "regime-assets",
+                "runtime-line",
+                "validation-line"
+            ]
+        );
     }
 }

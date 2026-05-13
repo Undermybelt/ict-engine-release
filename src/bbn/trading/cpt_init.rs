@@ -134,15 +134,19 @@ pub fn apply_trading_cpt_init(
 mod tests {
     use super::*;
     use crate::bbn::trading::topology::build_trading_network;
+    use std::path::PathBuf;
+
+    fn policy_training_fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/policy_training")
+            .join(name)
+    }
 
     #[test]
     fn loads_and_applies_tomac_cpt_init() {
         let mut network = build_trading_network().unwrap();
-        let init = load_trading_cpt_init(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("state/policy_training/repo_bbn_trading_cpt_init.json"),
-        )
-        .unwrap();
+        let init = load_trading_cpt_init(policy_training_fixture("repo_bbn_trading_cpt_init.json"))
+            .unwrap();
         apply_trading_cpt_init(&mut network, &init).unwrap();
 
         let market = network.nodes.get("market_regime").unwrap();

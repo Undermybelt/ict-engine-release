@@ -1,71 +1,76 @@
-# Release Notes Draft
+# Release Notes
 
-Version: `v0.1.1` candidate
-Status: release mirror candidate, refreshed 2026-05-10
+Version: `v0.1.2`
+Status: sanitized release candidate authorized for mirror publication,
+refreshed 2026-05-13
 
 ## Highlights
 
-- Rust CLI release gates are currently green:
-  - `cargo fmt --check`
-  - `cargo clippy --all-targets -- -D warnings`
-  - `cargo test`
-- First-run demo path works with an explicit `/tmp` state dir:
-  - `cargo run -- analyze --symbol DEMO --demo --state-dir /tmp/ict-engine-first-run-native --human`
-- Factor diagnostics and native research path are usable on bundled demo data:
-  - `factor-pipeline-debug --symbol DEMO --data examples/demo/demo-15m.json --factor structure_ict --objective expansion_manipulation`
-  - `factor-research --symbol DEMO --data examples/demo/demo-15m.json --state-dir /tmp/ict-engine-first-run-native --backend native --human`
-- Public Python wrappers remain safe to inspect before execution:
-  - `python3 scripts/search_local.py --show-config`
-  - `python3 scripts/search_cluster.py --show-config`
-  - `python3 scripts/evaluate_bottleneck.py --show-config`
-- Workflow snapshots now preserve canonical structural regime posterior fields on analyze snapshots, matching research/backtest/update surfaces.
-- Multi-timeframe and factor-backtest runtime inputs were tightened into structured input types, keeping Clippy clean without widening allow-lints.
-- Release mirror runbook is now variableized and no longer hardcodes the old `v0.0.1` tag.
+- README and `AGENT.md` were refreshed as public entrypoints: the README now
+  leads with a clean first-run path and readable workflow map; `AGENT.md` now
+  tells agents how to serve users, verify gates, preserve privacy, and publish
+  only sanitized export slices.
+- `workflow-status` now surfaces matching opt-in provider/profile choices for
+  the requested symbol without selecting or loading maintainer-local material.
+- Agent and human workflow surfaces stay token-friendly: optional profile
+  references are compact, and selected profile state remains explicit.
+- Branch-admission routing no longer overrides first-run, Auto-Quant handoff,
+  evidence-review, selected-profile, or generic execution-contract guidance
+  unless the latest feedback is for the exact same structural path.
+- Structural path-plan artifacts carry candidate set ids and candidate paths,
+  and path-ranking target rows expose branch segment categorical fields for
+  external ranker training.
+- BBN CPT and logic-family tests now use tracked, path-redacted fixtures under
+  `tests/fixtures/policy_training/`; runtime overlays remain hot-pluggable via
+  user state and are not adopted as zero-config defaults.
+- Sanitized release export gates are green:
+  - `cargo fmt --manifest-path /tmp/ict-engine-v012-release-export.CHyo93/Cargo.toml --check`
+  - `cargo clippy --manifest-path /tmp/ict-engine-v012-release-export.CHyo93/Cargo.toml --all-targets -- -D warnings`
+  - `cargo test --manifest-path /tmp/ict-engine-v012-release-export.CHyo93/Cargo.toml`
+- True zero-config smoke passes without provider venv injection.
 
-## Smoke results from 2026-05-10
-
-```bash
-cargo fmt --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml --check
-cargo check --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml --all-targets
-cargo clippy --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml
-```
-
-All passed.
+## Smoke results from 2026-05-13
 
 ```bash
-cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- analyze --symbol DEMO --demo --state-dir /tmp/ict-engine-first-run-native --human
+cargo fmt --manifest-path /tmp/ict-engine-v012-release-export.CHyo93/Cargo.toml --check
+cargo clippy --manifest-path /tmp/ict-engine-v012-release-export.CHyo93/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path /tmp/ict-engine-v012-release-export.CHyo93/Cargo.toml
 ```
 
-Passed. Output starts with a compact desk summary and recommends a native factor-research next command using the same `/tmp` state dir.
+All passed from the sanitized release export. The full clean-export Rust suite
+reported:
+- lib tests: 963 passed
+- bin tests: 253 passed
+- integration tests: passed
+- doc tests: 0 passed, 0 failed
 
-```bash
-cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- factor-research --symbol DEMO --data /Users/thrill3r/projects-ict-engine/ict-engine/examples/demo/demo-15m.json --state-dir /tmp/ict-engine-first-run-native --backend native --human
-```
-
-Passed. Best factor was `trend_momentum`; output stayed human-readable.
-
-```bash
-cargo run --manifest-path /Users/thrill3r/projects-ict-engine/ict-engine/Cargo.toml -- auto-quant-status --state-dir /tmp/ict-engine-auto-quant-smoke
-```
-
-Passed as readiness reporting. It correctly returned `missing_dependency` / `bootstrap_needed=true` and kept managed paths under `/tmp/ict-engine-auto-quant-smoke/auto-quant/...`.
+Zero-config smoke also passed from
+`/tmp/ict-engine-v012-release-target.NJjdD3/debug/ict-engine` with state under
+`/tmp/ict-engine-v012-smoke-state.M78llx`.
 
 ## Known limitations
 
-- This remains an agent-first / researcher-preview release, not a fully generalized packaged distribution.
-- Python research tests were not executed in the current environment because `python3 -m pytest` failed with `No module named pytest`.
-- Some Python experiment flows still assume a maintainer-style cleaned-data layout unless `--data-root` is provided explicitly.
-- Auto-Quant is optional and reports `bootstrap_needed` until its managed dependency is installed in the selected state dir.
-- The bundled demo data has about 52 candles and is intentionally too small for full `backtest` paths that require more history.
-- Source development history remains far ahead of its origin; this release is published through the clean tree-state release mirror.
+- This remains an agent-first / researcher-preview release, not a fully
+  generalized packaged distribution.
+- Python pytest was not rerun during this release-prep pass.
+- Auto-Quant remains optional and should keep dependency workspaces under the
+  selected state directory or explicit Auto-Quant output directory.
+- Local long-history data can be used for maintainer training and hardening,
+  but consumer-facing promotion still requires a portable provider recipe,
+  built-in factor path, or explicit hot-plug material bundle.
+- The source checkout has unrelated dirty docs/runtime artifacts; this
+  candidate is based on the sanitized manifest, not a broad worktree sync.
+- Legacy local-data research scripts remain excluded from the verified public
+  candidate unless rewritten around explicit inputs and re-gated.
+- `v0.1.1` already exists in the release mirror; this release uses `v0.1.2`
+  after remote tag re-check.
 
 ## Release label
 
-`ict-engine v0.1.1`
+`ict-engine v0.1.2`
 
 Reason:
-- core Rust CLI gates are green
-- first-run demo and native factor loop smoke paths pass
-- release-facing docs and runbook are current
-- Python/Auto-Quant surfaces are useful but still preview-grade / optional
+- consumer-safe hot-plug profile-choice UX is committed
+- local personal-data assumptions remain opt-in, not zero-config defaults
+- clean export no longer depends on ignored `state/policy_training` fixtures
+- clean export Rust fmt, Clippy, and full test gates are green

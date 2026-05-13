@@ -14,8 +14,7 @@ use crate::state::{
     EnsembleExecutorScorecard, PreBayesEvidenceFilter, RunProvenance,
 };
 
-const DEFAULT_CATBOOST_WEIGHT: f64 = 0.55;
-const DEFAULT_XGBOOST_WEIGHT: f64 = 0.45;
+const DEFAULT_CATBOOST_WEIGHT: f64 = 1.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AnalyzeEnsembleVoteInput {
@@ -617,14 +616,6 @@ fn policy_features_from_input(input: &AnalyzeEnsembleVoteInput) -> PolicyFeature
     features
 }
 
-fn load_named_policy_or_placeholder(filename: &str) -> CatBoostCompatiblePolicyEngine {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("src/application/orchestration")
-        .join(filename);
-    CatBoostCompatiblePolicyEngine::load_from_file(&path)
-        .unwrap_or_else(|_| CatBoostCompatiblePolicyEngine::placeholder())
-}
-
 fn policy_decision_to_executor(
     name: &str,
     policy_runtime_source: String,
@@ -678,31 +669,28 @@ fn load_canonical_executor_scorecards(
         .unwrap_or_default()
 }
 
-fn historical_executor_weights(input: &AnalyzeEnsembleVoteInput) -> (f64, f64) {
+fn historical_executor_weight(input: &AnalyzeEnsembleVoteInput) -> f64 {
     let Some(state_dir) = input.state_dir.as_deref() else {
-        return (DEFAULT_CATBOOST_WEIGHT, DEFAULT_XGBOOST_WEIGHT);
+        return DEFAULT_CATBOOST_WEIGHT;
     };
     let scorecards = load_canonical_executor_scorecards(state_dir, &input.symbol);
     if !scorecards.is_empty() {
-        return historical_executor_weights_from_scorecards(&scorecards);
+        return historical_executor_weight_from_scorecards(&scorecards);
     }
     let path = Path::new(state_dir)
         .join(&input.symbol)
         .join("artifact_ledger.json");
     let Ok(raw) = std::fs::read_to_string(path) else {
-        return (DEFAULT_CATBOOST_WEIGHT, DEFAULT_XGBOOST_WEIGHT);
+        return DEFAULT_CATBOOST_WEIGHT;
     };
     let Ok(entries) = serde_json::from_str::<Vec<crate::state::ArtifactLedgerEntry>>(&raw) else {
-        return (DEFAULT_CATBOOST_WEIGHT, DEFAULT_XGBOOST_WEIGHT);
+        return DEFAULT_CATBOOST_WEIGHT;
     };
-    historical_executor_weights_from_entries(&entries)
+    historical_executor_weight_from_entries(&entries)
 }
 
-fn historical_executor_weights_from_scorecards(
-    scorecards: &[EnsembleExecutorScorecard],
-) -> (f64, f64) {
+fn historical_executor_weight_from_scorecards(scorecards: &[EnsembleExecutorScorecard]) -> f64 {
     let mut catboost_score = 0.0;
-    let mut xgboost_score = 0.0;
     for scorecard in scorecards {
         let total = scorecard.wins + scorecard.losses + scorecard.breakevens;
         let activity_bias = if total == 0 {
@@ -719,22 +707,15 @@ fn historical_executor_weights_from_scorecards(
         if label_contains(&scorecard.executor, "catboost") {
             catboost_score += score;
         }
-        if label_contains(&scorecard.executor, "xgboost") {
-            xgboost_score += score;
-        }
     }
-    if (catboost_score + xgboost_score) <= f64::EPSILON {
-        return (DEFAULT_CATBOOST_WEIGHT, DEFAULT_XGBOOST_WEIGHT);
+    if catboost_score <= f64::EPSILON {
+        return DEFAULT_CATBOOST_WEIGHT;
     }
-    let total = catboost_score + xgboost_score;
-    (catboost_score / total, xgboost_score / total)
+    DEFAULT_CATBOOST_WEIGHT
 }
 
-fn historical_executor_weights_from_entries(
-    entries: &[crate::state::ArtifactLedgerEntry],
-) -> (f64, f64) {
+fn historical_executor_weight_from_entries(entries: &[crate::state::ArtifactLedgerEntry]) -> f64 {
     let mut catboost_score = 0.0;
-    let mut xgboost_score = 0.0;
     let mut seen = 0.0;
     for entry in entries
         .iter()
@@ -752,19 +733,14 @@ fn historical_executor_weights_from_entries(
             _ => 0.0,
         };
         let cat_present = reason.contains("catboost") || reason.contains("weight=0.55");
-        let xgb_present = reason.contains("xgboost") || reason.contains("weight=0.45");
         if cat_present {
             catboost_score += (quality + outcome_bias).max(0.1);
         }
-        if xgb_present {
-            xgboost_score += (quality + outcome_bias).max(0.1);
-        }
     }
-    if seen == 0.0 || (catboost_score + xgboost_score) <= f64::EPSILON {
-        return (DEFAULT_CATBOOST_WEIGHT, DEFAULT_XGBOOST_WEIGHT);
+    if seen == 0.0 || catboost_score <= f64::EPSILON {
+        return DEFAULT_CATBOOST_WEIGHT;
     }
-    let total = catboost_score + xgboost_score;
-    (catboost_score / total, xgboost_score / total)
+    DEFAULT_CATBOOST_WEIGHT
 }
 
 pub fn build_posterior_audit_artifact(
@@ -802,21 +778,12 @@ pub fn build_stub_ensemble_vote_from_input(
     let features = policy_features_from_input(input);
 
     let catboost_engine = CatBoostCompatiblePolicyEngine::load_default_or_placeholder();
-    let xgboost_engine = load_named_policy_or_placeholder("xgboost_policy.sample.json");
-    let policy_runtime_sources = vec![
-        policy_runtime_source("catboost_file", &catboost_engine),
-        policy_runtime_source("xgboost_file", &xgboost_engine),
-    ];
+    let policy_runtime_sources = vec![policy_runtime_source("catboost_file", &catboost_engine)];
 
     let mut catboost_like = policy_decision_to_executor(
         "catboost_file",
         policy_runtime_sources[0].clone(),
         catboost_engine.infer(&features),
-    );
-    let mut xgboost_like = policy_decision_to_executor(
-        "xgboost_file",
-        policy_runtime_sources[1].clone(),
-        xgboost_engine.infer(&features),
     );
 
     if catboost_like.action.eq_ignore_ascii_case("observe") && dominant >= 0.55 {
@@ -828,21 +795,14 @@ pub fn build_stub_ensemble_vote_from_input(
             .split_explanations
             .push(format!("posterior_override={active_regime}:{dominant:.3}"));
     }
-    if xgboost_like.action.eq_ignore_ascii_case("observe") && dominant >= 0.60 {
-        xgboost_like.action = decide_action(&active_regime, dominant);
-        xgboost_like.confidence = xgboost_like.confidence.max(dominant);
-        xgboost_like
-            .split_explanations
-            .push(format!("posterior_override={active_regime}:{dominant:.3}"));
-    }
 
-    let (catboost_weight, xgboost_weight) = historical_executor_weights(input);
+    let catboost_weight = historical_executor_weight(input);
     let aggregator = WeightedVotingAggregator;
     let decision = aggregator.aggregate(
         input,
         &posterior,
-        &[catboost_like.clone(), xgboost_like.clone()],
-        &[catboost_weight, xgboost_weight],
+        &[catboost_like.clone()],
+        &[catboost_weight],
     );
 
     EnsembleVoteArtifact {
@@ -999,8 +959,8 @@ mod tests {
         assert_eq!(artifact.posterior.normalization_status, "normalized");
         assert!(!artifact.final_action.is_empty());
         assert_eq!(artifact.ensemble_version, "ensemble-audit-v2-weighted");
-        assert_eq!(artifact.policy_runtime_sources.len(), 2);
-        assert_eq!(artifact.executor_summaries.len(), 2);
+        assert_eq!(artifact.policy_runtime_sources.len(), 1);
+        assert_eq!(artifact.executor_summaries.len(), 1);
         assert!(artifact
             .executor_summaries
             .iter()
@@ -1009,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn weighted_voting_keeps_two_executor_summaries() {
+    fn weighted_voting_keeps_catboost_executor_summary() {
         let mut belief = BeliefReportPacket::default();
         belief.regime_posterior.active_regime = Some("trend".to_string());
         belief
@@ -1057,8 +1017,8 @@ mod tests {
             belief,
             ict_structure: None,
         });
-        assert_eq!(artifact.executor_summaries.len(), 2);
-        assert_eq!(artifact.policy_runtime_sources.len(), 2);
+        assert_eq!(artifact.executor_summaries.len(), 1);
+        assert_eq!(artifact.policy_runtime_sources.len(), 1);
         assert!(artifact
             .policy_runtime_sources
             .iter()
@@ -1107,10 +1067,9 @@ mod tests {
     }
 
     #[test]
-    fn historical_weights_fallback_to_defaults_without_entries() {
-        let (cat, xgb) = historical_executor_weights_from_entries(&[]);
-        assert!((cat - DEFAULT_CATBOOST_WEIGHT).abs() < 1e-9);
-        assert!((xgb - DEFAULT_XGBOOST_WEIGHT).abs() < 1e-9);
+    fn historical_weight_fallbacks_to_catboost_without_entries() {
+        let weight = historical_executor_weight_from_entries(&[]);
+        assert!((weight - DEFAULT_CATBOOST_WEIGHT).abs() < 1e-9);
     }
 
     #[test]
@@ -1157,11 +1116,11 @@ mod tests {
     }
 
     #[test]
-    fn historical_weights_bias_toward_stronger_executor_presence() {
+    fn historical_weight_stays_catboost_only() {
         let entries = vec![
             crate::state::ArtifactLedgerEntry {
                 artifact_kind: "ensemble_vote".to_string(),
-                review_reason: "catboost weight=0.55 xgboost weight=0.45".to_string(),
+                review_reason: "catboost weight=1.0".to_string(),
                 quality_score: 90,
                 ..crate::state::ArtifactLedgerEntry::default()
             },
@@ -1172,13 +1131,12 @@ mod tests {
                 ..crate::state::ArtifactLedgerEntry::default()
             },
         ];
-        let (cat, xgb) = historical_executor_weights_from_entries(&entries);
-        assert!(cat > xgb);
-        assert!((cat + xgb - 1.0).abs() < 1e-9);
+        let weight = historical_executor_weight_from_entries(&entries);
+        assert_eq!(weight, DEFAULT_CATBOOST_WEIGHT);
     }
 
     #[test]
-    fn historical_weights_reward_positive_and_penalize_negative_outcomes() {
+    fn historical_weight_ignores_non_catboost_legacy_entries() {
         let entries = vec![
             crate::state::ArtifactLedgerEntry {
                 artifact_kind: "ensemble_vote".to_string(),
@@ -1190,14 +1148,14 @@ mod tests {
             },
             crate::state::ArtifactLedgerEntry {
                 artifact_kind: "ensemble_vote".to_string(),
-                review_reason: "xgboost".to_string(),
+                review_reason: "legacy_secondary_model".to_string(),
                 quality_score: 60,
                 consumed_outcome: Some("loss".to_string()),
                 consumption_regrade_status: Some("validated_negative".to_string()),
                 ..crate::state::ArtifactLedgerEntry::default()
             },
         ];
-        let (cat, xgb) = historical_executor_weights_from_entries(&entries);
-        assert!(cat > xgb);
+        let weight = historical_executor_weight_from_entries(&entries);
+        assert_eq!(weight, DEFAULT_CATBOOST_WEIGHT);
     }
 }

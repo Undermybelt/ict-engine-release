@@ -1,0 +1,117 @@
+{
+  "schema_version": "factor-eval-grid-summary/v1",
+  "selected_strategy": "TomacNQ_KillzoneBreakoutDisplacement",
+  "timeframe": "1h",
+  "candidate_status": "active",
+  "promotion_state": "candidate_only",
+  "breadth_matrix": {
+    "NQ/USD": {
+      "status": "covered",
+      "trade_count": 147,
+      "trade_density_label": "preferred_density",
+      "sharpe": -0.011060065305479157,
+      "win_rate_pct": 58.503401,
+      "profit_factor": 0.9721238623716345,
+      "total_profit_pct": -1.41,
+      "max_drawdown_pct": 17.81447
+    },
+    "SPY/USD": {
+      "status": "covered",
+      "trade_count": 22,
+      "trade_density_label": "probe_only",
+      "sharpe": 0.2251,
+      "win_rate_pct": 50.0,
+      "profit_factor": 1.3429,
+      "total_profit_pct": 1.66,
+      "max_drawdown_pct": 2.1984,
+      "source_window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+      "evidence_source": "killzone_displacement_ibkr_freqtrade_zip",
+      "notes": []
+    },
+    "IWM/USD": {
+      "status": "covered",
+      "trade_count": 27,
+      "trade_density_label": "probe_only",
+      "sharpe": 0.1712,
+      "win_rate_pct": 48.1481,
+      "profit_factor": 1.1792,
+      "total_profit_pct": 1.95,
+      "max_drawdown_pct": 2.546,
+      "source_window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+      "evidence_source": "killzone_displacement_ibkr_stdout",
+      "notes": []
+    },
+    "GLD/USD": {
+      "status": "covered",
+      "trade_count": 24,
+      "trade_density_label": "probe_only",
+      "sharpe": 0.6078,
+      "win_rate_pct": 62.5,
+      "profit_factor": 2.1495,
+      "total_profit_pct": 10.88,
+      "max_drawdown_pct": 3.8617,
+      "source_window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+      "evidence_source": "killzone_displacement_ibkr_stdout",
+      "notes": []
+    }
+  },
+  "trade_density_summary": {
+    "aggregate_trade_count": 147,
+    "aggregate_label": "preferred_density",
+    "covered_market_count": 4
+  },
+  "aggregate_metrics": {
+    "sharpe": -0.011060065305479157,
+    "win_rate_pct": 58.503401,
+    "profit_factor": 0.9721238623716345,
+    "total_profit_pct": -1.41264,
+    "max_drawdown_pct": 17.81447,
+    "trade_count": 147
+  },
+  "resonance_summary": {
+    "base_timeframe": "1h",
+    "context_stack": [
+      "4h",
+      "1d"
+    ],
+    "resonance_by_timeframe": {}
+  },
+  "autoresearch": {
+    "effective_status": null,
+    "decision_counts": {},
+    "failure_tag_counts": {},
+    "best_attempt_score_delta": null
+  },
+  "cross_market_evidence": {
+    "SPY/USD": {
+      "sharpe": 0.2251,
+      "trade_count": 22,
+      "profit_factor": 1.3429,
+      "total_profit_pct": 1.66,
+      "max_drawdown_pct": 2.1984,
+      "win_rate_pct": 50.0,
+      "window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+      "evidence_source": "killzone_displacement_ibkr_freqtrade_zip"
+    },
+    "IWM/USD": {
+      "sharpe": 0.1712,
+      "trade_count": 27,
+      "profit_factor": 1.1792,
+      "total_profit_pct": 1.95,
+      "max_drawdown_pct": 2.546,
+      "win_rate_pct": 48.1481,
+      "window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+      "evidence_source": "killzone_displacement_ibkr_stdout"
+    },
+    "GLD/USD": {
+      "sharpe": 0.6078,
+      "trade_count": 24,
+      "profit_factor": 2.1495,
+      "total_profit_pct": 10.88,
+      "max_drawdown_pct": 3.8617,
+      "win_rate_pct": 62.5,
+      "window": "2025-05-17 23:00:00->2025-12-30 20:00:00",
+      "evidence_source": "killzone_displacement_ibkr_stdout"
+    }
+  }
+}

@@ -219,16 +219,6 @@ pub fn default_tomac_root_candidates() -> Vec<String> {
             candidates.push(root);
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
-        for candidate in [
-            format!("{home}/Downloads/Tomac"),
-            format!("{home}/Downloads/tomac"),
-            format!("{home}/Documents/Tomac"),
-            format!("{home}/Documents/tomac"),
-        ] {
-            candidates.push(candidate);
-        }
-    }
     candidates
 }
 
@@ -253,11 +243,8 @@ pub fn resolve_tomac_root(root: Option<&str>) -> Result<String> {
     if let Some(root) = root {
         return Ok(root.to_string());
     }
-    detected_tomac_root().ok_or_else(|| {
-        anyhow!(
-            "no TOMAC root provided and no default TOMAC history directory detected; set --root or ICT_ENGINE_TOMAC_ROOT"
-        )
-    })
+    detected_tomac_root()
+        .ok_or_else(|| anyhow!("no TOMAC root provided; set --root or ICT_ENGINE_TOMAC_ROOT"))
 }
 
 pub fn detected_tomac_root_or_placeholder() -> String {

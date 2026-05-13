@@ -28,6 +28,17 @@ pub fn build_observations(input: ObservationInput<'_>) -> Vec<Vec<f64>> {
     } = input;
     let mut observations = Vec::new();
     let min_len = candles.len().min(atr.len()).min(rsi.len()).min(adx.len());
+    let mut fvg_bars = fvgs.iter().map(|fvg| fvg.start_bar).collect::<Vec<_>>();
+    let mut sweep_bars = sweeps
+        .iter()
+        .map(|sweep| sweep.sweep_bar)
+        .collect::<Vec<_>>();
+    fvg_bars.sort_unstable();
+    sweep_bars.sort_unstable();
+    let mut fvg_window_start = 0usize;
+    let mut fvg_window_end = 0usize;
+    let mut sweep_window_start = 0usize;
+    let mut sweep_window_end = 0usize;
 
     for i in 0..min_len {
         let mut obs = Vec::with_capacity(OBS_DIM);
@@ -70,17 +81,25 @@ pub fn build_observations(input: ObservationInput<'_>) -> Vec<Vec<f64>> {
         }
 
         // 7. FVG count (recent)
-        let recent_fvgs = fvgs
-            .iter()
-            .filter(|f| f.start_bar >= i.saturating_sub(10))
-            .count();
+        let recent_start = i.saturating_sub(10);
+        while fvg_window_end < fvg_bars.len() && fvg_bars[fvg_window_end] <= i {
+            fvg_window_end += 1;
+        }
+        while fvg_window_start < fvg_window_end && fvg_bars[fvg_window_start] < recent_start {
+            fvg_window_start += 1;
+        }
+        let recent_fvgs = fvg_window_end.saturating_sub(fvg_window_start);
         obs.push(recent_fvgs as f64);
 
         // 8. Sweep count (recent)
-        let recent_sweeps = sweeps
-            .iter()
-            .filter(|s| s.sweep_bar >= i.saturating_sub(10))
-            .count();
+        while sweep_window_end < sweep_bars.len() && sweep_bars[sweep_window_end] <= i {
+            sweep_window_end += 1;
+        }
+        while sweep_window_start < sweep_window_end && sweep_bars[sweep_window_start] < recent_start
+        {
+            sweep_window_start += 1;
+        }
+        let recent_sweeps = sweep_window_end.saturating_sub(sweep_window_start);
         obs.push(recent_sweeps as f64);
 
         // 9. Price position in range (0 = low, 1 = high)
@@ -131,6 +150,7 @@ pub fn build_observations(input: ObservationInput<'_>) -> Vec<Vec<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Direction;
     use chrono::{Duration, TimeZone, Utc};
 
     fn candle(idx: i64, open: f64, high: f64, low: f64, close: f64) -> Candle {
@@ -166,5 +186,71 @@ mod tests {
 
         assert!(!observations.is_empty());
         assert!(observations.iter().all(|row| row.len() == OBS_DIM));
+    }
+
+    #[test]
+    fn build_observations_counts_only_completed_recent_events() {
+        let candles = (0..30)
+            .map(|idx| {
+                let base = 100.0 + idx as f64;
+                candle(idx as i64, base, base + 0.4, base - 0.3, base + 0.1)
+            })
+            .collect::<Vec<_>>();
+        let fvgs = vec![
+            FairValueGap {
+                top: 101.0,
+                bottom: 100.0,
+                direction: Direction::Bull,
+                start_bar: 5,
+                filled: false,
+            },
+            FairValueGap {
+                top: 106.0,
+                bottom: 105.0,
+                direction: Direction::Bull,
+                start_bar: 10,
+                filled: false,
+            },
+            FairValueGap {
+                top: 121.0,
+                bottom: 120.0,
+                direction: Direction::Bull,
+                start_bar: 25,
+                filled: false,
+            },
+        ];
+        let sweeps = vec![
+            LiquiditySweep {
+                sweep_bar: 8,
+                return_bar: 9,
+                pool_price: 108.0,
+                sweep_direction: Direction::Bear,
+            },
+            LiquiditySweep {
+                sweep_bar: 22,
+                return_bar: 23,
+                pool_price: 122.0,
+                sweep_direction: Direction::Bear,
+            },
+        ];
+
+        let observations = build_observations(ObservationInput {
+            candles: &candles,
+            ltf_candles: &candles,
+            implied_vol: &vec![0.2; candles.len()],
+            smoothed_prices: &vec![(0.0, 0.1, 0.0); candles.len()],
+            atr: &vec![1.0; candles.len()],
+            rsi: &vec![55.0; candles.len()],
+            adx: &vec![25.0; candles.len()],
+            fvgs: &fvgs,
+            sweeps: &sweeps,
+        });
+
+        assert_eq!(observations[0][6], 0.0);
+        assert_eq!(observations[0][7], 0.0);
+        assert_eq!(observations[10][6], 2.0);
+        assert_eq!(observations[10][7], 1.0);
+        assert_eq!(observations[25][6], 1.0);
+        assert_eq!(observations[25][7], 1.0);
     }
 }

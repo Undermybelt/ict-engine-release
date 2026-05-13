@@ -1,6 +1,6 @@
 **✅ 成功案例复现指导：自上而下因子挑选 → GMM/HMM/HSMM 聚类 → 清晰特征 → 交易策略设计**
 
-这个 pipeline 是量化领域经典的 **Regime-Aware Trading** 框架（top-down factor selection + unsupervised clustering + interpretable strategy）。你的 `ict-engine` 已有的 HMM + BBN + CatBoost/XGBoost 正好是天然基础，只需在 `factor-research` 命令里新增“聚类 + 特征解释 + 策略生成”子流程即可完美复现。
+这个 pipeline 是量化领域经典的 **Regime-Aware Trading** 框架（top-down factor selection + unsupervised clustering + interpretable strategy）。你的 `ict-engine` 已有的 HMM + BBN + CatBoost 正好是天然基础，只需在 `factor-research` 命令里新增“聚类 + 特征解释 + 策略生成”子流程即可完美复现。
 
 ### 1. 完整复现思路（直接适用于你的 Rust CLI）
 1. **自上而下挑选因子**（Top-down）：先用领域知识（ICT PD Array、SMT 结构、流动性、时间窗口等）手动/半自动选 10-20 个因子（而非纯数据驱动 bottom-up）。  
@@ -27,7 +27,7 @@
 
 你现在是一位拥有 12 年量化 regime-aware 交易系统经验的 Rust 工程师，精通 top-down factor selection + GMM/HMM/HSMM 聚类流程。
 
-项目：`ict-engine`（Rust CLI stateful workflow 引擎，已有 HMM + BBN + CatBoost/XGBoost + ICT PD Array 检测）。
+项目：`ict-engine`（Rust CLI stateful workflow 引擎，已有 HMM + BBN + CatBoost + ICT PD Array 检测）。
 
 **任务**：完整复现以下成功案例 pipeline（纯代码建议 + 架构 skeleton，不写完整实现代码，只给可直接复制的结构）：
 
@@ -51,7 +51,7 @@
 - **整体架构 skeleton**（Rust 文件结构建议）
 - **每个模块的 trait / 函数签名 + 伪代码注释**
 - **如何处理“特征不清晰 → 重新选因子”循环**
-- **与现有 CatBoost/XGBoost voting layer 的融合方式**
+- **与现有 CatBoost voting layer 的融合方式**
 - **Rust 依赖建议**（linfa-clustering、hmm crate 等）
 
 最后给出：如果我是技术 co-founder，这个 pipeline 如何分 3 个 sprint 落地。

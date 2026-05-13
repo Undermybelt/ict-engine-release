@@ -28,6 +28,8 @@ pub struct AgentMaterialPackage {
     pub title: String,
     pub symbol: String,
     pub timeframe: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timerange: Option<String>,
     pub direction: String,
     pub data_path: String,
     pub strategy_source_path: String,
@@ -84,6 +86,22 @@ pub struct AgentMaterialRankArtifact {
 pub struct AgentMaterialRankRow {
     pub unit_label: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_profit_branch_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_regime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_regime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_sub_regime_or_profit_factor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_factor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_provenance: Option<String>,
     pub win_rate_pct: Option<f64>,
     pub sharpe: Option<f64>,
     pub total_profit_pct: Option<f64>,
@@ -119,6 +137,22 @@ pub struct AgentMaterialDispatchTotals {
 pub struct AgentMaterialDispatchJobResult {
     pub job_id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_profit_branch_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_regime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_regime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_sub_regime_or_profit_factor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_factor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_provenance: Option<String>,
     pub status: String,
     pub reason: String,
     pub workspace_root: String,
@@ -156,9 +190,31 @@ pub fn persist_agent_material_batch(
     material_paths: &[String],
 ) -> Result<AgentMaterialBatchArtifact> {
     let generated_at = Utc::now();
+    let shared_workspace_root = absolute_existing_or_current_dir_path(shared_workspace_root)
+        .with_context(|| {
+            format!("resolving shared Auto-Quant workspace '{shared_workspace_root}'")
+        })?
+        .to_string_lossy()
+        .to_string();
     let mut jobs = Vec::new();
     for path in material_paths {
-        let package = load_agent_material_package(path)?;
+        let material_path = absolute_existing_or_current_dir_path(path)
+            .with_context(|| format!("resolving agent material path '{path}'"))?;
+        let mut package = load_agent_material_package(&material_path)?;
+        package.data_path = absolute_existing_or_current_dir_path(&package.data_path)
+            .with_context(|| format!("resolving agent material data path '{}'", package.data_path))?
+            .to_string_lossy()
+            .to_string();
+        package.strategy_source_path =
+            absolute_existing_or_current_dir_path(&package.strategy_source_path)
+                .with_context(|| {
+                    format!(
+                        "resolving agent material strategy path '{}'",
+                        package.strategy_source_path
+                    )
+                })?
+                .to_string_lossy()
+                .to_string();
         let label = if package.title.trim().is_empty() {
             format!(
                 "{}:{}:{}",
@@ -174,7 +230,7 @@ pub fn persist_agent_material_batch(
                 .join(&job_id)
                 .to_string_lossy()
                 .to_string(),
-            material_path: path.clone(),
+            material_path: material_path.to_string_lossy().to_string(),
             package,
             job_id,
         });
@@ -195,7 +251,7 @@ pub fn persist_agent_material_batch(
         ),
         generated_at,
         symbol: symbol.to_string(),
-        shared_workspace_root: shared_workspace_root.to_string(),
+        shared_workspace_root,
         source_repo_url: source_repo_url.map(str::to_string),
         max_parallel,
         jobs,
@@ -258,6 +314,25 @@ pub fn load_latest_agent_material_batch(
         .iter()
         .rev()
         .find(|entry| entry.artifact_kind == "auto_quant_agent_material_batch");
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    let content = std::fs::read_to_string(&target.path)
+        .with_context(|| format!("reading agent material batch '{}'", target.path))?;
+    let artifact = serde_json::from_str(&content)
+        .with_context(|| format!("parsing agent material batch '{}'", target.path))?;
+    Ok(Some(artifact))
+}
+
+fn load_agent_material_batch_by_artifact_id(
+    state_dir: &str,
+    symbol: &str,
+    artifact_id: &str,
+) -> Result<Option<AgentMaterialBatchArtifact>> {
+    let ledger = load_artifact_ledger(state_dir, symbol)?;
+    let target = ledger.iter().rev().find(|entry| {
+        entry.artifact_kind == "auto_quant_agent_material_batch" && entry.artifact_id == artifact_id
+    });
     let Some(target) = target else {
         return Ok(None);
     };
@@ -359,18 +434,84 @@ pub fn rank_agent_material_dispatch(
         .with_context(|| format!("reading agent material dispatch '{}'", target.path))?;
     let dispatch: AgentMaterialDispatchArtifact = serde_json::from_str(&content)
         .with_context(|| format!("parsing agent material dispatch '{}'", target.path))?;
+    let source_batch = load_agent_material_batch_by_artifact_id(
+        state_dir,
+        symbol,
+        &dispatch.source_batch_artifact_id,
+    )?
+    .or_else(|| {
+        load_latest_agent_material_batch(state_dir, symbol)
+            .ok()
+            .flatten()
+    });
+    let source_jobs_by_id = source_batch
+        .as_ref()
+        .map(|batch| {
+            batch
+                .jobs
+                .iter()
+                .map(|job| (job.job_id.clone(), job))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
 
     let mut ranking = dispatch
         .groups
         .iter()
         .flat_map(|group| group.job_results.iter())
-        .map(|row| AgentMaterialRankRow {
-            unit_label: row.title.clone(),
-            status: row.status.clone(),
-            win_rate_pct: row.aggregate_metrics.as_ref().map(|m| m.win_rate_pct),
-            sharpe: row.aggregate_metrics.as_ref().map(|m| m.sharpe),
-            total_profit_pct: row.aggregate_metrics.as_ref().map(|m| m.total_profit_pct),
-            trade_count: row.aggregate_metrics.as_ref().map(|m| m.trade_count),
+        .map(|row| {
+            let source_job = source_jobs_by_id.get(&row.job_id).copied();
+            let fallback_branch = source_job.map(|job| branch_path_fields(&job.package));
+            AgentMaterialRankRow {
+                unit_label: row.title.clone(),
+                status: row.status.clone(),
+                branch_path: row.branch_path.clone().or_else(|| {
+                    fallback_branch
+                        .as_ref()
+                        .and_then(|branch| branch.regime_profit_branch_path.clone())
+                }),
+                package_id: row
+                    .package_id
+                    .clone()
+                    .or_else(|| source_job.map(|job| job.package.package_id.clone())),
+                regime_profit_branch_path: row.regime_profit_branch_path.clone().or_else(|| {
+                    fallback_branch
+                        .as_ref()
+                        .and_then(|branch| branch.regime_profit_branch_path.clone())
+                }),
+                main_regime: row.main_regime.clone().or_else(|| {
+                    fallback_branch
+                        .as_ref()
+                        .and_then(|branch| branch.main_regime.clone())
+                }),
+                sub_regime: row.sub_regime.clone().or_else(|| {
+                    fallback_branch
+                        .as_ref()
+                        .and_then(|branch| branch.sub_regime.clone())
+                }),
+                sub_sub_regime_or_profit_factor: row
+                    .sub_sub_regime_or_profit_factor
+                    .clone()
+                    .or_else(|| {
+                        fallback_branch
+                            .as_ref()
+                            .and_then(|branch| branch.sub_sub_regime_or_profit_factor.clone())
+                    }),
+                profit_factor: row.profit_factor.clone().or_else(|| {
+                    fallback_branch
+                        .as_ref()
+                        .and_then(|branch| branch.profit_factor.clone())
+                }),
+                provider_provenance: row.provider_provenance.clone().or_else(|| {
+                    fallback_branch
+                        .as_ref()
+                        .and_then(|branch| branch.provider_provenance.clone())
+                }),
+                win_rate_pct: row.aggregate_metrics.as_ref().map(|m| m.win_rate_pct),
+                sharpe: row.aggregate_metrics.as_ref().map(|m| m.sharpe),
+                total_profit_pct: row.aggregate_metrics.as_ref().map(|m| m.total_profit_pct),
+                trade_count: row.aggregate_metrics.as_ref().map(|m| m.trade_count),
+            }
         })
         .collect::<Vec<_>>();
     ranking.sort_by(|left, right| {
@@ -438,9 +579,18 @@ fn dispatch_one_material_job(
     let Some(reason) = blocking_reason_for_profile(&job.package.consumer_evidence_profile) else {
         return run_dispatch_material_job(job, shared_workspace_root, source_repo_url);
     };
+    let branch = branch_path_fields(&job.package);
     Ok(AgentMaterialDispatchJobResult {
         job_id: job.job_id,
         title: job.package.title,
+        branch_path: branch.regime_profit_branch_path.clone(),
+        package_id: Some(job.package.package_id),
+        regime_profit_branch_path: branch.regime_profit_branch_path,
+        main_regime: branch.main_regime,
+        sub_regime: branch.sub_regime,
+        sub_sub_regime_or_profit_factor: branch.sub_sub_regime_or_profit_factor,
+        profit_factor: branch.profit_factor,
+        provider_provenance: branch.provider_provenance,
         status: "blocked".to_string(),
         reason,
         workspace_root: String::new(),
@@ -463,11 +613,58 @@ fn blocking_reason_for_profile(profile: &AutoQuantConsumerEvidenceProfile) -> Op
     })
 }
 
+#[derive(Debug, Clone, Default)]
+struct BranchPathFields {
+    regime_profit_branch_path: Option<String>,
+    main_regime: Option<String>,
+    sub_regime: Option<String>,
+    sub_sub_regime_or_profit_factor: Option<String>,
+    profit_factor: Option<String>,
+    provider_provenance: Option<String>,
+}
+
+fn branch_path_fields(package: &AgentMaterialPackage) -> BranchPathFields {
+    let provider_provenance = package
+        .notes
+        .iter()
+        .filter_map(|note| note.trim().strip_prefix("source_provider="))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+        .map(str::to_string);
+    let Some(branch_path) = package
+        .notes
+        .iter()
+        .filter_map(|note| note.trim().strip_prefix("branch_path="))
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+    else {
+        return BranchPathFields {
+            provider_provenance,
+            ..Default::default()
+        };
+    };
+    let segments = branch_path
+        .split(" -> ")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    BranchPathFields {
+        regime_profit_branch_path: Some(branch_path.to_string()),
+        main_regime: segments.first().map(|value| (*value).to_string()),
+        sub_regime: segments.get(1).map(|value| (*value).to_string()),
+        sub_sub_regime_or_profit_factor: segments.get(2).map(|value| (*value).to_string()),
+        profit_factor: segments.get(3).map(|value| (*value).to_string()),
+        provider_provenance,
+    }
+}
+
 fn run_dispatch_material_job(
     job: AgentMaterialBatchJob,
     shared_workspace_root: &str,
     source_repo_url: Option<&str>,
 ) -> Result<AgentMaterialDispatchJobResult> {
+    let package_id = job.package.package_id.clone();
+    let branch = branch_path_fields(&job.package);
     let workspace_root = PathBuf::from(&job.isolated_state_dir).join("aq_workspace");
     let runtime_python = resolve_runtime_python(shared_workspace_root, source_repo_url)?;
     materialize_material_workspace(
@@ -492,6 +689,14 @@ fn run_dispatch_material_job(
         return Ok(AgentMaterialDispatchJobResult {
             job_id: job.job_id,
             title: job.package.title,
+            branch_path: branch.regime_profit_branch_path.clone(),
+            package_id: Some(package_id),
+            regime_profit_branch_path: branch.regime_profit_branch_path,
+            main_regime: branch.main_regime,
+            sub_regime: branch.sub_regime,
+            sub_sub_regime_or_profit_factor: branch.sub_sub_regime_or_profit_factor,
+            profit_factor: branch.profit_factor,
+            provider_provenance: branch.provider_provenance,
             status: "failed".to_string(),
             reason: format!(
                 "run_tomac_exit_nonzero: {}",
@@ -506,6 +711,14 @@ fn run_dispatch_material_job(
     Ok(AgentMaterialDispatchJobResult {
         job_id: job.job_id,
         title: job.package.title,
+        branch_path: branch.regime_profit_branch_path.clone(),
+        package_id: Some(package_id),
+        regime_profit_branch_path: branch.regime_profit_branch_path,
+        main_regime: branch.main_regime,
+        sub_regime: branch.sub_regime,
+        sub_sub_regime_or_profit_factor: branch.sub_sub_regime_or_profit_factor,
+        profit_factor: branch.profit_factor,
+        provider_provenance: branch.provider_provenance,
         status: "completed".to_string(),
         reason: "external_auto_quant_run_completed".to_string(),
         workspace_root: workspace_root.to_string_lossy().to_string(),
@@ -519,7 +732,11 @@ fn resolve_runtime_python(
     shared_workspace_root: &str,
     source_repo_url: Option<&str>,
 ) -> Result<Option<PathBuf>> {
-    let shared_python = PathBuf::from(shared_workspace_root).join(".venv/bin/python");
+    let shared_workspace_root = absolute_existing_or_current_dir_path(shared_workspace_root)
+        .with_context(|| {
+            format!("resolving shared Auto-Quant workspace '{shared_workspace_root}'")
+        })?;
+    let shared_python = shared_workspace_root.join(".venv/bin/python");
     if shared_python.exists() {
         return Ok(Some(shared_python));
     }
@@ -534,13 +751,18 @@ fn resolve_runtime_python(
     let output = Command::new("uv")
         .arg("sync")
         .arg("--frozen")
-        .current_dir(shared_workspace_root)
+        .current_dir(&shared_workspace_root)
         .output()
-        .with_context(|| format!("running uv sync --frozen in '{}'", shared_workspace_root))?;
+        .with_context(|| {
+            format!(
+                "running uv sync --frozen in '{}'",
+                shared_workspace_root.display()
+            )
+        })?;
     if !output.status.success() {
         bail!(
             "failed to provision shared Auto-Quant runtime in '{}': {}",
-            shared_workspace_root,
+            shared_workspace_root.display(),
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -549,6 +771,16 @@ fn resolve_runtime_python(
     } else {
         Ok(None)
     }
+}
+
+fn absolute_existing_or_current_dir_path(path: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(path);
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    Ok(fs::canonicalize(&absolute).unwrap_or(absolute))
 }
 
 fn materialize_material_workspace(
@@ -619,6 +851,9 @@ fn materialize_material_workspace(
 fn write_material_config(path: &Path, package: &AgentMaterialPackage) -> Result<()> {
     let mut config: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)?;
     config["timeframe"] = serde_json::Value::String(package.timeframe.clone());
+    if let Some(timerange) = effective_material_timerange(package)? {
+        config["timerange"] = serde_json::Value::String(timerange.to_string());
+    }
     config["exchange"]["pair_whitelist"] = serde_json::json!([format!("{}/USD", package.symbol)]);
     if package.direction == "short" {
         config["trading_mode"] = serde_json::Value::String("futures".to_string());
@@ -640,6 +875,36 @@ fn write_material_config(path: &Path, package: &AgentMaterialPackage) -> Result<
     }
     fs::write(path, serde_json::to_string_pretty(&config)?)?;
     Ok(())
+}
+
+fn effective_material_timerange(package: &AgentMaterialPackage) -> Result<Option<String>> {
+    if let Some(timerange) = package
+        .timerange
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(Some(timerange.to_string()));
+    }
+    derive_material_timerange_from_data_path(&package.data_path)
+}
+
+fn derive_material_timerange_from_data_path(data_path: &str) -> Result<Option<String>> {
+    let candles = load_candles(data_path)
+        .with_context(|| format!("deriving agent material timerange from '{}'", data_path))?;
+    let Some(first) = candles.first() else {
+        return Ok(None);
+    };
+    let (mut min_ts, mut max_ts) = (first.timestamp, first.timestamp);
+    for candle in candles.iter().skip(1) {
+        min_ts = min_ts.min(candle.timestamp);
+        max_ts = max_ts.max(candle.timestamp);
+    }
+    Ok(Some(format!(
+        "{}-{}",
+        min_ts.format("%Y%m%d"),
+        max_ts.format("%Y%m%d")
+    )))
 }
 
 fn write_material_candles_csv(input_path: &str, csv_path: &Path) -> Result<()> {
@@ -690,6 +955,13 @@ fn run_workspace_python_script(
     args: &[&str],
 ) -> Result<std::process::Output> {
     let mut command = if let Some(python) = python_override {
+        let python = if python.is_absolute() {
+            python.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .with_context(|| format!("resolving python runtime '{}'", python.display()))?
+                .join(python)
+        };
         let mut cmd = Command::new(python);
         cmd.arg(script_name);
         cmd
@@ -930,6 +1202,166 @@ mod tests {
     }
 
     #[test]
+    fn persist_agent_material_batch_normalizes_workspace_and_material_paths() {
+        let dir = TempDir::new_in(".").unwrap();
+        let dir_path = fs::canonicalize(dir.path()).unwrap();
+        let shared = dir_path.join("shared-aq");
+        let data = dir_path.join("candles.csv");
+        let strategy = dir_path.join("strategy.py");
+        let material = dir_path.join("material.json");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(&data, "timestamp,open,high,low,close,volume\n").unwrap();
+        fs::write(&strategy, "class Dummy: pass\n").unwrap();
+        let mut package = sample_package(strategy.to_str().unwrap());
+        package.data_path = data
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        package.strategy_source_path = strategy
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        fs::write(&material, serde_json::to_string(&package).unwrap()).unwrap();
+        let relative_shared = shared
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let relative_material = material
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+
+        let artifact = persist_agent_material_batch(
+            "NQ",
+            dir_path.to_str().unwrap(),
+            &relative_shared,
+            None,
+            1,
+            &[relative_material],
+        )
+        .unwrap();
+
+        assert!(Path::new(&artifact.shared_workspace_root).is_absolute());
+        assert!(Path::new(&artifact.jobs[0].material_path).is_absolute());
+        assert!(Path::new(&artifact.jobs[0].package.data_path).is_absolute());
+        assert!(Path::new(&artifact.jobs[0].package.strategy_source_path).is_absolute());
+    }
+
+    #[test]
+    fn write_material_config_applies_package_timerange_when_present() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.tomac.json");
+        fs::write(
+            &config_path,
+            serde_json::json!({
+                "timeframe": "1h",
+                "timerange": "20230101-20251231",
+                "trading_mode": "spot",
+                "entry_pricing": {"use_order_book": false},
+                "exit_pricing": {"use_order_book": false},
+                "exchange": {
+                    "pair_whitelist": ["NQ/USD"],
+                    "_ft_has_params": {"uses_leverage_tiers": false}
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut package = sample_package("/tmp/strategy.py");
+        package.timerange = Some("20220405-20220614".to_string());
+
+        write_material_config(&config_path, &package).unwrap();
+
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+        assert_eq!(config["timerange"], "20220405-20220614");
+        assert_eq!(config["exchange"]["pair_whitelist"][0], "NQ/USD");
+    }
+
+    #[test]
+    fn write_material_config_derives_timerange_from_package_data_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("config.tomac.json");
+        let data_path = dir.path().join("material.csv");
+        fs::write(
+            &config_path,
+            serde_json::json!({
+                "timeframe": "1h",
+                "timerange": "20230101-20251231",
+                "trading_mode": "spot",
+                "entry_pricing": {"use_order_book": false},
+                "exit_pricing": {"use_order_book": false},
+                "exchange": {
+                    "pair_whitelist": ["NQ/USD"],
+                    "_ft_has_params": {"uses_leverage_tiers": false}
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            &data_path,
+            "timestamp,open,high,low,close,volume\n\
+             2026-01-01T00:00:00Z,1,2,1,2,10\n\
+             2026-05-12T09:00:00Z,2,3,2,3,12\n",
+        )
+        .unwrap();
+        let mut package = sample_package("/tmp/strategy.py");
+        package.data_path = data_path.to_string_lossy().to_string();
+
+        write_material_config(&config_path, &package).unwrap();
+
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(config_path).unwrap()).unwrap();
+        assert_eq!(config["timerange"], "20260101-20260512");
+        assert_eq!(config["exchange"]["pair_whitelist"][0], "NQ/USD");
+    }
+
+    #[test]
+    fn run_workspace_python_script_resolves_relative_runtime_before_changing_cwd() {
+        let dir = TempDir::new_in(".").unwrap();
+        let dir_path = fs::canonicalize(dir.path()).unwrap();
+        let runtime_dir = dir_path.join("runtime");
+        let workspace = dir_path.join("workspace");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        let python = runtime_dir.join("python");
+        fs::write(
+            &python,
+            "#!/bin/sh\nprintf 'runtime=%s script=%s cwd=%s\\n' \"$0\" \"$1\" \"$(pwd)\"\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&python).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o755);
+            fs::set_permissions(&python, perms).unwrap();
+        }
+        let relative_python = python
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap();
+
+        let output = run_workspace_python_script(
+            Some(relative_python),
+            &workspace,
+            "prepare_external.py",
+            &[],
+        )
+        .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(&format!("runtime={}", python.display())));
+        assert!(stdout.contains("script=prepare_external.py"));
+        assert!(stdout.contains(&format!("cwd={}", workspace.display())));
+    }
+
+    #[test]
     fn rank_agent_material_dispatch_orders_by_priority() {
         let dir = TempDir::new().unwrap();
         let dispatch = AgentMaterialDispatchArtifact {
@@ -1012,5 +1444,290 @@ mod tests {
         let rank = rank_agent_material_dispatch(dir.path().to_str().unwrap(), "NQ").unwrap();
         assert_eq!(rank.ranking[0].unit_label, "A");
         assert_eq!(rank.ranking[1].unit_label, "B");
+    }
+
+    #[test]
+    fn rank_agent_material_dispatch_preserves_branch_path_and_provider_provenance() {
+        let dir = TempDir::new().unwrap();
+        let branch_path =
+            "TrendExpansion -> MomentumPersistence -> macd_zero_line_reclaim -> macd_zero_line_reclaim_long_v1";
+        let dispatch = AgentMaterialDispatchArtifact {
+            artifact_id: "dispatch-branch".to_string(),
+            generated_at: Utc::now(),
+            symbol: "MACDMOM".to_string(),
+            source_batch_artifact_id: "batch-branch".to_string(),
+            selected_group_indices: vec![0],
+            groups: vec![AgentMaterialDispatchGroupResult {
+                group_index: 0,
+                job_results: vec![AgentMaterialDispatchJobResult {
+                    job_id: "macd-zero-line-yf".to_string(),
+                    title: "MACD zero-line reclaim - yfinance/YF SPY 1h".to_string(),
+                    status: "completed".to_string(),
+                    reason: "external_auto_quant_run_completed".to_string(),
+                    branch_path: Some(branch_path.to_string()),
+                    main_regime: Some("TrendExpansion".to_string()),
+                    sub_regime: Some("MomentumPersistence".to_string()),
+                    sub_sub_regime_or_profit_factor: Some("macd_zero_line_reclaim".to_string()),
+                    profit_factor: Some("macd_zero_line_reclaim_long_v1".to_string()),
+                    provider_provenance: Some("yfinance/YF SPY 1h".to_string()),
+                    aggregate_metrics: Some(AgentMaterialAggregateMetrics {
+                        win_rate_pct: 50.0,
+                        sharpe: 0.1778,
+                        total_profit_pct: 4.66,
+                        trade_count: 10,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+            }],
+            totals: AgentMaterialDispatchTotals {
+                total_jobs: 1,
+                completed_jobs: 1,
+                ..Default::default()
+            },
+        };
+        let filename = "auto_quant_agent_material_dispatch.branch.json";
+        save_state(dir.path(), "MACDMOM", filename, &dispatch).unwrap();
+        append_artifact_ledger_entry(
+            dir.path(),
+            "MACDMOM",
+            ArtifactLedgerEntry {
+                entry_id: "ledger:dispatch-branch".to_string(),
+                artifact_kind: "auto_quant_agent_material_dispatch".to_string(),
+                artifact_id: "dispatch-branch".to_string(),
+                version: 1,
+                generated_at: dispatch.generated_at,
+                symbol: "MACDMOM".to_string(),
+                source_phase: "auto_quant_agent_material_dispatch".to_string(),
+                source_run_id: None,
+                path: artifact_state_path(dir.path(), "MACDMOM", filename),
+                status: "dispatch_completed".to_string(),
+                promote_candidate: false,
+                actionable: true,
+                decision_hint: String::new(),
+                review_reason: String::new(),
+                review_rule_version: String::new(),
+                top_factor_name: None,
+                top_factor_action: None,
+                family_scores: BTreeMap::new(),
+                supersedes_artifact_id: None,
+                quality_score: 0,
+                consumed_by_update_run_id: None,
+                consumed_at: None,
+                consumed_outcome: None,
+                regraded_at: None,
+                consumption_regrade_status: None,
+                consumption_regrade_reason: None,
+            },
+        )
+        .unwrap();
+
+        let rank = rank_agent_material_dispatch(dir.path().to_str().unwrap(), "MACDMOM").unwrap();
+        let row = &rank.ranking[0];
+        assert_eq!(row.branch_path.as_deref(), Some(branch_path));
+        assert_eq!(row.main_regime.as_deref(), Some("TrendExpansion"));
+        assert_eq!(row.sub_regime.as_deref(), Some("MomentumPersistence"));
+        assert_eq!(
+            row.sub_sub_regime_or_profit_factor.as_deref(),
+            Some("macd_zero_line_reclaim")
+        );
+        assert_eq!(
+            row.profit_factor.as_deref(),
+            Some("macd_zero_line_reclaim_long_v1")
+        );
+        assert_eq!(
+            row.provider_provenance.as_deref(),
+            Some("yfinance/YF SPY 1h")
+        );
+    }
+
+    #[test]
+    fn dispatch_agent_material_preserves_branch_path_when_provider_blocked() {
+        let dir = TempDir::new().unwrap();
+        let branch_path =
+            "TrendExpansion -> PullbackContinuation -> fair_value_gap_retest -> fvg_retest_continuation_long_v1";
+        let job = AgentMaterialBatchJob {
+            job_id: "ob-fvg-yf".to_string(),
+            isolated_state_dir: dir.path().join("job").to_string_lossy().to_string(),
+            material_path: "ob-fvg-yf.material.json".to_string(),
+            package: AgentMaterialPackage {
+                package_id: "ob-fvg-yf-v1".to_string(),
+                title: "OB/FVG fvg_retest_continuation_long_v1 - yfinance/YF SPY 1h".to_string(),
+                symbol: "SPY".to_string(),
+                timeframe: "1h".to_string(),
+                direction: "long".to_string(),
+                consumer_evidence_profile: AutoQuantConsumerEvidenceProfile {
+                    required_surfaces: vec!["greeks".to_string()],
+                    ..Default::default()
+                },
+                notes: vec![
+                    "source_provider=yfinance/YF SPY 1h".to_string(),
+                    format!("branch_path={branch_path}"),
+                ],
+                ..Default::default()
+            },
+        };
+
+        let result = dispatch_one_material_job(job, dir.path().to_str().unwrap(), None).unwrap();
+
+        assert_eq!(result.status, "blocked");
+        assert_eq!(result.package_id.as_deref(), Some("ob-fvg-yf-v1"));
+        assert_eq!(result.branch_path.as_deref(), Some(branch_path));
+        assert_eq!(
+            result.regime_profit_branch_path.as_deref(),
+            Some(branch_path)
+        );
+        assert_eq!(result.main_regime.as_deref(), Some("TrendExpansion"));
+        assert_eq!(result.sub_regime.as_deref(), Some("PullbackContinuation"));
+        assert_eq!(
+            result.sub_sub_regime_or_profit_factor.as_deref(),
+            Some("fair_value_gap_retest")
+        );
+        assert_eq!(
+            result.profit_factor.as_deref(),
+            Some("fvg_retest_continuation_long_v1")
+        );
+        assert_eq!(
+            result.provider_provenance.as_deref(),
+            Some("yfinance/YF SPY 1h")
+        );
+    }
+
+    #[test]
+    fn rank_agent_material_dispatch_recovers_branch_fields_from_source_batch() {
+        let dir = TempDir::new().unwrap();
+        let branch_path =
+            "TrendExpansion -> MomentumPersistence -> macd_signal_pullback -> macd_signal_pullback_continuation_v1";
+        let mut package = sample_package("/tmp/strategy.py");
+        package.package_id = "macd-signal-yf".to_string();
+        package.title = "MACD signal pullback continuation - yfinance/YF SPY 1h".to_string();
+        package.notes = vec![
+            "source_provider=yfinance/YF SPY 1h".to_string(),
+            format!("branch_path={branch_path}"),
+        ];
+        let batch = AgentMaterialBatchArtifact {
+            artifact_id: "batch-branch-source".to_string(),
+            generated_at: Utc::now(),
+            symbol: "MACDMOM".to_string(),
+            shared_workspace_root: "/tmp/aq".to_string(),
+            source_repo_url: None,
+            max_parallel: 1,
+            jobs: vec![AgentMaterialBatchJob {
+                job_id: "macd-signal-yf".to_string(),
+                isolated_state_dir: "/tmp/unit".to_string(),
+                material_path: "/tmp/material.json".to_string(),
+                package,
+            }],
+            dispatch_groups: vec![],
+            notes: vec![],
+        };
+        let batch_filename = "auto_quant_agent_material_batch.branch-source.json";
+        save_state(dir.path(), "MACDMOM", batch_filename, &batch).unwrap();
+        append_artifact_ledger_entry(
+            dir.path(),
+            "MACDMOM",
+            ArtifactLedgerEntry {
+                entry_id: "ledger:batch-branch-source".to_string(),
+                artifact_kind: "auto_quant_agent_material_batch".to_string(),
+                artifact_id: "batch-branch-source".to_string(),
+                version: 1,
+                generated_at: batch.generated_at,
+                symbol: "MACDMOM".to_string(),
+                source_phase: "auto_quant_agent_material_batch".to_string(),
+                source_run_id: None,
+                path: artifact_state_path(dir.path(), "MACDMOM", batch_filename),
+                status: "batch_ready_for_dispatch".to_string(),
+                promote_candidate: false,
+                actionable: true,
+                decision_hint: String::new(),
+                review_reason: String::new(),
+                review_rule_version: String::new(),
+                top_factor_name: None,
+                top_factor_action: None,
+                family_scores: BTreeMap::new(),
+                supersedes_artifact_id: None,
+                quality_score: 0,
+                consumed_by_update_run_id: None,
+                consumed_at: None,
+                consumed_outcome: None,
+                regraded_at: None,
+                consumption_regrade_status: None,
+                consumption_regrade_reason: None,
+            },
+        )
+        .unwrap();
+        let dispatch = AgentMaterialDispatchArtifact {
+            artifact_id: "dispatch-old-schema".to_string(),
+            generated_at: Utc::now(),
+            symbol: "MACDMOM".to_string(),
+            source_batch_artifact_id: "batch-branch-source".to_string(),
+            selected_group_indices: vec![0],
+            groups: vec![AgentMaterialDispatchGroupResult {
+                group_index: 0,
+                job_results: vec![AgentMaterialDispatchJobResult {
+                    job_id: "macd-signal-yf".to_string(),
+                    title: "MACD signal pullback continuation - yfinance/YF SPY 1h".to_string(),
+                    status: "completed".to_string(),
+                    reason: "external_auto_quant_run_completed".to_string(),
+                    aggregate_metrics: Some(AgentMaterialAggregateMetrics {
+                        win_rate_pct: 64.2857,
+                        sharpe: 0.1266,
+                        total_profit_pct: 2.22,
+                        trade_count: 14,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+            }],
+            totals: AgentMaterialDispatchTotals {
+                total_jobs: 1,
+                completed_jobs: 1,
+                ..Default::default()
+            },
+        };
+        let dispatch_filename = "auto_quant_agent_material_dispatch.old-schema.json";
+        save_state(dir.path(), "MACDMOM", dispatch_filename, &dispatch).unwrap();
+        append_artifact_ledger_entry(
+            dir.path(),
+            "MACDMOM",
+            ArtifactLedgerEntry {
+                entry_id: "ledger:dispatch-old-schema".to_string(),
+                artifact_kind: "auto_quant_agent_material_dispatch".to_string(),
+                artifact_id: "dispatch-old-schema".to_string(),
+                version: 1,
+                generated_at: dispatch.generated_at,
+                symbol: "MACDMOM".to_string(),
+                source_phase: "auto_quant_agent_material_dispatch".to_string(),
+                source_run_id: None,
+                path: artifact_state_path(dir.path(), "MACDMOM", dispatch_filename),
+                status: "dispatch_completed".to_string(),
+                promote_candidate: false,
+                actionable: true,
+                decision_hint: String::new(),
+                review_reason: String::new(),
+                review_rule_version: String::new(),
+                top_factor_name: None,
+                top_factor_action: None,
+                family_scores: BTreeMap::new(),
+                supersedes_artifact_id: None,
+                quality_score: 0,
+                consumed_by_update_run_id: None,
+                consumed_at: None,
+                consumed_outcome: None,
+                regraded_at: None,
+                consumption_regrade_status: None,
+                consumption_regrade_reason: None,
+            },
+        )
+        .unwrap();
+
+        let rank = rank_agent_material_dispatch(dir.path().to_str().unwrap(), "MACDMOM").unwrap();
+        let row = &rank.ranking[0];
+        assert_eq!(row.branch_path.as_deref(), Some(branch_path));
+        assert_eq!(row.main_regime.as_deref(), Some("TrendExpansion"));
+        assert_eq!(
+            row.provider_provenance.as_deref(),
+            Some("yfinance/YF SPY 1h")
+        );
     }
 }

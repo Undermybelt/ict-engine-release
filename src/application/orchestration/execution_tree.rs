@@ -73,6 +73,8 @@ pub struct ExecutionTreeArtifact {
     pub generated_at: DateTime<Utc>,
     pub symbol: String,
     pub output: ExecutionTreeOutput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_loop_branch_admission: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub execution_shap_top_k: Vec<ExecutionShapAttribution>,
     pub provenance: RunProvenance,
@@ -80,7 +82,7 @@ pub struct ExecutionTreeArtifact {
 
 /// SHAP-like feature attribution row for an Execution Tree branch.
 /// v1 is a structural attribution (deterministic contribution function over
-/// ExecutionTreeInput features), not a CatBoost/XGBoost Shapley value — the
+/// ExecutionTreeInput features), not a CatBoost Shapley value — the
 /// trait `ExecutionShapProvider` lets a real model-SHAP implementation replace
 /// the default without touching reflection_bundle consumers.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -621,9 +623,137 @@ pub fn build_execution_tree_artifact(
         generated_at,
         symbol: symbol.to_string(),
         output,
+        closed_loop_branch_admission: None,
         execution_shap_top_k,
         provenance,
     }
+}
+
+pub fn build_execution_tree_closed_loop_branch_admission_from_ranker_lineage(
+    path_ranker_lineage: Option<&[String]>,
+    pre_bayes_gate_status: &str,
+    execution_gate_status: &str,
+    output: &ExecutionTreeOutput,
+) -> Option<serde_json::Value> {
+    let path_id = execution_tree_branch_path_from_ranker_lineage(path_ranker_lineage)?;
+    Some(build_execution_tree_closed_loop_branch_admission_value(
+        &path_id,
+        pre_bayes_gate_status,
+        execution_gate_status,
+        output,
+    ))
+}
+
+pub fn build_execution_tree_closed_loop_branch_admission_from_ranker_or_output_lineage(
+    path_ranker_lineage: Option<&[String]>,
+    pre_bayes_gate_status: &str,
+    execution_gate_status: &str,
+    output: &ExecutionTreeOutput,
+) -> Option<serde_json::Value> {
+    build_execution_tree_closed_loop_branch_admission_from_ranker_lineage(
+        path_ranker_lineage,
+        pre_bayes_gate_status,
+        execution_gate_status,
+        output,
+    )
+    .or_else(|| {
+        build_execution_tree_closed_loop_branch_admission_from_ranker_lineage(
+            Some(output.split_reason_lineage.as_slice()),
+            pre_bayes_gate_status,
+            execution_gate_status,
+            output,
+        )
+    })
+}
+
+pub fn execution_tree_branch_admission_gate_status(output: &ExecutionTreeOutput) -> String {
+    if output.gate_status == "ready" && output.branch == "fill_viable" {
+        "execution_ready".to_string()
+    } else if output.gate_status == "observe" {
+        "execution_observe_only".to_string()
+    } else if output.gate_status == "blocked" || output.branch == "block_crowded" {
+        "execution_blocked".to_string()
+    } else {
+        output.gate_status.clone()
+    }
+}
+
+fn execution_tree_branch_path_from_ranker_lineage(
+    path_ranker_lineage: Option<&[String]>,
+) -> Option<String> {
+    let lines = path_ranker_lineage?;
+    lines.iter().find_map(|line| {
+        let marker = "ranker_score=path_id=";
+        let start = line.find(marker)? + marker.len();
+        let rest = &line[start..];
+        let path = rest.split(" runtime_source=").next().unwrap_or(rest).trim();
+        if path.contains(" -> ") {
+            Some(path.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn build_execution_tree_closed_loop_branch_admission_value(
+    path_id: &str,
+    pre_bayes_gate_status: &str,
+    execution_gate_status: &str,
+    output: &ExecutionTreeOutput,
+) -> serde_json::Value {
+    let pre_bayes_ready = pre_bayes_gate_status == "pass_hard";
+    let execution_ready = matches!(
+        execution_gate_status,
+        "ready" | "execution_ready" | "pass" | "admissible"
+    );
+    let execution_tree_ready = output.gate_status == "ready"
+        && output.branch == "fill_viable"
+        && output.execution_bias != "skip";
+    let ready = pre_bayes_ready && execution_ready && execution_tree_ready;
+    let actionable = ready;
+    let review_status = if actionable {
+        "promote_latest"
+    } else {
+        "observe"
+    };
+    let status = if ready && actionable {
+        "admitted"
+    } else {
+        "fail_closed"
+    };
+    let mut evidence = Vec::new();
+    if !pre_bayes_gate_status.trim().is_empty() {
+        evidence.push(format!("pre_bayes_gate_status={pre_bayes_gate_status}"));
+    }
+    if !execution_gate_status.trim().is_empty() {
+        evidence.push(format!("execution_gate_status={execution_gate_status}"));
+    }
+    evidence.push(format!("review_status={review_status}"));
+    evidence.push(format!("execution_tree_gate_status={}", output.gate_status));
+    evidence.push(format!("execution_tree_branch={}", output.branch));
+
+    serde_json::json!({
+        "status": status,
+        "reason": if status == "admitted" {
+            "exact_structural_branch_ready_and_actionable"
+        } else {
+            "exact_structural_branch_visible_but_not_ready_or_actionable"
+        },
+        "source_phase": "structural-recommended-path-bundle",
+        "path_id": path_id,
+        "path_label": path_id,
+        "candidate_status": execution_gate_status,
+        "pre_bayes_gate_status": pre_bayes_gate_status,
+        "execution_gate_status": execution_gate_status,
+        "review_status": review_status,
+        "ready": ready,
+        "actionable": actionable,
+        "execution_tree_gate_status": output.gate_status,
+        "execution_tree_branch": output.branch,
+        "execution_tree_bias": output.execution_bias,
+        "decision_hint": output.decision_hint,
+        "evidence": evidence,
+    })
 }
 
 pub fn persist_execution_tree_artifact<P: AsRef<Path>>(
@@ -633,9 +763,36 @@ pub fn persist_execution_tree_artifact<P: AsRef<Path>>(
     source_run_id: Option<String>,
 ) -> Result<()> {
     save_state(&dir, &artifact.symbol, EXECUTION_TREE_TRACE_FILE, artifact)?;
-    let promote = artifact.output.branch == "fill_viable" && artifact.output.gate_status == "ready";
-    let actionable =
-        artifact.output.gate_status != "blocked" && artifact.output.branch != "block_crowded";
+    let closed_loop_branch_admission_status = artifact
+        .closed_loop_branch_admission
+        .as_ref()
+        .and_then(|admission| admission.get("status"))
+        .and_then(serde_json::Value::as_str);
+    let branch_admission_fail_closed = closed_loop_branch_admission_status == Some("fail_closed");
+    let promote = !branch_admission_fail_closed
+        && artifact.output.branch == "fill_viable"
+        && artifact.output.gate_status == "ready";
+    let actionable = !branch_admission_fail_closed
+        && artifact.output.gate_status != "blocked"
+        && artifact.output.branch != "block_crowded";
+    let review_reason = if let Some(status) = closed_loop_branch_admission_status {
+        format!(
+            "branch={};bias={};branch_prob={:.4};uncertainty={:.4};branch_admission_status={}",
+            artifact.output.branch,
+            artifact.output.execution_bias,
+            artifact.output.branch_probability,
+            artifact.output.posterior_uncertainty,
+            status
+        )
+    } else {
+        format!(
+            "branch={};bias={};branch_prob={:.4};uncertainty={:.4}",
+            artifact.output.branch,
+            artifact.output.execution_bias,
+            artifact.output.branch_probability,
+            artifact.output.posterior_uncertainty
+        )
+    };
     let quality_score = (artifact.output.branch_probability * 100.0).round() as i32;
     append_artifact_ledger_entry(
         &dir,
@@ -654,13 +811,7 @@ pub fn persist_execution_tree_artifact<P: AsRef<Path>>(
             promote_candidate: promote,
             actionable,
             decision_hint: artifact.output.decision_hint.clone(),
-            review_reason: format!(
-                "branch={};bias={};branch_prob={:.4};uncertainty={:.4}",
-                artifact.output.branch,
-                artifact.output.execution_bias,
-                artifact.output.branch_probability,
-                artifact.output.posterior_uncertainty
-            ),
+            review_reason,
             review_rule_version: "execution-tree-artifact-v1".to_string(),
             top_factor_name: None,
             top_factor_action: None,
@@ -864,6 +1015,196 @@ mod tests {
             trace_path.to_string_lossy(),
             "ledger path must point at the selected state_dir artifact"
         );
+    }
+
+    #[test]
+    fn execution_tree_artifact_serializes_closed_loop_branch_admission() {
+        let output = ExecutionTreeOutput {
+            gate_status: "observe".to_string(),
+            branch: "transition_guardrail".to_string(),
+            execution_bias: "guarded".to_string(),
+            ..ExecutionTreeOutput::default()
+        };
+        let mut artifact =
+            build_execution_tree_artifact("NQ", output, Vec::new(), RunProvenance::default());
+        artifact.closed_loop_branch_admission = Some(serde_json::json!({
+            "status": "fail_closed",
+            "source_phase": "structural-recommended-path-bundle",
+            "path_id": "Sideways -> RangeCarry -> StopManagedRangeCarry -> SourceRootStopCarryLongHorizonV1:sideways_carry_h8_sl040_tp12",
+            "pre_bayes_gate_status": "pass_neutralized",
+            "execution_gate_status": "execution_observe_only",
+            "execution_tree_gate_status": "observe",
+            "execution_tree_branch": "transition_guardrail",
+            "ready": false,
+            "actionable": false
+        }));
+
+        let value = serde_json::to_value(&artifact).unwrap();
+
+        assert_eq!(
+            value["closed_loop_branch_admission"]["status"],
+            "fail_closed"
+        );
+        assert_eq!(
+            value["closed_loop_branch_admission"]["path_id"],
+            "Sideways -> RangeCarry -> StopManagedRangeCarry -> SourceRootStopCarryLongHorizonV1:sideways_carry_h8_sl040_tp12"
+        );
+        assert_eq!(
+            value["closed_loop_branch_admission"]["execution_tree_branch"],
+            "transition_guardrail"
+        );
+    }
+
+    #[test]
+    fn execution_tree_artifact_ledger_marks_fail_closed_branch_admission_not_actionable() {
+        let output = ExecutionTreeOutput {
+            gate_status: "observe".to_string(),
+            branch: "transition_guardrail".to_string(),
+            execution_bias: "guarded".to_string(),
+            decision_hint: "execution_guarded_due_to_high_transition_hazard".to_string(),
+            ..ExecutionTreeOutput::default()
+        };
+        let mut artifact =
+            build_execution_tree_artifact("NQ", output, Vec::new(), RunProvenance::default());
+        artifact.closed_loop_branch_admission = Some(serde_json::json!({
+            "status": "fail_closed",
+            "source_phase": "structural-recommended-path-bundle",
+            "path_id": "Sideways -> RangeCarry -> StopManagedRangeCarry -> SourceRootStopCarryLongHorizonV1:sideways_carry_h8_sl040_tp12",
+            "pre_bayes_gate_status": "pass_neutralized",
+            "execution_gate_status": "execution_observe_only",
+            "execution_tree_gate_status": "observe",
+            "execution_tree_branch": "transition_guardrail",
+            "ready": false,
+            "actionable": false
+        }));
+
+        let dir = TempDir::new().unwrap();
+        persist_execution_tree_artifact(dir.path(), &artifact, "analyze", None).unwrap();
+
+        let ledger_path = dir
+            .path()
+            .join("NQ")
+            .join(crate::state::ARTIFACT_LEDGER_FILE);
+        let entries: Vec<ArtifactLedgerEntry> =
+            serde_json::from_str(&fs::read_to_string(&ledger_path).unwrap()).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert!(!entries[0].promote_candidate);
+        assert!(
+            !entries[0].actionable,
+            "fail-closed branch admission must fail closed in artifact ledger"
+        );
+        assert!(
+            entries[0]
+                .review_reason
+                .contains("branch_admission_status=fail_closed"),
+            "review_reason={}",
+            entries[0].review_reason
+        );
+    }
+
+    #[test]
+    fn execution_tree_closed_loop_branch_admission_fails_closed_when_not_ready() {
+        let output = ExecutionTreeOutput {
+            gate_status: "observe".to_string(),
+            branch: "transition_guardrail".to_string(),
+            execution_bias: "guarded".to_string(),
+            ..ExecutionTreeOutput::default()
+        };
+
+        let value = build_execution_tree_closed_loop_branch_admission_value(
+            "Sideways -> RangeCarry -> StopManagedRangeCarry -> SourceRootStopCarryLongHorizonV1:sideways_carry_h8_sl040_tp12",
+            "pass_neutralized",
+            "execution_observe_only",
+            &output,
+        );
+
+        assert_eq!(value["status"], "fail_closed");
+        assert_eq!(value["source_phase"], "structural-recommended-path-bundle");
+        assert_eq!(value["pre_bayes_gate_status"], "pass_neutralized");
+        assert_eq!(value["execution_gate_status"], "execution_observe_only");
+        assert_eq!(value["execution_tree_gate_status"], "observe");
+        assert_eq!(value["execution_tree_branch"], "transition_guardrail");
+        assert_eq!(value["ready"], false);
+        assert_eq!(value["actionable"], false);
+    }
+
+    #[test]
+    fn execution_tree_closed_loop_branch_admission_blocks_neutralized_pre_bayes() {
+        let output = ExecutionTreeOutput {
+            gate_status: "ready".to_string(),
+            branch: "fill_viable".to_string(),
+            execution_bias: "aggressive".to_string(),
+            ..ExecutionTreeOutput::default()
+        };
+
+        let value = build_execution_tree_closed_loop_branch_admission_value(
+            "Sideways -> RangeCarry -> StopManagedRangeCarry -> SourceRootStopCarryLongHorizonV1:sideways_carry_h8_sl040_tp12",
+            "pass_neutralized",
+            "execution_ready",
+            &output,
+        );
+
+        assert_eq!(value["status"], "fail_closed");
+        assert_eq!(value["ready"], false);
+        assert_eq!(value["actionable"], false);
+        assert_eq!(value["pre_bayes_gate_status"], "pass_neutralized");
+    }
+
+    #[test]
+    fn execution_tree_branch_admission_reads_ranker_lineage_path_with_spaces() {
+        let output = ExecutionTreeOutput {
+            gate_status: "observe".to_string(),
+            branch: "transition_guardrail".to_string(),
+            execution_bias: "guarded".to_string(),
+            ..ExecutionTreeOutput::default()
+        };
+        let branch_path = "Sideways -> RangeCarry -> StopManagedRangeCarry -> SourceRootStopCarryLongHorizonV1:sideways_carry_h8_sl040_tp12";
+        let lineage = vec![format!(
+            "ranker_score=path_id={branch_path} runtime_source=history_path raw_path_score=0.989590 calibrated_path_prob=0.580402 path_prob_lower_bound=0.551734 execution_gate_status=pass"
+        )];
+
+        let value = build_execution_tree_closed_loop_branch_admission_from_ranker_lineage(
+            Some(&lineage),
+            "pass_neutralized",
+            "execution_observe_only",
+            &output,
+        )
+        .expect("branch admission");
+
+        assert_eq!(value["status"], "fail_closed");
+        assert_eq!(value["path_id"], branch_path);
+        assert_eq!(value["pre_bayes_gate_status"], "pass_neutralized");
+        assert_eq!(value["execution_gate_status"], "execution_observe_only");
+    }
+
+    #[test]
+    fn execution_tree_branch_admission_falls_back_to_output_split_reason_lineage() {
+        let branch_path = "Sideways -> RangeCarry -> StopManagedRangeCarry -> SourceRootStopCarryLongHorizonV1:sideways_carry_h8_sl040_tp12";
+        let output = ExecutionTreeOutput {
+            gate_status: "observe".to_string(),
+            branch: "transition_guardrail".to_string(),
+            execution_bias: "guarded".to_string(),
+            split_reason_lineage: vec![format!(
+                "path_ranker=ranker_score=path_id={branch_path} runtime_source=history_path raw_path_score=0.989590 calibrated_path_prob=0.580402 path_prob_lower_bound=0.551734 execution_gate_status=pass"
+            )],
+            ..ExecutionTreeOutput::default()
+        };
+
+        let value =
+            build_execution_tree_closed_loop_branch_admission_from_ranker_or_output_lineage(
+                None,
+                "pass_neutralized",
+                "execution_observe_only",
+                &output,
+            )
+            .expect("branch admission");
+
+        assert_eq!(value["status"], "fail_closed");
+        assert_eq!(value["path_id"], branch_path);
+        assert_eq!(value["source_phase"], "structural-recommended-path-bundle");
+        assert_eq!(value["pre_bayes_gate_status"], "pass_neutralized");
+        assert_eq!(value["execution_gate_status"], "execution_observe_only");
     }
 
     #[test]

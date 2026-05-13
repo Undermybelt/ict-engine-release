@@ -364,6 +364,10 @@ pub struct StructuralPathPlanArtifact {
     pub required_data_contracts: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_provider_tracks: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub candidate_set_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_paths: Vec<StructuralPathArtifact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_ranker_runtime: Option<StructuralPathRankerRuntimeSurface>,
     pub paths: Vec<StructuralPathArtifact>,

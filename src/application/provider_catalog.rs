@@ -420,23 +420,23 @@ impl ProviderCatalogSource for MarketDataProviderCatalogSource {
             })
             .collect::<Vec<_>>();
 
-        let public_fetch_ready = provider_fetch_script_exists() && python3_exists();
+        let public_fetch_runtime = probe_public_fetch_python_runtime();
         items.extend([
             public_provider_item(
                 "binance_public",
-                public_fetch_ready,
+                &public_fetch_runtime,
                 vec!["ohlcv".to_string(), "options_chain".to_string()],
                 vec!["public_rest".to_string(), "no_api_key_required".to_string()],
             ),
             public_provider_item(
                 "bybit_public",
-                public_fetch_ready,
+                &public_fetch_runtime,
                 vec!["ohlcv".to_string(), "options_chain".to_string()],
                 vec!["public_rest".to_string(), "no_api_key_required".to_string()],
             ),
             public_provider_item(
                 "kraken_public",
-                public_fetch_ready,
+                &public_fetch_runtime,
                 vec![
                     "ohlcv".to_string(),
                     "spot".to_string(),
@@ -447,7 +447,7 @@ impl ProviderCatalogSource for MarketDataProviderCatalogSource {
             ),
             public_provider_item(
                 "polymarket_public",
-                public_fetch_ready,
+                &public_fetch_runtime,
                 vec!["prediction_market_history".to_string()],
                 vec![
                     "public_rest".to_string(),
@@ -677,10 +677,11 @@ fn market_data_access_mode(status: &str, reason: &str) -> String {
 
 fn public_provider_item(
     provider_id: &str,
-    ready: bool,
+    runtime: &PublicFetchPythonRuntimeProbe,
     capabilities: Vec<String>,
     notes: Vec<String>,
 ) -> ProviderCatalogItem {
+    let ready = runtime.ready;
     ProviderCatalogItem {
         provider_id: provider_id.to_string(),
         domain: ProviderCatalogDomain::MarketData.as_str().to_string(),
@@ -724,19 +725,61 @@ fn public_provider_item(
             _ => "Public no-login market-data path.".to_string(),
         },
         ready,
-        status: if ready {
-            "ready".to_string()
-        } else {
-            "script_or_python_missing".to_string()
-        },
-        reason: if ready {
-            "fetch_external_script_available".to_string()
-        } else {
-            "missing_fetch_external_runtime".to_string()
-        },
+        status: runtime.status.clone(),
+        reason: runtime.reason.clone(),
         capabilities,
         notes,
-        install_prompts: Vec::new(),
+        install_prompts: runtime.install_prompts.clone(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublicFetchPythonRuntimeProbe {
+    ready: bool,
+    status: String,
+    reason: String,
+    install_prompts: Vec<String>,
+}
+
+fn probe_public_fetch_python_runtime() -> PublicFetchPythonRuntimeProbe {
+    let script_present = provider_fetch_script_exists();
+    let python_present = python3_exists();
+    let missing_modules = if python_present {
+        missing_public_fetch_python_modules()
+    } else {
+        Vec::new()
+    };
+    let ready = script_present && python_present && missing_modules.is_empty();
+    let (status, reason) = if ready {
+        ("ready", "fetch_external_script_available")
+    } else if !script_present {
+        ("install_required", "fetch_external_script_missing")
+    } else if !python_present {
+        ("install_required", "python3_missing")
+    } else {
+        (
+            "configured_runtime_unhealthy",
+            "python3_provider_dependencies_missing",
+        )
+    };
+    let install_prompts = if ready {
+        Vec::new()
+    } else if !missing_modules.is_empty() {
+        vec![format!(
+            "System python3 is missing provider script modules: {}. Install with: python3 -m pip install --user --break-system-packages {}",
+            missing_modules.join(", "),
+            pip_packages_for_missing_public_fetch_modules(&missing_modules).join(" ")
+        )]
+    } else if !python_present {
+        vec!["Install python3 before using public provider fetch scripts.".to_string()]
+    } else {
+        vec!["Restore scripts/auto_quant_external/fetch_external.py before using public provider fetch scripts.".to_string()]
+    };
+    PublicFetchPythonRuntimeProbe {
+        ready,
+        status: status.to_string(),
+        reason: reason.to_string(),
+        install_prompts,
     }
 }
 
@@ -748,6 +791,56 @@ fn provider_fetch_script_exists() -> bool {
 
 fn python3_exists() -> bool {
     command_exists(&["python3"])
+}
+
+fn public_fetch_python_modules() -> &'static [&'static str] {
+    &[
+        "requests", "pandas", "ccxt", "ib_async", "redis", "yaml", "sklearn", "pyarrow",
+    ]
+}
+
+fn missing_public_fetch_python_modules() -> Vec<String> {
+    let imports = public_fetch_python_modules()
+        .iter()
+        .map(|module| format!("import {module}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let Ok(output) = std::process::Command::new("python3")
+        .args(["-c", &imports])
+        .output()
+    else {
+        return public_fetch_python_modules()
+            .iter()
+            .map(|module| (*module).to_string())
+            .collect();
+    };
+    if output.status.success() {
+        return Vec::new();
+    }
+    public_fetch_python_modules()
+        .iter()
+        .filter(|module| !python3_can_import(module))
+        .map(|module| (*module).to_string())
+        .collect()
+}
+
+fn python3_can_import(module: &str) -> bool {
+    std::process::Command::new("python3")
+        .args(["-c", &format!("import {module}")])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn pip_packages_for_missing_public_fetch_modules(missing_modules: &[String]) -> Vec<String> {
+    missing_modules
+        .iter()
+        .map(|module| match module.as_str() {
+            "yaml" => "PyYAML".to_string(),
+            "sklearn" => "scikit-learn".to_string(),
+            other => other.to_string(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]

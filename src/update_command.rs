@@ -86,6 +86,111 @@ fn append_learning_semantics_to_update_gate_prompts(
     }
 }
 
+fn consumed_analyze_context_from_structural_submission(
+    submission: &ict_engine::application::orchestration::StructuralFeedbackSubmission,
+) -> Option<ict_engine::application::artifacts::ConsumedAnalyzeContext> {
+    let gate_status = submission.pre_bayes_gate_status.as_deref()?.trim();
+    if gate_status.is_empty() {
+        return None;
+    }
+
+    let mut evidence_assignments = std::collections::BTreeMap::new();
+    evidence_assignments.insert("parent_regime_root".to_string(), submission.node_id.clone());
+    evidence_assignments.insert(
+        "regime_profit_branch_path".to_string(),
+        submission.path_id.clone(),
+    );
+    evidence_assignments.insert(
+        "pre_bayes_branch_path_gate".to_string(),
+        gate_status.to_string(),
+    );
+
+    let evidence_quality_score = submission
+        .bbn_support_score
+        .or(submission.path_posterior)
+        .or(submission.selected_path_probability)
+        .or(submission.selected_entry_quality_probability)
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
+
+    Some(ict_engine::application::artifacts::ConsumedAnalyzeContext {
+        analyze_run_id: Some(submission.recommendation_id.clone()),
+        pre_bayes_evidence_filter: Some(ict_engine::state::PreBayesEvidenceFilter {
+            raw_market_regime_label: submission.node_id.clone(),
+            raw_liquidity_context_label: "structural_feedback".to_string(),
+            raw_factor_alignment: submission.direction.clone(),
+            raw_factor_uncertainty: "structural_feedback".to_string(),
+            filtered_market_regime_label: submission.node_id.clone(),
+            filtered_liquidity_context_label: "structural_feedback".to_string(),
+            filtered_factor_alignment: submission.direction.clone(),
+            filtered_factor_uncertainty: "structural_feedback".to_string(),
+            evidence_quality_score,
+            gating_status: gate_status.to_string(),
+            pass_to_bbn: matches!(gate_status, "pass_hard" | "pass_neutralized"),
+            rationale: vec![format!(
+                "structural_feedback_submission_pre_bayes_gate={gate_status}"
+            )],
+            evidence_assignments,
+            ..ict_engine::state::PreBayesEvidenceFilter::default()
+        }),
+        ..ict_engine::application::artifacts::ConsumedAnalyzeContext::default()
+    })
+}
+
+fn prefer_richer_consumed_analyze_context(
+    artifact_context: ict_engine::application::artifacts::ConsumedAnalyzeContext,
+    structural_context: Option<ict_engine::application::artifacts::ConsumedAnalyzeContext>,
+) -> ict_engine::application::artifacts::ConsumedAnalyzeContext {
+    if artifact_context.pre_bayes_evidence_filter.is_some()
+        || artifact_context.pre_bayes_entry_quality_bridge.is_some()
+        || !artifact_context.multi_timeframe_summary.is_empty()
+        || artifact_context
+            .canonical_structural_regime_posterior
+            .is_some()
+    {
+        artifact_context
+    } else {
+        structural_context.unwrap_or(artifact_context)
+    }
+}
+
+fn attach_structural_feedback_assignments_to_consumed_context(
+    mut context: ict_engine::application::artifacts::ConsumedAnalyzeContext,
+    feedback: &FeedbackRecord,
+) -> ict_engine::application::artifacts::ConsumedAnalyzeContext {
+    let Some(filter) = context.pre_bayes_evidence_filter.as_mut() else {
+        return context;
+    };
+    let Some(refs) = feedback.structural_feedback.as_ref() else {
+        return context;
+    };
+
+    filter
+        .evidence_assignments
+        .insert("parent_regime_root".to_string(), refs.node_id.clone());
+    filter.evidence_assignments.insert(
+        "regime_profit_branch_path".to_string(),
+        refs.path_id.clone(),
+    );
+    if !filter.gating_status.trim().is_empty() {
+        filter.evidence_assignments.insert(
+            "pre_bayes_branch_path_gate".to_string(),
+            filter.gating_status.clone(),
+        );
+    }
+    if !filter
+        .rationale
+        .iter()
+        .any(|line| line.contains("structural_feedback_branch_path_consumed="))
+    {
+        filter.rationale.push(format!(
+            "structural_feedback_branch_path_consumed={}",
+            refs.path_id
+        ));
+    }
+    context
+}
+
 pub(crate) fn update_shell(input: UpdateCommandInput<'_>) -> Result<()> {
     ensure_state_dir_ready(input.state_dir)?;
     update_command(input)
@@ -120,6 +225,7 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
     let outcome_label = normalize_trade_outcome_label(outcome);
     let entry_signal = entry_signal.unwrap_or("medium");
     let mut consumed_pending_update_artifact: Option<PendingUpdateArtifact> = None;
+    let mut structural_submission_consumed_context = None;
     let feedback = if let Some(path) = feedback_file {
         let content = std::fs::read_to_string(path)?;
         match serde_json::from_str::<FeedbackRecord>(&content) {
@@ -138,6 +244,8 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
             >(&content)
             {
                 Ok(submission) => {
+                    structural_submission_consumed_context =
+                        consumed_analyze_context_from_structural_submission(&submission);
                     ict_engine::application::orchestration::feedback_record_from_structural_submission(
                         submission,
                         Some(symbol),
@@ -202,6 +310,14 @@ pub(crate) fn update_command(input: UpdateCommandInput<'_>) -> Result<()> {
         consumed_pending_update_artifact.as_ref(),
         consumed_execution_candidate_artifact.as_ref(),
     )?;
+    let consumed_analyze_context = prefer_richer_consumed_analyze_context(
+        consumed_analyze_context,
+        structural_submission_consumed_context,
+    );
+    let consumed_analyze_context = attach_structural_feedback_assignments_to_consumed_context(
+        consumed_analyze_context,
+        &feedback,
+    );
     let feedback = enrich_feedback_record(
         feedback,
         &update_run_id,

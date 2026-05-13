@@ -220,6 +220,18 @@ pub struct StructuralPathRankingTargetRow {
     pub path_id: String,
     pub scenario_id: String,
     pub path_label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_profit_branch_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_regime_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_regime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_regime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_sub_regime_or_profit_factor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_factor: Option<String>,
     pub direction: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_path_score: Option<f64>,
@@ -775,6 +787,12 @@ fn structural_path_ranker_row_categorical_feature<'a>(
         "regime_calibration_bucket" => Some(row.regime_calibration_bucket.as_str()),
         "path_id" => Some(row.path_id.as_str()),
         "scenario_id" => Some(row.scenario_id.as_str()),
+        "regime_profit_branch_path" => row.regime_profit_branch_path.as_deref(),
+        "parent_regime_root" => row.parent_regime_root.as_deref(),
+        "main_regime" => row.main_regime.as_deref(),
+        "sub_regime" => row.sub_regime.as_deref(),
+        "sub_sub_regime_or_profit_factor" => row.sub_sub_regime_or_profit_factor.as_deref(),
+        "profit_factor" => row.profit_factor.as_deref(),
         "pending_reward_state" => Some(row.pending_reward_state.as_str()),
         "execution_gate_status" => row.execution_gate_status.as_deref(),
         _ => None,
@@ -1145,7 +1163,7 @@ pub fn render_structural_path_ranking_target_rows_csv(
     rows: &[StructuralPathRankingTargetRow],
 ) -> String {
     let mut out = String::from(
-        "protocol_version,symbol,generated_at,candidate_set_id,candidate_set_size,rank,path_id,scenario_id,path_label,direction,raw_path_score,calibrated_path_prob,path_prob_lower_bound,execution_gate_status,execution_gate_min_path_prob,execution_gate_reason,pending_reward_state,maturity_mask,maturity_weight,calibrated_label,propensity_estimate,ips_weight,training_weight,regime_calibration_bucket,behavior_policy_probability,execution_propensity,target_policy_probability_confidence,target_policy_probability_lower_bound,target_policy_reward_prior,target_policy_reward_lower_bound,experience_prior,current_posterior,structural_baseline_score,score_model_family,score_source_kind,score_model_artifact_uri,score_generator\n",
+        "protocol_version,symbol,generated_at,candidate_set_id,candidate_set_size,rank,path_id,scenario_id,path_label,regime_profit_branch_path,parent_regime_root,main_regime,sub_regime,sub_sub_regime_or_profit_factor,profit_factor,direction,raw_path_score,calibrated_path_prob,path_prob_lower_bound,execution_gate_status,execution_gate_min_path_prob,execution_gate_reason,pending_reward_state,maturity_mask,maturity_weight,calibrated_label,propensity_estimate,ips_weight,training_weight,regime_calibration_bucket,behavior_policy_probability,execution_propensity,target_policy_probability_confidence,target_policy_probability_lower_bound,target_policy_reward_prior,target_policy_reward_lower_bound,experience_prior,current_posterior,structural_baseline_score,score_model_family,score_source_kind,score_model_artifact_uri,score_generator\n",
     );
     for row in rows {
         let fields = [
@@ -1158,6 +1176,12 @@ pub fn render_structural_path_ranking_target_rows_csv(
             csv_escape(&row.path_id),
             csv_escape(&row.scenario_id),
             csv_escape(&row.path_label),
+            csv_optional_string(row.regime_profit_branch_path.as_deref()),
+            csv_optional_string(row.parent_regime_root.as_deref()),
+            csv_optional_string(row.main_regime.as_deref()),
+            csv_optional_string(row.sub_regime.as_deref()),
+            csv_optional_string(row.sub_sub_regime_or_profit_factor.as_deref()),
+            csv_optional_string(row.profit_factor.as_deref()),
             csv_escape(&row.direction),
             csv_optional_f64(row.raw_path_score),
             csv_optional_f64(row.calibrated_path_prob),
@@ -1535,6 +1559,12 @@ pub fn structural_path_ranking_trainer_manifest() -> StructuralPathRankingTraine
         feature_columns: vec![
             "rank".to_string(),
             "direction".to_string(),
+            "regime_profit_branch_path".to_string(),
+            "parent_regime_root".to_string(),
+            "main_regime".to_string(),
+            "sub_regime".to_string(),
+            "sub_sub_regime_or_profit_factor".to_string(),
+            "profit_factor".to_string(),
             "regime_calibration_bucket".to_string(),
             "behavior_policy_probability".to_string(),
             "execution_propensity".to_string(),
@@ -1769,6 +1799,12 @@ mod tests {
             path_id: path_id.to_string(),
             scenario_id: format!("scenario:{path_id}"),
             path_label: path_id.to_string(),
+            regime_profit_branch_path: None,
+            parent_regime_root: None,
+            main_regime: None,
+            sub_regime: None,
+            sub_sub_regime_or_profit_factor: None,
+            profit_factor: None,
             direction: "Observe".to_string(),
             raw_path_score,
             calibrated_path_prob: raw_path_score,
@@ -1809,6 +1845,48 @@ mod tests {
             score_model_artifact_uri: None,
             score_generator: None,
         }
+    }
+
+    #[test]
+    fn branch_segment_fields_are_direct_model_categorical_features() {
+        let branch_path = "Crisis -> CrisisReliefCarry -> StopManagedPanicRecovery -> SourceRootStopCarryLongHorizonV1:crisis_carry_h8_sl048_tp12";
+        let mut row = test_target_row(
+            "structural-candidates:NQ:test",
+            branch_path,
+            "unobserved",
+            0.5,
+            None,
+        );
+        row.regime_profit_branch_path = Some(branch_path.to_string());
+        row.parent_regime_root = Some("Crisis".to_string());
+        row.main_regime = Some("Crisis".to_string());
+        row.sub_regime = Some("CrisisReliefCarry".to_string());
+        row.sub_sub_regime_or_profit_factor = Some("StopManagedPanicRecovery".to_string());
+        row.profit_factor =
+            Some("SourceRootStopCarryLongHorizonV1:crisis_carry_h8_sl048_tp12".to_string());
+
+        let model = StructuralPathRankerDirectModelArtifact {
+            output_transform: "identity".to_string(),
+            intercept: 0.10,
+            categorical_feature_weights: BTreeMap::from([
+                (
+                    "main_regime".to_string(),
+                    BTreeMap::from([("Crisis".to_string(), 0.20)]),
+                ),
+                (
+                    "profit_factor".to_string(),
+                    BTreeMap::from([(
+                        "SourceRootStopCarryLongHorizonV1:crisis_carry_h8_sl048_tp12".to_string(),
+                        0.40,
+                    )]),
+                ),
+            ]),
+            ..StructuralPathRankerDirectModelArtifact::default()
+        };
+
+        let probability = structural_path_ranker_direct_model_probability(&model, &row);
+
+        assert!((probability - 0.70).abs() < 1e-9);
     }
 
     #[test]

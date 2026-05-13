@@ -3,7 +3,7 @@
 Structural Path Ranking External Trainer
 ==========================================
 
-热插拔外部训练器，用于训练 CatBoost/XGBoost 路径排名模型。
+热插拔外部训练器，用于训练 CatBoost 路径排名模型。
 
 特性：
 - 零配置：默认行为可直接运行
@@ -46,18 +46,11 @@ except ImportError:
     print("ERROR: numpy and pandas required. pip install numpy pandas")
     sys.exit(1)
 
-# 可选依赖
 try:
     import catboost as cb
     HAS_CATBOOST = True
 except ImportError:
     HAS_CATBOOST = False
-
-try:
-    import xgboost as xgb
-    HAS_XGBOOST = True
-except ImportError:
-    HAS_XGBOOST = False
 
 # 用户特定特征（VRP V2 相关）
 VRP_V2_FEATURES = [
@@ -279,46 +272,6 @@ def train_catboost(X, y, weights, output_dir: Path, cat_features: list = None):
     return model
 
 
-def train_xgboost(X, y, weights, output_dir: Path):
-    """训练 XGBoost 模型"""
-    if not HAS_XGBOOST:
-        print("ERROR: xgboost not installed. pip install xgboost")
-        return None
-    
-    # 分类特征需要编码
-    X_encoded = X.copy()
-    for col in CATEGORICAL_FEATURES:
-        if col in X_encoded.columns:
-            X_encoded[col] = X_encoded[col].astype("category").cat.codes
-    
-    # 训练
-    model = xgb.XGBClassifier(
-        n_estimators=100,
-        max_depth=4,
-        learning_rate=0.1,
-        use_label_encoder=False,
-        eval_metric="logloss",
-    )
-    
-    model.fit(X_encoded, y, sample_weight=weights)
-    
-    # 保存
-    model_path = output_dir / "xgboost_model.json"
-    model.save_model(str(model_path))
-    
-    # 特征重要性
-    importance = model.feature_importances_
-    importance_path = output_dir / "feature_importance_xgb.csv"
-    pd.DataFrame({
-        "feature": X.columns,
-        "importance": importance
-    }).sort_values("importance", ascending=False).to_csv(importance_path, index=False)
-    
-    print(f"[train] XGBoost saved to {model_path}")
-    
-    return model
-
-
 def apply_model(
     model_dir: Path,
     target_csv: str,
@@ -336,7 +289,6 @@ def apply_model(
 
     # 加载模型
     catboost_path = model_dir / "catboost_model.cbm"
-    xgboost_path = model_dir / "xgboost_model.json"
     
     if catboost_path.exists():
         if not HAS_CATBOOST:
@@ -351,20 +303,6 @@ def apply_model(
         score_source_kind = "external_model"
         score_model_artifact_uri = str(catboost_path)
         print(f"[apply] CatBoost predictions: {len(scores)}")
-    elif xgboost_path.exists():
-        if not HAS_XGBOOST:
-            raise RuntimeError(f"XGBoost model exists at {xgboost_path}, but xgboost is not importable")
-        model = xgb.XGBClassifier()
-        model.load_model(str(xgboost_path))
-        X_encoded = X.copy()
-        for col in CATEGORICAL_FEATURES:
-            if col in X_encoded.columns:
-                X_encoded[col] = X_encoded[col].astype("category").cat.codes
-        scores = model.predict_proba(X_encoded)[:, 1] if len(model.classes_) == 2 else model.predict_proba(X_encoded).argmax(axis=1)
-        score_model_family = "xgboost"
-        score_source_kind = "external_model"
-        score_model_artifact_uri = str(xgboost_path)
-        print(f"[apply] XGBoost predictions: {len(scores)}")
     else:
         if not allow_direct_fallback:
             raise RuntimeError(
@@ -566,7 +504,7 @@ def build_registered_artifact_metadata(
         runtime_score_note = "repo_runtime_direct_model_emitted=true"
     else:
         raise RuntimeError(
-            f"No registered model artifact found in {output_dir}; CatBoost/XGBoost training did not produce a model"
+            f"No registered model artifact found in {output_dir}; CatBoost training did not produce a model"
         )
 
     artifact = {
@@ -609,7 +547,7 @@ def main():
     parser.add_argument("--apply", action="store_true", help="Apply existing model instead of training")
     parser.add_argument("--model-dir", help="Directory with existing model (for --apply)")
     parser.add_argument("--output-scores", help="Output scores CSV (for --apply or CatBoost registration metadata)")
-    parser.add_argument("--model-family", default="catboost", choices=["catboost", "xgboost", "both"])
+    parser.add_argument("--model-family", default="catboost", choices=["catboost"])
     parser.add_argument("--create-template", action="store_true", help="Create user weights template")
     parser.add_argument(
         "--user-weights",
@@ -660,13 +598,8 @@ def main():
         create_direct_model_artifact(output_dir, features, len(X))
 
     # 训练
-    if args.model_family in ["catboost", "both"]:
+    if args.model_family == "catboost":
         train_catboost(X, y, weights, output_dir, cat_features=CATEGORICAL_FEATURES)
-
-    if args.model_family in ["xgboost", "both"]:
-        trained_xgb = train_xgboost(X, y, weights, output_dir)
-        if trained_xgb is None and args.model_family == "xgboost" and not args.allow_direct_fallback:
-            raise RuntimeError("xgboost requested but not installed; install xgboost or use --allow-direct-fallback")
 
     trainer_artifact_path = output_dir / "trainer_artifact.json"
     trainer_artifact = build_registered_artifact_metadata(

@@ -1,7 +1,7 @@
 //! Wire format for Auto-Quant live factor signal envelopes.
 //!
 //! The matching producer is
-//! `@/Users/thrill3r/Auto-Quant/auto_quant_live_signal_publisher.py`.
+//! `<auto-quant-root>/auto_quant_live_signal_publisher.py`.
 //! Both sides must agree on `SCHEMA_VERSION`. Any drift fails the
 //! consumer parse loudly so the operator notices before evidence
 //! flows into the BBN.

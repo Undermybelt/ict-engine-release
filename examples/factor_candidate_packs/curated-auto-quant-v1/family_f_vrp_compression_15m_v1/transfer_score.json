@@ -1,0 +1,56 @@
+{
+  "schema_version": "transfer-score/v1",
+  "strategy_name": "TomacNQ_RegimeVRPCompression15m",
+  "covered_market_count": 5,
+  "covered_markets": [
+    "NQ/USD",
+    "GLD/USD",
+    "SPY/USD",
+    "IWM/USD",
+    "DIA/USD"
+  ],
+  "markets_without_trade_counts": [
+    "GLD/USD",
+    "SPY/USD",
+    "DIA/USD"
+  ],
+  "status": "cross_market_candidate",
+  "overall_transfer_score": 0.682801,
+  "average_sharpe": 0.187437,
+  "average_trade_count": 175,
+  "timeframe": "1h",
+  "market_evidence": {
+    "NQ/USD": {
+      "sharpe": 0.3391829705338019,
+      "trade_count": 334,
+      "win_rate_pct": 32.634731,
+      "profit_factor": 1.640360998053442,
+      "total_profit_pct": 28.95,
+      "max_drawdown_pct": 4.101209,
+      "evidence_source": "manifest"
+    },
+    "GLD/USD": {
+      "sharpe": 0.446,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    },
+    "SPY/USD": {
+      "sharpe": -0.182,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    },
+    "IWM/USD": {
+      "sharpe": 0.897,
+      "trade_count": 16,
+      "profit_factor": 7.4,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    },
+    "DIA/USD": {
+      "sharpe": -0.563,
+      "window": "2025-05-07->2026-05-06",
+      "evidence_source": "slice_92_cross_market"
+    }
+  },
+  "evidence_source": "manifest+candidate_spec"
+}

@@ -1,6 +1,6 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::belief_core::beta_dirichlet_update::{
     beta_posterior_mean, beta_update_factor, weighted_seed_beta_update,
@@ -3839,7 +3839,24 @@ impl LearningState {
             .feedback_history
             .iter()
             .map(Self::feedback_key)
-            .collect::<std::collections::BTreeSet<_>>();
+            .collect::<BTreeSet<_>>();
+        let mut unresolved_by_resolution: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+        let mut resolved_by_resolution: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+        for (index, existing_record) in self.feedback_history.iter().enumerate() {
+            if let Some(resolution_key) = feedback_resolution_key(existing_record) {
+                if structural_feedback_outcome_is_unresolved(&existing_record.realized_outcome) {
+                    unresolved_by_resolution
+                        .entry(resolution_key)
+                        .or_default()
+                        .insert(index);
+                } else {
+                    resolved_by_resolution
+                        .entry(resolution_key)
+                        .or_default()
+                        .insert(index);
+                }
+            }
+        }
         let mut inserted = Vec::new();
 
         for record in feedback {
@@ -3850,37 +3867,58 @@ impl LearningState {
                     structural_feedback_outcome_is_unresolved(&record.realized_outcome);
                 if !unresolved_outcome {
                     if let Some(resolution_key) = resolution_key.as_deref() {
-                        if let Some((index, old_key)) =
-                            self.feedback_history.iter().enumerate().find_map(
-                                |(index, existing_record)| {
-                                    (structural_feedback_outcome_is_unresolved(
-                                        &existing_record.realized_outcome,
-                                    ) && feedback_resolution_key(existing_record).as_deref()
-                                        == Some(resolution_key))
-                                    .then(|| (index, Self::feedback_key(existing_record)))
-                                },
-                            )
+                        if let Some(index) = unresolved_by_resolution
+                            .get(resolution_key)
+                            .and_then(|indexes| indexes.iter().next().copied())
                         {
+                            let old_key = Self::feedback_key(&self.feedback_history[index]);
                             self.feedback_history[index] = record.clone();
                             existing.remove(&old_key);
                             existing.insert(Self::feedback_key(record));
+                            let remove_empty_entry =
+                                match unresolved_by_resolution.get_mut(resolution_key) {
+                                    Some(indexes) => {
+                                        indexes.remove(&index);
+                                        indexes.is_empty()
+                                    }
+                                    None => false,
+                                };
+                            if remove_empty_entry {
+                                unresolved_by_resolution.remove(resolution_key);
+                            }
+                            resolved_by_resolution
+                                .entry(resolution_key.to_string())
+                                .or_default()
+                                .insert(index);
                             inserted.push(record.clone());
                             continue;
                         }
                     }
                 } else if let Some(resolution_key) = resolution_key.as_deref() {
-                    let resolved_exists = self.feedback_history.iter().any(|existing_record| {
-                        !structural_feedback_outcome_is_unresolved(
-                            &existing_record.realized_outcome,
-                        ) && feedback_resolution_key(existing_record).as_deref()
-                            == Some(resolution_key)
-                    });
+                    let resolved_exists = resolved_by_resolution
+                        .get(resolution_key)
+                        .map(|indexes| !indexes.is_empty())
+                        .unwrap_or(false);
                     if resolved_exists {
                         existing.remove(&key);
                         continue;
                     }
                 }
+                let index = self.feedback_history.len();
                 self.feedback_history.push(record.clone());
+                if let Some(resolution_key) = resolution_key {
+                    if unresolved_outcome {
+                        unresolved_by_resolution
+                            .entry(resolution_key)
+                            .or_default()
+                            .insert(index);
+                    } else {
+                        resolved_by_resolution
+                            .entry(resolution_key)
+                            .or_default()
+                            .insert(index);
+                    }
+                }
                 inserted.push(record.clone());
             }
         }
@@ -6230,6 +6268,49 @@ mod tests {
         assert_eq!(state.feedback_history.len(), 1);
         assert_eq!(state.feedback_history[0].realized_outcome, "win");
         assert_eq!(state.feedback_history[0].pnl, 0.02);
+    }
+
+    #[test]
+    fn test_merge_feedback_records_large_resolved_structural_batch_is_indexed() {
+        let base_timestamp = Utc::now();
+        let feedback = (0..3_000)
+            .map(|index| {
+                let mut record = sample_feedback();
+                record.timestamp = base_timestamp + chrono::Duration::milliseconds(index as i64);
+                record.trade_id = Some(format!("trade-{index}"));
+                record.realized_outcome = if index % 2 == 0 {
+                    "win".to_string()
+                } else {
+                    "loss".to_string()
+                };
+                record.pnl = if index % 2 == 0 { 0.01 } else { -0.01 };
+                record.structural_feedback = Some(StructuralFeedbackRefs {
+                    protocol_version: "structural-feedback-v1".to_string(),
+                    recommendation_id: format!("rec-{index}"),
+                    recommended_at: "2026-04-29T00:00:00Z".to_string(),
+                    node_id: format!("node-{}", index % 4),
+                    branch_id: format!("branch-{}", index % 8),
+                    scenario_id: format!("scenario-{}", index % 16),
+                    path_id: format!("path-{index}"),
+                    followed_path: true,
+                    exit_reason: Some("target_hit".to_string()),
+                    notes: None,
+                });
+                record
+            })
+            .collect::<Vec<_>>();
+
+        let mut state = LearningState::default();
+        let started = std::time::Instant::now();
+        let inserted = state.merge_feedback_records(&feedback);
+        let elapsed = started.elapsed();
+
+        assert_eq!(inserted.len(), feedback.len());
+        assert_eq!(state.feedback_history.len(), feedback.len());
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "merge_feedback_records should use indexed resolution lookup for large resolved structural batches; elapsed={elapsed:?}"
+        );
     }
 
     #[test]

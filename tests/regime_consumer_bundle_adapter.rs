@@ -2,6 +2,7 @@ use ict_engine::application::regime::consumer_bundle_adapter::{
     BundleStatus, ExecutionTreeHint, RegimeBbnEvidenceApplicationStatus, RegimeBbnEvidenceStrength,
     RegimeConsumerBundleAdapter,
 };
+use ict_engine::bbn::adapters::belief_evidence_packet_from_pre_bayes_filter;
 use ict_engine::state::PreBayesEvidenceFilter;
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -60,6 +61,129 @@ fn valid_bundle_loads_known_fields() {
     );
     assert!(adapter.latest_decision.as_ref().unwrap().trade_usable);
     assert!(adapter.bbn_evidence_hint().is_some());
+}
+
+#[test]
+fn path_ranker_context_single_branch_path_emits_assignment_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("regime_consumer_bundle.json");
+    let branch_path = "Crisis -> CrisisReliefCarry -> StopManagedPanicRecovery -> SourceRootStopCarryLongHorizonV1:crisis_carry_h8_sl048_tp12";
+    fs::write(
+        &path,
+        json!({
+            "schema_version": "regime-consumer-bundle/v1",
+            "latest_decision": {
+                "decision_state": "single_label_95",
+                "trade_usable": true,
+                "final_label": "primary::ExtremeStress",
+                "label_set": ["primary::ExtremeStress"],
+                "abstain_reasons": []
+            },
+            "consumer_hints": {
+                "execution_tree_hint": "accept_regime",
+                "path_ranker_context": {
+                    "regime_profit_branch_path": branch_path,
+                    "stable_profit_score": 85.7407
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let adapter = RegimeConsumerBundleAdapter::load_optional(Some(&path), false).unwrap();
+    let entries = adapter.path_ranker_assignment_entries();
+    let branch_paths_json = entries
+        .iter()
+        .find(|(key, _)| key == "regime_bundle_branch_paths_json")
+        .map(|(_, value)| value)
+        .expect("branch path assignment");
+    let branch_paths: Vec<String> = serde_json::from_str(branch_paths_json).unwrap();
+
+    assert_eq!(branch_paths, vec![branch_path.to_string()]);
+    assert_eq!(
+        entries
+            .iter()
+            .find(|(key, _)| key == "regime_bundle_stable_profit_score")
+            .map(|(_, value)| value.as_str()),
+        Some("0.857407")
+    );
+}
+
+#[test]
+fn single_branch_path_survives_pre_bayes_into_bbn_assignments() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("regime_consumer_bundle.json");
+    let branch_path = "Crisis -> CrisisReliefCarry -> StopManagedPanicRecovery -> SourceRootStopCarryLongHorizonV1:crisis_carry_h8_sl048_tp12";
+    fs::write(
+        &path,
+        json!({
+            "schema_version": "regime-consumer-bundle/v1",
+            "latest_decision": {
+                "decision_state": "single_label_95",
+                "trade_usable": true,
+                "final_label": "primary::ExtremeStress",
+                "label_set": ["primary::ExtremeStress", branch_path],
+                "abstain_reasons": []
+            },
+            "consumer_hints": {
+                "execution_tree_hint": "accept_regime",
+                "bbn_evidence_hint": {
+                    "regime_decision_state": "single_label_95",
+                    "regime_trade_usable": true,
+                    "regime_label": "primary::ExtremeStress",
+                    "regime_label_set": ["primary::ExtremeStress", branch_path],
+                    "regime_transition_hazard": 0.0,
+                    "regime_decision_reasons": ["branch_rc_spa_passed", "root=Crisis"]
+                },
+                "path_ranker_context": {
+                    "regime_profit_branch_path": branch_path,
+                    "stable_profit_score": 85.7407
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let adapter = RegimeConsumerBundleAdapter::load_optional(Some(&path), false).unwrap();
+    let mut filter = PreBayesEvidenceFilter::default();
+    for (key, value) in adapter.path_ranker_assignment_entries() {
+        filter.evidence_assignments.insert(key, value);
+    }
+    adapter.append_read_only_bbn_filter_diagnostics(&mut filter);
+
+    assert_eq!(
+        filter.evidence_assignments["regime_profit_branch_path"],
+        branch_path
+    );
+    assert_eq!(filter.evidence_assignments["parent_regime_root"], "Crisis");
+    assert_eq!(filter.evidence_assignments["main_regime"], "Crisis");
+    assert_eq!(
+        filter.evidence_assignments["sub_regime"],
+        "CrisisReliefCarry"
+    );
+    assert_eq!(
+        filter.evidence_assignments["sub_sub_regime_or_profit_factor"],
+        "StopManagedPanicRecovery"
+    );
+    assert_eq!(
+        filter.evidence_assignments["profit_factor"],
+        "SourceRootStopCarryLongHorizonV1:crisis_carry_h8_sl048_tp12"
+    );
+
+    let packet =
+        belief_evidence_packet_from_pre_bayes_filter("NQ", Some("NQ"), &filter, None, None, None);
+
+    assert_eq!(
+        packet.evidence_assignments["regime_profit_branch_path"],
+        branch_path
+    );
+    assert_eq!(packet.evidence_assignments["parent_regime_root"], "Crisis");
+    assert_eq!(
+        packet.evidence_assignments["profit_factor"],
+        "SourceRootStopCarryLongHorizonV1:crisis_carry_h8_sl048_tp12"
+    );
 }
 
 #[test]
@@ -331,6 +455,66 @@ fn strong_bundle_applies_to_pre_bayes_soft_market_regime_when_opted_in() {
     assert_eq!(filter.soft_market_regime_distribution["bull"], 0.9);
     assert!(filter.rationale.contains(
         &"regime_bundle_bbn_evidence_applied=strength:strong label:primary::TrendExpansion"
+            .to_string()
+    ));
+}
+
+#[test]
+fn bear_relief_bundle_applies_to_bear_pre_bayes_soft_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("regime_consumer_bundle.json");
+    fs::write(
+        &path,
+        json!({
+            "schema_version": "regime-consumer-bundle/v1",
+            "latest_decision": {
+                "decision_state": "single_label_95",
+                "trade_usable": true,
+                "final_label": "primary::BearReliefCarry",
+                "label_set": [
+                    "primary::BearReliefCarry",
+                    "Bear -> BearReliefCarry -> StopManagedRecoveryCarry -> SourceRootStopCarryLongHorizonV1:bear_carry_h20_sl048_tp12"
+                ],
+                "abstain_reasons": []
+            },
+            "consumer_hints": {
+                "execution_tree_hint": "accept_regime",
+                "bbn_evidence_hint": {
+                    "regime_decision_state": "single_label_95",
+                    "regime_trade_usable": true,
+                    "regime_label": "primary::BearReliefCarry",
+                    "regime_label_set": [
+                        "primary::BearReliefCarry",
+                        "Bear -> BearReliefCarry -> StopManagedRecoveryCarry -> SourceRootStopCarryLongHorizonV1:bear_carry_h20_sl048_tp12"
+                    ],
+                    "regime_transition_hazard": 0.0,
+                    "regime_decision_reasons": ["branch_rc_spa_passed", "root=Bear"]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let adapter = RegimeConsumerBundleAdapter::load_optional(Some(&path), false).unwrap();
+    let mut filter = PreBayesEvidenceFilter {
+        uses_soft_evidence: false,
+        filtered_market_regime_label: "range".to_string(),
+        soft_market_regime_distribution: BTreeMap::from([
+            ("bull".to_string(), 0.2),
+            ("bear".to_string(), 0.2),
+            ("range".to_string(), 0.6),
+        ]),
+        ..PreBayesEvidenceFilter::default()
+    };
+
+    let status = adapter.apply_bbn_soft_evidence_to_pre_bayes_filter(&mut filter, true);
+
+    assert_eq!(status, RegimeBbnEvidenceApplicationStatus::Applied);
+    assert!(filter.uses_soft_evidence);
+    assert_eq!(filter.filtered_market_regime_label, "bear");
+    assert_eq!(filter.soft_market_regime_distribution["bear"], 0.65);
+    assert!(filter.rationale.contains(
+        &"regime_bundle_bbn_evidence_applied=strength:moderate label:primary::BearReliefCarry"
             .to_string()
     ));
 }
