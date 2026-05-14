@@ -30,8 +30,7 @@ pub fn expansion_regression_reasons_by_market(
                 .into_iter()
                 .chain(
                     build_multi_timeframe_research_signal(&resolved_multi_timeframe_inputs)?
-                        .summary
-                        .into_iter(),
+                        .summary,
                 )
                 .collect::<Vec<_>>();
         let baseline_scores = expansion_factor_scores_for_market(

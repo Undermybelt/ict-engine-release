@@ -94,11 +94,10 @@ pub fn redact_local_paths_in_value(value: &mut Value) {
 
 fn redact_local_paths_in_value_for_key(key: Option<&str>, value: &mut Value) {
     match value {
-        Value::String(text) => {
-            if !key.is_some_and(preserves_machine_command_value) {
-                *text = redact_local_paths(text);
-            }
+        Value::String(text) if !key.is_some_and(preserves_machine_command_value) => {
+            *text = redact_local_paths(text);
         }
+        Value::String(_) => {}
         Value::Array(items) => {
             for item in items {
                 redact_local_paths_in_value_for_key(key, item);

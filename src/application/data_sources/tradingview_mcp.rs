@@ -138,7 +138,7 @@ pub(crate) fn parse_tradingview_bars(
             volume,
         });
     }
-    candles.sort_by(|left, right| left.timestamp.cmp(&right.timestamp));
+    candles.sort_by_key(|candle| candle.timestamp);
     candles.dedup_by(|left, right| left.timestamp == right.timestamp);
     if candles.is_empty() {
         bail!("tradingview returned no usable bars in requested range");

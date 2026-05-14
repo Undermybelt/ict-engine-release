@@ -36,8 +36,7 @@ pub fn build_expansion_sop_mutation_metrics(
                 .into_iter()
                 .chain(
                     build_multi_timeframe_research_signal(&resolved_multi_timeframe_inputs)?
-                        .summary
-                        .into_iter(),
+                        .summary,
                 )
                 .collect::<Vec<_>>();
         let scores =

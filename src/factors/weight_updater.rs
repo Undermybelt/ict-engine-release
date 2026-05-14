@@ -47,7 +47,7 @@ impl WeightUpdater {
             return;
         }
 
-        for (factor, score) in factors.iter_mut().zip(raw_scores.into_iter()) {
+        for (factor, score) in factors.iter_mut().zip(raw_scores) {
             factor.weight = score / total_score;
         }
     }

@@ -177,13 +177,10 @@ fn strategy_lookup_keys(stem: &str) -> Vec<String> {
 
 fn extend_family_bases(keys: &mut Vec<String>, initial: &str, suffixes: &[&str]) {
     let mut current = initial.to_string();
-    loop {
-        let Some(next) = suffixes
-            .iter()
-            .find_map(|suffix| current.strip_suffix(suffix).map(str::to_string))
-        else {
-            break;
-        };
+    while let Some(next) = suffixes
+        .iter()
+        .find_map(|suffix| current.strip_suffix(suffix).map(str::to_string))
+    {
         if keys.iter().any(|existing| existing == &next) {
             break;
         }

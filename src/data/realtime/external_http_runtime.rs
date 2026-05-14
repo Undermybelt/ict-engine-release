@@ -213,7 +213,7 @@ impl ExternalHttpRuntimeProvider {
             })
             .collect::<Vec<_>>();
 
-        candles.sort_by(|left, right| left.timestamp.cmp(&right.timestamp));
+        candles.sort_by_key(|candle| candle.timestamp);
         candles.dedup_by(|left, right| left.timestamp == right.timestamp);
 
         if candles.is_empty() {
