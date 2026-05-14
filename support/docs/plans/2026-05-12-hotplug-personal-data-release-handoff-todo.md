@@ -2294,7 +2294,7 @@ Verification:
 ### 2026-05-14 support restructure commit and publish claim
 
 Status:
-- Active.
+- Done.
 
 Owner:
 - Codex current turn, claimed after operator requested `commit 发布`.
@@ -2342,3 +2342,47 @@ Pre-commit verification:
 - `cargo clippy --all-targets -- -D warnings` passed.
 - `PATH=/Users/thrill3r/.venvs/ict-engine-provider-py313/bin:$PATH cargo test`
   passed: lib 970, bin 253, integration suites, and doctests.
+
+Publish result:
+- Source restructure commit:
+  `370cda23d865e5c3bfdf6144a9493caf0ecba16d` (`chore: consolidate support
+  materials under support`).
+- Source push:
+  `git push origin main` updated
+  `Undermybelt/givenup-ict-engine.git` from `3b25a8d3` to `370cda23`.
+- Clean release export:
+  `/tmp/ict-engine-release-export-MdW7QY`.
+- Release mirror working clone:
+  `/tmp/ict-engine-release-mirror-17uBsZ`.
+- Release mirror commit:
+  `aa692ed616e42d4d036b690a958bed1965c10783` (`chore: consolidate support
+  materials under support`).
+- Release mirror push:
+  `git push origin main` updated
+  `Undermybelt/ict-engine-release.git` from `f7ac989` to `aa692ed`.
+- No new tag and no GitHub Release were created; the operator did not provide a
+  new release tag.
+
+Release mirror verification:
+- Mirror root after rsync contains no root `docs`, `examples`, `paper2code`,
+  `prompts`, `scripts`, `state`, `target`, `.local-artifacts`, `.pytest_cache`,
+  `catboost_info`, or `path_ranker_model` entries.
+- Mirror clean sync excluded
+  `support/docs/experiments/actionable-regime-confidence/runs/**`, `.venv`,
+  `.deps`, `user_data/data`, `__pycache__`, and `*.pyc`.
+- `cargo fmt --check` passed from the mirror clone.
+- `CARGO_TARGET_DIR=/tmp/ict-engine-release-target-17uBsZ cargo clippy --all-targets -- -D warnings`
+  passed from the mirror clone.
+- `PATH=/Users/thrill3r/.venvs/ict-engine-provider-py313/bin:$PATH CARGO_TARGET_DIR=/tmp/ict-engine-release-target-17uBsZ cargo test`
+  passed from the mirror clone: lib 970, bin 253, integration suites, and
+  doctests.
+- Zero-config smoke from `/tmp/ict-engine-release-target-17uBsZ/debug/ict-engine`
+  passed against state `/tmp/ict-engine-release-smoke-state-vCfM1p`; outputs are
+  under `/tmp/ict-engine-release-smoke-out-3qf2TV`.
+- Smoke stderr files are all empty.
+- Smoke-output privacy scan for `/Users`, `/private`, `Downloads`, `API key`,
+  `api_key`, `secret`, `token`, `bearer`, `password`, and `credential` returned
+  no matches.
+- Smoke summary reported yfinance as the zero-config ready provider,
+  `candidate_pack_count=7`, admission target `rows=35`, and
+  `regime_confidence_asset_count=18`.
