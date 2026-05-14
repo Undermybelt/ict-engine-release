@@ -21,9 +21,23 @@ jobs:
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          cache-bin: false
+
+      - name: Toolchain sanity
+        run: |
+          command -v rustup
+          command -v cargo
+          command -v rustfmt
+          rustup --version
+          cargo --version
+          cargo fmt --version
 
       - name: Format
         run: cargo fmt --check
