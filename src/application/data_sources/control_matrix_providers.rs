@@ -909,11 +909,25 @@ mod tests {
 
     #[test]
     fn ibkr_requires_runtime_probe_even_with_consent_files() {
+        let home = tempfile::tempdir().unwrap();
+        let ict_engine_dir = home.path().join(".ict-engine");
+        std::fs::create_dir_all(&ict_engine_dir).unwrap();
+        std::fs::write(
+            ict_engine_dir.join("ibkr_consent.json"),
+            r#"{"enabled":true}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            ict_engine_dir.join("ibkr_capabilities.json"),
+            r#"{"historical_data":true}"#,
+        )
+        .unwrap();
+
         let required = BTreeSet::from([ControlMatrixDataRequirement::CfdReference]);
         let summary = build_provider_summary_for_requirements_with_env(
             required,
             &|_| None,
-            Some(PathBuf::from(std::env::var("HOME").unwrap())),
+            Some(home.path().to_path_buf()),
             &IbkrRuntimeProbeDetails::default,
             &|_, _, _| TradingviewMcpProbeDetails::default(),
         );
