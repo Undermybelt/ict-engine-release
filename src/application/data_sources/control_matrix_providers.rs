@@ -258,7 +258,7 @@ fn ibkr_provider_status(
     let mut install_prompts = Vec::new();
     if !consent_present {
         install_prompts.push("Consumer agent request: ask the user to install IBKR TWS or IB Gateway, then enable the IBKR API locally. Search keywords: Interactive Brokers TWS download, IB Gateway download.".to_string());
-        install_prompts.push("Consumer agent follow-up: after the user installs IBKR TWS or Gateway, run python scripts/ibkr_bridge/setup.py --enable".to_string());
+        install_prompts.push("Consumer agent follow-up: after the user installs IBKR TWS or Gateway, run python support/scripts/ibkr_bridge/setup.py --enable".to_string());
     }
     if !runtime_probe.missing_modules.is_empty() {
         install_prompts.push("Consumer agent follow-up: make sure the runtime that executes provider-status and provider fetches can import redis and ib_async. Low-pollution path: use uv run --with redis --with ib_async --with pandas for ad-hoc IBKR historical fetches.".to_string());

@@ -986,7 +986,7 @@ mod tests {
         let err = backtest_command(
             BacktestCommandInput {
                 symbol: "DEMO",
-                data: "examples/demo/demo-15m.json",
+                data: "support/examples/demo/demo-15m.json",
                 paired_data: None,
                 state_dir: "/tmp/ict-engine-backtest-guidance",
                 output_format: "human",

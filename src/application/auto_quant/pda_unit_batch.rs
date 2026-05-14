@@ -144,6 +144,24 @@ pub struct AutoQuantPdaUnitScope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AutoQuantConsumerEvidenceProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_profit_branch_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_regime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_regime: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_sub_regime_or_profit_factor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profit_factor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_label: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_surfaces: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -306,6 +324,7 @@ pub fn parse_consumer_evidence_profile(
         required_indicators,
         notes,
         provider_guidance,
+        ..Default::default()
     }
 }
 

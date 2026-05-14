@@ -274,6 +274,16 @@ pub struct StructuralPathRankingTargetRow {
     pub current_posterior: f64,
     pub structural_baseline_score: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_aux_qqq_hv_level: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_aux_nq_vs_200d_pct: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_aux_vix3m_level: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_aux_qqq_hv_pct_rank_252: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime_aux_vvix_over_vix: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score_model_family: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score_source_kind: Option<String>,
@@ -1163,7 +1173,7 @@ pub fn render_structural_path_ranking_target_rows_csv(
     rows: &[StructuralPathRankingTargetRow],
 ) -> String {
     let mut out = String::from(
-        "protocol_version,symbol,generated_at,candidate_set_id,candidate_set_size,rank,path_id,scenario_id,path_label,regime_profit_branch_path,parent_regime_root,main_regime,sub_regime,sub_sub_regime_or_profit_factor,profit_factor,direction,raw_path_score,calibrated_path_prob,path_prob_lower_bound,execution_gate_status,execution_gate_min_path_prob,execution_gate_reason,pending_reward_state,maturity_mask,maturity_weight,calibrated_label,propensity_estimate,ips_weight,training_weight,regime_calibration_bucket,behavior_policy_probability,execution_propensity,target_policy_probability_confidence,target_policy_probability_lower_bound,target_policy_reward_prior,target_policy_reward_lower_bound,experience_prior,current_posterior,structural_baseline_score,score_model_family,score_source_kind,score_model_artifact_uri,score_generator\n",
+        "protocol_version,symbol,generated_at,candidate_set_id,candidate_set_size,rank,path_id,scenario_id,path_label,regime_profit_branch_path,parent_regime_root,main_regime,sub_regime,sub_sub_regime_or_profit_factor,profit_factor,direction,raw_path_score,calibrated_path_prob,path_prob_lower_bound,execution_gate_status,execution_gate_min_path_prob,execution_gate_reason,pending_reward_state,maturity_mask,maturity_weight,calibrated_label,propensity_estimate,ips_weight,training_weight,regime_calibration_bucket,behavior_policy_probability,execution_propensity,target_policy_probability_confidence,target_policy_probability_lower_bound,target_policy_reward_prior,target_policy_reward_lower_bound,experience_prior,current_posterior,structural_baseline_score,regime_aux_qqq_hv_level,regime_aux_nq_vs_200d_pct,regime_aux_vix3m_level,regime_aux_qqq_hv_pct_rank_252,regime_aux_vvix_over_vix,score_model_family,score_source_kind,score_model_artifact_uri,score_generator\n",
     );
     for row in rows {
         let fields = [
@@ -1206,6 +1216,11 @@ pub fn render_structural_path_ranking_target_rows_csv(
             csv_f64(row.experience_prior),
             csv_f64(row.current_posterior),
             csv_f64(row.structural_baseline_score),
+            csv_optional_f64(row.regime_aux_qqq_hv_level),
+            csv_optional_f64(row.regime_aux_nq_vs_200d_pct),
+            csv_optional_f64(row.regime_aux_vix3m_level),
+            csv_optional_f64(row.regime_aux_qqq_hv_pct_rank_252),
+            csv_optional_f64(row.regime_aux_vvix_over_vix),
             csv_optional_string(row.score_model_family.as_deref()),
             csv_optional_string(row.score_source_kind.as_deref()),
             csv_optional_string(row.score_model_artifact_uri.as_deref()),
@@ -1575,6 +1590,11 @@ pub fn structural_path_ranking_trainer_manifest() -> StructuralPathRankingTraine
             "experience_prior".to_string(),
             "current_posterior".to_string(),
             "structural_baseline_score".to_string(),
+            "regime_aux_qqq_hv_level".to_string(),
+            "regime_aux_nq_vs_200d_pct".to_string(),
+            "regime_aux_vix3m_level".to_string(),
+            "regime_aux_qqq_hv_pct_rank_252".to_string(),
+            "regime_aux_vvix_over_vix".to_string(),
         ],
         calibration_columns: vec![
             "calibrated_path_prob".to_string(),
@@ -1840,6 +1860,11 @@ mod tests {
             experience_prior: 0.5,
             current_posterior,
             structural_baseline_score: 0.5,
+            regime_aux_qqq_hv_level: None,
+            regime_aux_nq_vs_200d_pct: None,
+            regime_aux_vix3m_level: None,
+            regime_aux_qqq_hv_pct_rank_252: None,
+            regime_aux_vvix_over_vix: None,
             score_model_family: None,
             score_source_kind: None,
             score_model_artifact_uri: None,

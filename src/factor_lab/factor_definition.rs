@@ -16,7 +16,7 @@ use crate::indicators::{
 use crate::pda_timeline::{
     build_pda_timeline, match_all_setups_extended, PdaEvent, SetupContext, SetupMatch,
 };
-use crate::smt::{Correlation, Divergence};
+use crate::smt::Correlation;
 use crate::types::{Candle, Direction, Regime, RegimeV2};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FactorCategory {
@@ -454,8 +454,7 @@ impl FactorDefinition {
     pub fn cross_market_smt() -> Self {
         Self {
             name: "cross_market_smt".to_string(),
-            description: "Cross-market relative strength and SMT divergence confirmation"
-                .to_string(),
+            description: "ICT SMT sibling-market liquidity sweep confirmation failure".to_string(),
             category: FactorCategory::CrossMarketSmt,
             enabled: true,
             parameters: BTreeMap::from([("lookback".to_string(), 20.0)]),
@@ -1423,6 +1422,7 @@ impl FactorDefinition {
         context: &FactorContext<'a>,
     ) -> Vec<FactorSignal> {
         let lookback = self.parameter("lookback", 20.0) as usize;
+        let signal_lookback = lookback.max(31);
         let Some(paired) = context.paired_candles else {
             return candles
                 .iter()
@@ -1473,7 +1473,7 @@ impl FactorDefinition {
                         pair_quality_explanation.clone(),
                     );
                 }
-                if aligned_index < lookback {
+                if aligned_index < signal_lookback {
                     return build_signal(
                         &self.name,
                         self.category,
@@ -1487,8 +1487,8 @@ impl FactorDefinition {
                     );
                 }
 
-                let primary_window = &primary[aligned_index - lookback..=aligned_index];
-                let pair_window = &pair[aligned_index - lookback..=aligned_index];
+                let primary_window = &primary[aligned_index - signal_lookback..=aligned_index];
+                let pair_window = &pair[aligned_index - signal_lookback..=aligned_index];
                 let primary_closes = primary_window
                     .iter()
                     .map(|item| item.close)
@@ -1562,23 +1562,46 @@ impl FactorDefinition {
                 let primary_returns = &primary_returns[..return_len];
                 let pair_returns = &pair_returns[..return_len];
                 let correlation = Correlation::pearson(primary_returns, pair_returns);
-                let divergence = if window_quality.safe_lookback < 2 {
-                    false
+                let smt_event = detect_cross_market_smt_event(
+                    primary_window,
+                    pair_window,
+                    correlation <= -0.3,
+                );
+                let relationship_type = if correlation >= 0.3 {
+                    "positive"
+                } else if correlation <= -0.3 {
+                    "negative"
                 } else {
-                    Divergence::detect(primary_closes, pair_closes, window_quality.safe_lookback)
-                        .last()
-                        .copied()
-                        .unwrap_or(false)
+                    "uncertain"
                 };
-                let primary_ret = total_return(primary_window);
-                let pair_ret = total_return(pair_window);
-                let relative_strength = primary_ret - pair_ret;
-                let mut value = normalize_signed(relative_strength * 6.0, 1.0);
-                if divergence {
-                    value *= 0.5;
+                if relationship_type == "uncertain" {
+                    return build_signal_with_pair_quality(
+                        &self.name,
+                        self.category,
+                        candle.timestamp,
+                        0.0,
+                        0.0,
+                        format!(
+                            "relationship_uncertain;corr={:.4};trade_use=confirmation_only;standalone_actionable=false;{}",
+                            correlation, window_quality_explanation
+                        ),
+                        Some(window_quality),
+                    );
                 }
-                let confidence =
-                    (correlation.abs() * if divergence { 0.45 } else { 0.85 }).clamp(0.0, 1.0);
+                let (value, confidence, smt_explanation) = if let Some(event) = smt_event {
+                    (
+                        event.direction_value(),
+                        (correlation.abs() * 0.85).clamp(0.10, 0.85),
+                        event.explanation(),
+                    )
+                } else {
+                    (
+                        0.0,
+                        0.10,
+                        "smt_signal=none;fail_closed_reason=no_swing_confirmation_failure"
+                            .to_string(),
+                    )
+                };
 
                 build_signal_with_pair_quality(
                     &self.name,
@@ -1587,8 +1610,12 @@ impl FactorDefinition {
                     value,
                     confidence,
                     format!(
-                        "corr={:.4};divergence={};relative_strength={:.4};{}",
-                        correlation, divergence, relative_strength, window_quality_explanation
+                        "corr={:.4};relationship_type={};relationship_confidence={:.4};{};trade_use=confirmation_only;standalone_actionable=false;{}",
+                        correlation,
+                        relationship_type,
+                        correlation.abs().min(1.0),
+                        smt_explanation,
+                        window_quality_explanation
                     ),
                     Some(window_quality),
                 )
@@ -1872,14 +1899,183 @@ fn close_returns(closes: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-fn total_return(candles: &[Candle]) -> f64 {
-    let (Some(first), Some(last)) = (candles.first(), candles.last()) else {
-        return 0.0;
-    };
-    if candles.len() < 2 || first.close.abs() <= f64::EPSILON {
-        return 0.0;
+#[derive(Debug, Clone, PartialEq)]
+struct CrossMarketSmtEvent {
+    smt_signal: &'static str,
+    base_swing_type: &'static str,
+    base_level: f64,
+    comparison_swing_type: &'static str,
+    comparison_level: f64,
+    raw_comparison_swing_type: &'static str,
+    raw_comparison_level: f64,
+    swept_side: &'static str,
+    normalized_for_inverse_correlation: bool,
+}
+
+impl CrossMarketSmtEvent {
+    fn direction_value(&self) -> f64 {
+        match self.smt_signal {
+            "bullish_smt" => 0.35,
+            "bearish_smt" => -0.35,
+            _ => 0.0,
+        }
     }
-    (last.close - first.close) / first.close
+
+    fn explanation(&self) -> String {
+        format!(
+            "smt_signal={};base_swing_type={};base_level={:.6};comparison_swing_type={};comparison_level={:.6};raw_comparison_swing_type={};raw_comparison_level={:.6};swept_side={};normalized_for_inverse_correlation={};fail_closed_reason=none",
+            self.smt_signal,
+            self.base_swing_type,
+            self.base_level,
+            self.comparison_swing_type,
+            self.comparison_level,
+            self.raw_comparison_swing_type,
+            self.raw_comparison_level,
+            self.swept_side,
+            self.normalized_for_inverse_correlation
+        )
+    }
+}
+
+fn detect_cross_market_smt_event(
+    base_window: &[Candle],
+    comparison_window: &[Candle],
+    normalize_comparison_for_inverse: bool,
+) -> Option<CrossMarketSmtEvent> {
+    let len = base_window.len().min(comparison_window.len());
+    if len < 3 {
+        return None;
+    }
+    let base_window = &base_window[..len];
+    let comparison_window = &comparison_window[..len];
+    let base_last = base_window.last()?;
+    let comparison_last = comparison_window.last()?;
+    if base_last.timestamp != comparison_last.timestamp {
+        return None;
+    }
+    let base_prior = &base_window[..len - 1];
+    let comparison_prior = &comparison_window[..len - 1];
+    if base_prior.is_empty() || comparison_prior.is_empty() {
+        return None;
+    }
+
+    let base_prev_high = base_prior
+        .iter()
+        .map(|candle| candle.high)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let base_prev_low = base_prior
+        .iter()
+        .map(|candle| candle.low)
+        .fold(f64::INFINITY, f64::min);
+    let comparison_prev_high = comparison_prior
+        .iter()
+        .map(|candle| normalized_comparison_high(candle, normalize_comparison_for_inverse))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let comparison_prev_low = comparison_prior
+        .iter()
+        .map(|candle| normalized_comparison_low(candle, normalize_comparison_for_inverse))
+        .fold(f64::INFINITY, f64::min);
+
+    let base_hh = base_last.high > base_prev_high;
+    let base_ll = base_last.low < base_prev_low;
+    let comparison_hh =
+        normalized_comparison_high(comparison_last, normalize_comparison_for_inverse)
+            > comparison_prev_high;
+    let comparison_ll =
+        normalized_comparison_low(comparison_last, normalize_comparison_for_inverse)
+            < comparison_prev_low;
+
+    if base_hh && !comparison_hh {
+        Some(CrossMarketSmtEvent {
+            smt_signal: "bearish_smt",
+            base_swing_type: "HH",
+            base_level: base_last.high,
+            comparison_swing_type: "LH",
+            comparison_level: comparison_high_level(
+                comparison_last,
+                normalize_comparison_for_inverse,
+            ),
+            raw_comparison_swing_type: raw_comparison_swing_type(
+                "LH",
+                normalize_comparison_for_inverse,
+            ),
+            raw_comparison_level: comparison_high_level(
+                comparison_last,
+                normalize_comparison_for_inverse,
+            ),
+            swept_side: "buy_side_liquidity",
+            normalized_for_inverse_correlation: normalize_comparison_for_inverse,
+        })
+    } else if base_ll && !comparison_ll {
+        Some(CrossMarketSmtEvent {
+            smt_signal: "bullish_smt",
+            base_swing_type: "LL",
+            base_level: base_last.low,
+            comparison_swing_type: "HL",
+            comparison_level: comparison_low_level(
+                comparison_last,
+                normalize_comparison_for_inverse,
+            ),
+            raw_comparison_swing_type: raw_comparison_swing_type(
+                "HL",
+                normalize_comparison_for_inverse,
+            ),
+            raw_comparison_level: comparison_low_level(
+                comparison_last,
+                normalize_comparison_for_inverse,
+            ),
+            swept_side: "sell_side_liquidity",
+            normalized_for_inverse_correlation: normalize_comparison_for_inverse,
+        })
+    } else {
+        None
+    }
+}
+
+fn normalized_comparison_high(candle: &Candle, inverse: bool) -> f64 {
+    if inverse {
+        -candle.low
+    } else {
+        candle.high
+    }
+}
+
+fn normalized_comparison_low(candle: &Candle, inverse: bool) -> f64 {
+    if inverse {
+        -candle.high
+    } else {
+        candle.low
+    }
+}
+
+fn comparison_high_level(candle: &Candle, inverse: bool) -> f64 {
+    if inverse {
+        candle.low
+    } else {
+        candle.high
+    }
+}
+
+fn comparison_low_level(candle: &Candle, inverse: bool) -> f64 {
+    if inverse {
+        candle.high
+    } else {
+        candle.low
+    }
+}
+
+fn raw_comparison_swing_type(normalized: &str, inverse: bool) -> &'static str {
+    match (normalized, inverse) {
+        ("HH", false) => "HH",
+        ("LH", false) => "LH",
+        ("LL", false) => "LL",
+        ("HL", false) => "HL",
+        ("HH", true) => "LL",
+        ("LH", true) => "HL",
+        ("LL", true) => "HH",
+        ("HL", true) => "LH",
+        _ => "unknown",
+    }
 }
 
 fn normalize_signed(value: f64, cap: f64) -> f64 {
@@ -2240,6 +2436,23 @@ mod tests {
             .collect()
     }
 
+    fn slope_candles(count: usize, start_price: f64, step: f64) -> Vec<Candle> {
+        let start = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
+        (0..count)
+            .map(|index| {
+                let base = start_price + index as f64 * step;
+                Candle {
+                    timestamp: start + Duration::minutes(index as i64),
+                    open: base,
+                    high: base + 0.6,
+                    low: base - 0.5,
+                    close: base + 0.2,
+                    volume: 1_000.0 + index as f64,
+                }
+            })
+            .collect()
+    }
+
     #[test]
     fn test_factor_definition_emits_series_direction_and_confidence() {
         let factor = FactorDefinition::trend_momentum();
@@ -2338,7 +2551,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_market_smt_invalid_window_pair_quality_stays_invalid_even_if_flat() {
+    fn test_cross_market_smt_signal_window_marks_flat_pair_observe_only() {
         let definition = FactorDefinition::cross_market_smt();
         let candles = candles(80);
         let paired = flat_candles(80, 200.0);
@@ -2351,12 +2564,69 @@ mod tests {
         let target = &series.signals[52];
 
         assert_eq!(target.value, 0.0);
-        assert_eq!(target.confidence, 0.0);
-        assert!(target
+        assert_eq!(target.confidence, 0.05);
+        assert!(target.explanation.contains("status=valid_but_flat"));
+        assert!(target.explanation.contains("quality_tier=flat"));
+        assert!(target.explanation.contains("aligned_length=32"));
+    }
+
+    #[test]
+    fn test_cross_market_smt_does_not_treat_relative_strength_as_smt() {
+        let definition = FactorDefinition::cross_market_smt();
+        let primary = slope_candles(80, 100.0, 0.8);
+        let paired = slope_candles(80, 200.0, 0.2);
+        let context = FactorContext {
+            paired_candles: Some(&paired),
+            ..FactorContext::default()
+        };
+
+        let series = definition.evaluate(&primary, &context).unwrap();
+        let latest = series.latest_signal().unwrap();
+
+        assert_eq!(latest.value, 0.0);
+        assert_eq!(latest.direction, Direction::Neutral);
+        assert!(latest.explanation.contains("smt_signal=none"));
+        assert!(latest
             .explanation
-            .contains("status=invalid_due_to_pair_quality"));
-        assert!(target.explanation.contains("quality_tier=poor"));
-        assert!(target.explanation.contains("aligned_length=21"));
+            .contains("fail_closed_reason=no_swing_confirmation_failure"));
+        assert!(!latest.explanation.contains("relative_strength"));
+    }
+
+    #[test]
+    fn test_cross_market_smt_requires_same_event_swing_confirmation_failure() {
+        let definition = FactorDefinition::cross_market_smt();
+        let mut primary = slope_candles(80, 100.0, 0.4);
+        let mut paired = slope_candles(80, 200.0, 0.4);
+        let prior_pair_high = paired[..79]
+            .iter()
+            .map(|candle| candle.high)
+            .fold(f64::NEG_INFINITY, f64::max);
+        primary[79].high = primary[..79]
+            .iter()
+            .map(|candle| candle.high)
+            .fold(f64::NEG_INFINITY, f64::max)
+            + 2.0;
+        primary[79].close = primary[79].high - 0.2;
+        paired[79].high = prior_pair_high - 0.25;
+        paired[79].close = paired[79].high - 0.2;
+        let context = FactorContext {
+            paired_candles: Some(&paired),
+            ..FactorContext::default()
+        };
+
+        let series = definition.evaluate(&primary, &context).unwrap();
+        let latest = series.latest_signal().unwrap();
+
+        assert_eq!(latest.direction, Direction::Bear);
+        assert!(latest.value < 0.0);
+        assert!(latest.explanation.contains("smt_signal=bearish_smt"));
+        assert!(latest.explanation.contains("base_swing_type=HH"));
+        assert!(latest.explanation.contains("comparison_swing_type=LH"));
+        assert!(latest.explanation.contains("swept_side=buy_side_liquidity"));
+        assert!(latest.explanation.contains("trade_use=confirmation_only"));
+        assert!(latest.explanation.contains("standalone_actionable=false"));
+        assert!(latest.explanation.contains("base_level="));
+        assert!(latest.explanation.contains("comparison_level="));
     }
 
     #[test]

@@ -624,19 +624,27 @@ struct BranchPathFields {
 }
 
 fn branch_path_fields(package: &AgentMaterialPackage) -> BranchPathFields {
+    let profile = &package.consumer_evidence_profile;
     let provider_provenance = package
         .notes
         .iter()
         .filter_map(|note| note.trim().strip_prefix("source_provider="))
         .map(str::trim)
         .find(|value| !value.is_empty())
-        .map(str::to_string);
-    let Some(branch_path) = package
-        .notes
-        .iter()
-        .filter_map(|note| note.trim().strip_prefix("branch_path="))
-        .map(str::trim)
-        .find(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| non_empty_profile_value(profile.provider_label.as_deref()))
+        .or_else(|| non_empty_profile_value(profile.provider.as_deref()));
+    let Some(branch_path) = non_empty_profile_value(profile.regime_profit_branch_path.as_deref())
+        .or_else(|| non_empty_profile_value(profile.branch_path.as_deref()))
+        .or_else(|| {
+            package
+                .notes
+                .iter()
+                .filter_map(|note| note.trim().strip_prefix("branch_path="))
+                .map(str::trim)
+                .find(|value| !value.is_empty())
+                .map(str::to_string)
+        })
     else {
         return BranchPathFields {
             provider_provenance,
@@ -649,13 +657,26 @@ fn branch_path_fields(package: &AgentMaterialPackage) -> BranchPathFields {
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
     BranchPathFields {
-        regime_profit_branch_path: Some(branch_path.to_string()),
-        main_regime: segments.first().map(|value| (*value).to_string()),
-        sub_regime: segments.get(1).map(|value| (*value).to_string()),
-        sub_sub_regime_or_profit_factor: segments.get(2).map(|value| (*value).to_string()),
-        profit_factor: segments.get(3).map(|value| (*value).to_string()),
+        regime_profit_branch_path: Some(branch_path.clone()),
+        main_regime: non_empty_profile_value(profile.main_regime.as_deref())
+            .or_else(|| segments.first().map(|value| (*value).to_string())),
+        sub_regime: non_empty_profile_value(profile.sub_regime.as_deref())
+            .or_else(|| segments.get(1).map(|value| (*value).to_string())),
+        sub_sub_regime_or_profit_factor: non_empty_profile_value(
+            profile.sub_sub_regime_or_profit_factor.as_deref(),
+        )
+        .or_else(|| segments.get(2).map(|value| (*value).to_string())),
+        profit_factor: non_empty_profile_value(profile.profit_factor.as_deref())
+            .or_else(|| segments.get(3).map(|value| (*value).to_string())),
         provider_provenance,
     }
+}
+
+fn non_empty_profile_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn run_dispatch_material_job(
@@ -797,15 +818,15 @@ fn materialize_material_workspace(
         fs::copy(shared_root.join(filename), workspace_root.join(filename))?;
     }
     fs::copy(
-        repo_root.join("scripts/auto_quant_external/run_tomac.py"),
+        repo_root.join("support/scripts/auto_quant_external/run_tomac.py"),
         workspace_root.join("run_tomac.py"),
     )?;
     fs::copy(
-        repo_root.join("scripts/auto_quant_external/prepare_external.py"),
+        repo_root.join("support/scripts/auto_quant_external/prepare_external.py"),
         workspace_root.join("prepare_external.py"),
     )?;
     fs::copy(
-        repo_root.join("scripts/auto_quant_external/config.tomac.json"),
+        repo_root.join("support/scripts/auto_quant_external/config.tomac.json"),
         workspace_root.join("config.tomac.json"),
     )?;
     write_material_config(&workspace_root.join("config.tomac.json"), package)?;
@@ -1725,6 +1746,162 @@ mod tests {
         let row = &rank.ranking[0];
         assert_eq!(row.branch_path.as_deref(), Some(branch_path));
         assert_eq!(row.main_regime.as_deref(), Some("TrendExpansion"));
+        assert_eq!(
+            row.provider_provenance.as_deref(),
+            Some("yfinance/YF SPY 1h")
+        );
+    }
+
+    #[test]
+    fn rank_agent_material_dispatch_recovers_branch_fields_from_consumer_evidence_profile() {
+        let dir = TempDir::new().unwrap();
+        let branch_path =
+            "TrendExpansion -> MomentumPersistence -> macd_signal_pullback -> macd_signal_pullback_continuation_v1";
+        let mut package = sample_package("/tmp/strategy.py");
+        package.package_id = "macd-signal-yf-profile".to_string();
+        package.title = "MACD signal pullback continuation - yfinance/YF SPY 1h".to_string();
+        package.notes = vec!["source_provider=yfinance/YF SPY 1h".to_string()];
+        package.consumer_evidence_profile = AutoQuantConsumerEvidenceProfile {
+            branch_path: Some(branch_path.to_string()),
+            regime_profit_branch_path: Some(branch_path.to_string()),
+            branch_id: Some("macd_signal_pullback_continuation_v1".to_string()),
+            main_regime: Some("TrendExpansion".to_string()),
+            sub_regime: Some("MomentumPersistence".to_string()),
+            sub_sub_regime_or_profit_factor: Some("macd_signal_pullback".to_string()),
+            profit_factor: Some("macd_signal_pullback_continuation_v1".to_string()),
+            provider: Some("yfinance/YF".to_string()),
+            ..Default::default()
+        };
+        let batch = AgentMaterialBatchArtifact {
+            artifact_id: "batch-profile-branch-source".to_string(),
+            generated_at: Utc::now(),
+            symbol: "MACDMOM".to_string(),
+            shared_workspace_root: "/tmp/aq".to_string(),
+            source_repo_url: None,
+            max_parallel: 1,
+            jobs: vec![AgentMaterialBatchJob {
+                job_id: "macd-signal-yf-profile".to_string(),
+                isolated_state_dir: "/tmp/unit".to_string(),
+                material_path: "/tmp/material.json".to_string(),
+                package,
+            }],
+            dispatch_groups: vec![],
+            notes: vec![],
+        };
+        let batch_filename = "auto_quant_agent_material_batch.profile-branch-source.json";
+        save_state(dir.path(), "MACDMOM", batch_filename, &batch).unwrap();
+        append_artifact_ledger_entry(
+            dir.path(),
+            "MACDMOM",
+            ArtifactLedgerEntry {
+                entry_id: "ledger:batch-profile-branch-source".to_string(),
+                artifact_kind: "auto_quant_agent_material_batch".to_string(),
+                artifact_id: "batch-profile-branch-source".to_string(),
+                version: 1,
+                generated_at: batch.generated_at,
+                symbol: "MACDMOM".to_string(),
+                source_phase: "auto_quant_agent_material_batch".to_string(),
+                source_run_id: None,
+                path: artifact_state_path(dir.path(), "MACDMOM", batch_filename),
+                status: "batch_ready_for_dispatch".to_string(),
+                promote_candidate: false,
+                actionable: true,
+                decision_hint: String::new(),
+                review_reason: String::new(),
+                review_rule_version: String::new(),
+                top_factor_name: None,
+                top_factor_action: None,
+                family_scores: BTreeMap::new(),
+                supersedes_artifact_id: None,
+                quality_score: 0,
+                consumed_by_update_run_id: None,
+                consumed_at: None,
+                consumed_outcome: None,
+                regraded_at: None,
+                consumption_regrade_status: None,
+                consumption_regrade_reason: None,
+            },
+        )
+        .unwrap();
+        let dispatch = AgentMaterialDispatchArtifact {
+            artifact_id: "dispatch-profile-old-schema".to_string(),
+            generated_at: Utc::now(),
+            symbol: "MACDMOM".to_string(),
+            source_batch_artifact_id: "batch-profile-branch-source".to_string(),
+            selected_group_indices: vec![0],
+            groups: vec![AgentMaterialDispatchGroupResult {
+                group_index: 0,
+                job_results: vec![AgentMaterialDispatchJobResult {
+                    job_id: "macd-signal-yf-profile".to_string(),
+                    title: "MACD signal pullback continuation - yfinance/YF SPY 1h".to_string(),
+                    status: "completed".to_string(),
+                    reason: "external_auto_quant_run_completed".to_string(),
+                    aggregate_metrics: Some(AgentMaterialAggregateMetrics {
+                        win_rate_pct: 64.2857,
+                        sharpe: 0.1266,
+                        total_profit_pct: 2.22,
+                        trade_count: 14,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+            }],
+            totals: AgentMaterialDispatchTotals {
+                total_jobs: 1,
+                completed_jobs: 1,
+                ..Default::default()
+            },
+        };
+        let dispatch_filename = "auto_quant_agent_material_dispatch.profile-old-schema.json";
+        save_state(dir.path(), "MACDMOM", dispatch_filename, &dispatch).unwrap();
+        append_artifact_ledger_entry(
+            dir.path(),
+            "MACDMOM",
+            ArtifactLedgerEntry {
+                entry_id: "ledger:dispatch-profile-old-schema".to_string(),
+                artifact_kind: "auto_quant_agent_material_dispatch".to_string(),
+                artifact_id: "dispatch-profile-old-schema".to_string(),
+                version: 1,
+                generated_at: dispatch.generated_at,
+                symbol: "MACDMOM".to_string(),
+                source_phase: "auto_quant_agent_material_dispatch".to_string(),
+                source_run_id: None,
+                path: artifact_state_path(dir.path(), "MACDMOM", dispatch_filename),
+                status: "dispatch_completed".to_string(),
+                promote_candidate: false,
+                actionable: true,
+                decision_hint: String::new(),
+                review_reason: String::new(),
+                review_rule_version: String::new(),
+                top_factor_name: None,
+                top_factor_action: None,
+                family_scores: BTreeMap::new(),
+                supersedes_artifact_id: None,
+                quality_score: 0,
+                consumed_by_update_run_id: None,
+                consumed_at: None,
+                consumed_outcome: None,
+                regraded_at: None,
+                consumption_regrade_status: None,
+                consumption_regrade_reason: None,
+            },
+        )
+        .unwrap();
+
+        let rank = rank_agent_material_dispatch(dir.path().to_str().unwrap(), "MACDMOM").unwrap();
+        let row = &rank.ranking[0];
+        assert_eq!(row.branch_path.as_deref(), Some(branch_path));
+        assert_eq!(row.regime_profit_branch_path.as_deref(), Some(branch_path));
+        assert_eq!(row.main_regime.as_deref(), Some("TrendExpansion"));
+        assert_eq!(row.sub_regime.as_deref(), Some("MomentumPersistence"));
+        assert_eq!(
+            row.sub_sub_regime_or_profit_factor.as_deref(),
+            Some("macd_signal_pullback")
+        );
+        assert_eq!(
+            row.profit_factor.as_deref(),
+            Some("macd_signal_pullback_continuation_v1")
+        );
         assert_eq!(
             row.provider_provenance.as_deref(),
             Some("yfinance/YF SPY 1h")

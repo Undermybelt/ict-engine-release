@@ -124,15 +124,15 @@ pub fn materialize_workspace_profile(
 
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     fs::copy(
-        repo_root.join("scripts/auto_quant_external/run_tomac.py"),
+        repo_root.join("support/scripts/auto_quant_external/run_tomac.py"),
         workspace_root.join("run_tomac.py"),
     )?;
     fs::copy(
-        repo_root.join("scripts/auto_quant_external/prepare_external.py"),
+        repo_root.join("support/scripts/auto_quant_external/prepare_external.py"),
         workspace_root.join("prepare_external.py"),
     )?;
     fs::copy(
-        repo_root.join("scripts/auto_quant_external/config.tomac.json"),
+        repo_root.join("support/scripts/auto_quant_external/config.tomac.json"),
         workspace_root.join("config.tomac.json"),
     )?;
     write_profile_config(&workspace_root.join("config.tomac.json"), &profile)?;
@@ -147,7 +147,8 @@ pub fn materialize_workspace_profile(
             .map(Path::new)
             .unwrap_or_else(|| Path::new(&workspace.strategies_dir)),
         &workspace_root.join("user_data/strategies_external"),
-        &repo_root.join("scripts/auto_quant_external/strategies/TomacNQ_KillzoneBreakout.py"),
+        &repo_root
+            .join("support/scripts/auto_quant_external/strategies/TomacNQ_KillzoneBreakout.py"),
         &profile.symbol,
     )?;
     Ok(Some(profile))

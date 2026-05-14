@@ -56,7 +56,9 @@ pub fn user_data_selection_prompt(symbol: &str, data_paths: &[String]) -> String
 }
 
 fn demo_research_backend_suffix(recorded_data_paths: &[String]) -> &'static str {
-    if recorded_data_paths.len() == 1 && recorded_data_paths[0].starts_with("examples/demo/") {
+    if recorded_data_paths.len() == 1
+        && recorded_data_paths[0].starts_with("support/examples/demo/")
+    {
         " --backend native"
     } else {
         ""
@@ -323,11 +325,11 @@ mod tests {
             symbol: "DEMO".to_string(),
             state_dir: "state".to_string(),
             analyze: Some(AnalyzeCommandSource::Files {
-                data_htf: "examples/demo/demo-15m.json".to_string(),
-                data_mtf: "examples/demo/demo-15m.json".to_string(),
-                data_ltf: "examples/demo/demo-15m.json".to_string(),
+                data_htf: "support/examples/demo/demo-15m.json".to_string(),
+                data_mtf: "support/examples/demo/demo-15m.json".to_string(),
+                data_ltf: "support/examples/demo/demo-15m.json".to_string(),
             }),
-            research_data: Some("examples/demo/demo-15m.json".to_string()),
+            research_data: Some("support/examples/demo/demo-15m.json".to_string()),
             paired_data: None,
             update_outcome: None,
             update_entry_signal: None,
@@ -339,12 +341,12 @@ mod tests {
         assert!(!commands.research.user_data_selection_required);
         assert_eq!(
             commands.research.command,
-            "ict-engine factor-research --symbol DEMO --data examples/demo/demo-15m.json --state-dir state --backend native"
+            "ict-engine factor-research --symbol DEMO --data support/examples/demo/demo-15m.json --state-dir state --backend native"
         );
         assert_eq!(commands.research.recorded_data_paths.len(), 1);
         assert_eq!(
             commands.research.recorded_data_paths[0],
-            "examples/demo/demo-15m.json"
+            "support/examples/demo/demo-15m.json"
         );
     }
 

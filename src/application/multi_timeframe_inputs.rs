@@ -185,7 +185,7 @@ pub fn resolve_analyze_cli_inputs(
     demo: bool,
 ) -> Result<(String, String, String)> {
     if demo {
-        let demo_path = "examples/demo/demo-15m.json".to_string();
+        let demo_path = "support/examples/demo/demo-15m.json".to_string();
         return Ok((demo_path.clone(), demo_path.clone(), demo_path));
     }
     if let (Some(htf), Some(mtf), Some(ltf)) = (data_htf, data_mtf, data_ltf) {

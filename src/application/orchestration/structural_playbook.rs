@@ -1058,6 +1058,7 @@ fn structural_path_ranking_target_artifact_from_candidates(
     let denominator = structural_candidate_policy_denominator(&candidate_paths);
     let candidate_set_size = candidate_paths.len();
     let regime_calibration_bucket = structural_path_ranking_regime_bucket(snapshot);
+    let regime_aux_context = StructuralRegimeAuxContext::from_snapshot(snapshot);
     let rows = candidate_paths
         .into_iter()
         .enumerate()
@@ -1126,12 +1127,18 @@ fn structural_path_ranking_target_artifact_from_candidates(
                 experience_prior: path.path_prior,
                 current_posterior: path.path_posterior,
                 structural_baseline_score: path.composite_preference_score,
+                regime_aux_qqq_hv_level: None,
+                regime_aux_nq_vs_200d_pct: None,
+                regime_aux_vix3m_level: None,
+                regime_aux_qqq_hv_pct_rank_252: None,
+                regime_aux_vvix_over_vix: None,
                 score_model_family: None,
                 score_source_kind: None,
                 score_model_artifact_uri: None,
                 score_generator: None,
             };
             structural_populate_regime_profit_branch_fields(&mut row);
+            regime_aux_context.apply_to_row(&mut row);
             row
         })
         .collect::<Vec<_>>();
@@ -1311,6 +1318,11 @@ fn structural_path_ranking_feedback_target_rows(
                 experience_prior,
                 current_posterior,
                 structural_baseline_score: behavior_policy_probability,
+                regime_aux_qqq_hv_level: None,
+                regime_aux_nq_vs_200d_pct: None,
+                regime_aux_vix3m_level: None,
+                regime_aux_qqq_hv_pct_rank_252: None,
+                regime_aux_vvix_over_vix: None,
                 score_model_family: None,
                 score_source_kind: None,
                 score_model_artifact_uri: None,
@@ -1480,6 +1492,51 @@ fn structural_regime_bundle_branch_score(snapshot: &WorkflowSnapshot) -> f64 {
         .map(|value| if value > 1.0 { value / 100.0 } else { value })
         .unwrap_or_else(|| structural_posterior_confidence(snapshot));
     score.clamp(0.0, 1.0)
+}
+
+#[derive(Debug, Clone, Default)]
+struct StructuralRegimeAuxContext {
+    qqq_hv_level: Option<f64>,
+    nq_vs_200d_pct: Option<f64>,
+    vix3m_level: Option<f64>,
+    qqq_hv_pct_rank_252: Option<f64>,
+    vvix_over_vix: Option<f64>,
+}
+
+impl StructuralRegimeAuxContext {
+    fn from_snapshot(snapshot: &WorkflowSnapshot) -> Self {
+        let Some(assignments) = snapshot
+            .latest_analyze
+            .as_ref()
+            .map(|phase| &phase.pre_bayes_filtered_assignments)
+        else {
+            return Self::default();
+        };
+        Self {
+            qqq_hv_level: structural_assignment_f64(assignments, "regime_aux_qqq_hv_level"),
+            nq_vs_200d_pct: structural_assignment_f64(assignments, "regime_aux_nq_vs_200d_pct"),
+            vix3m_level: structural_assignment_f64(assignments, "regime_aux_vix3m_level"),
+            qqq_hv_pct_rank_252: structural_assignment_f64(
+                assignments,
+                "regime_aux_qqq_hv_pct_rank_252",
+            ),
+            vvix_over_vix: structural_assignment_f64(assignments, "regime_aux_vvix_over_vix"),
+        }
+    }
+
+    fn apply_to_row(&self, row: &mut StructuralPathRankingTargetRow) {
+        row.regime_aux_qqq_hv_level = self.qqq_hv_level;
+        row.regime_aux_nq_vs_200d_pct = self.nq_vs_200d_pct;
+        row.regime_aux_vix3m_level = self.vix3m_level;
+        row.regime_aux_qqq_hv_pct_rank_252 = self.qqq_hv_pct_rank_252;
+        row.regime_aux_vvix_over_vix = self.vvix_over_vix;
+    }
+}
+
+fn structural_assignment_f64(assignments: &BTreeMap<String, String>, key: &str) -> Option<f64> {
+    assignments
+        .get(key)
+        .and_then(|value| value.trim().parse::<f64>().ok())
 }
 
 fn structural_regime_bundle_branch_path_candidates(
@@ -1654,6 +1711,7 @@ fn structural_path_ranking_agent_material_rank_target_rows(
         .map(|(_, row)| structural_agent_material_rank_row_score(row).max(0.0))
         .sum::<f64>();
     let regime_calibration_bucket = structural_path_ranking_regime_bucket(snapshot);
+    let regime_aux_context = StructuralRegimeAuxContext::from_snapshot(snapshot);
     branch_paths
         .into_iter()
         .enumerate()
@@ -1710,12 +1768,18 @@ fn structural_path_ranking_agent_material_rank_target_rows(
                 experience_prior,
                 current_posterior: row_score,
                 structural_baseline_score: row_score,
+                regime_aux_qqq_hv_level: None,
+                regime_aux_nq_vs_200d_pct: None,
+                regime_aux_vix3m_level: None,
+                regime_aux_qqq_hv_pct_rank_252: None,
+                regime_aux_vvix_over_vix: None,
                 score_model_family: Some("auto_quant_agent_material_rank".to_string()),
                 score_source_kind: Some("agent_material_rank".to_string()),
                 score_model_artifact_uri: Some(rank_artifact.artifact_id.clone()),
                 score_generator: Some("ict-engine-auto-quant-rank-adapter-v1".to_string()),
             };
             structural_populate_regime_profit_branch_fields(&mut row);
+            regime_aux_context.apply_to_row(&mut row);
             row
         })
         .collect()
@@ -5130,6 +5194,11 @@ mod tests {
             experience_prior: 0.5,
             current_posterior: 0.7,
             structural_baseline_score: 0.4,
+            regime_aux_qqq_hv_level: None,
+            regime_aux_nq_vs_200d_pct: None,
+            regime_aux_vix3m_level: None,
+            regime_aux_qqq_hv_pct_rank_252: None,
+            regime_aux_vvix_over_vix: None,
             score_model_family: None,
             score_source_kind: None,
             score_model_artifact_uri: None,

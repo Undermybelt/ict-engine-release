@@ -73,7 +73,7 @@ respond in Chinese unless they explicitly ask otherwise.
 
 Do not publish, tag, push a release mirror, or tell the operator that the release
 is ready until the closed-loop path below has fresh evidence in
-`docs/plans/2026-05-12-hotplug-personal-data-release-handoff-todo.md`.
+`support/docs/plans/2026-05-12-hotplug-personal-data-release-handoff-todo.md`.
 
 Required before release:
 - zero-config first run works for an open-source consumer;
@@ -129,7 +129,7 @@ Provider policy:
 - Missing provider: route agents through `provider-status --agent` and surface
   install/config guidance via workflow status or `human-next` text. Do not invent
   provider setup text in isolated command branches.
-- Private profiles: examples under `examples/provider_profiles/` are opt-in
+- Private profiles: examples under `support/examples/provider_profiles/` are opt-in
   references, not default runtime inputs.
 
 Privacy rules:
@@ -188,7 +188,7 @@ regime accuracy and regime-conditioned win rate matter for promotion.
 ## TimesFM Policy
 
 TimesFM is an optional forecast bridge (`src/python_bridge/timesfm.rs` and
-`scripts/timesfm_forecast.py`). Treat it as hot-pluggable evidence:
+`support/scripts/timesfm_forecast.py`). Treat it as hot-pluggable evidence:
 - do not require Python or TimesFM for zero-config Rust CLI use;
 - do not block consumer workflow if TimesFM is absent;
 - only wire TimesFM into posterior or execution decisions when fresh validation
@@ -199,18 +199,18 @@ TimesFM is an optional forecast bridge (`src/python_bridge/timesfm.rs` and
 ## Agent Work Discipline
 
 - Read and update
-  `docs/plans/2026-05-12-hotplug-personal-data-release-handoff-todo.md` during
+  `support/docs/plans/2026-05-12-hotplug-personal-data-release-handoff-todo.md` during
   this release/closed-loop lane.
 - For Board A/B regime-confidence or profitability-factor work, start from the
   compact current-state docs, not the oversized historical logs:
-  `docs/plans/2026-05-12-board-a-regime-state-current.md`,
-  `docs/plans/2026-05-12-board-b-profit-factor-current.md`, and
-  `docs/plans/2026-05-12-board-ab-cleanup-retention-plan.md`. Open the old
+  `support/docs/plans/2026-05-12-board-a-regime-state-current.md`,
+  `support/docs/plans/2026-05-12-board-b-profit-factor-current.md`, and
+  `support/docs/plans/2026-05-12-board-ab-cleanup-retention-plan.md`. Open the old
   May 10 append-only logs only for targeted evidence lookup by heading, root id,
   or exact artifact reference.
 - Do not append routine coordination/readback rows to the old May 10 Board A/B
   logs. New status belongs in the compact current-state docs; detailed evidence
-  belongs in compact run-root packets under `docs/experiments/.../materials`,
+  belongs in compact run-root packets under `support/docs/experiments/.../materials`,
   `summaries`, and `checks`.
 - For Board A/B high-concurrency work, do not use repo markdown as a lock table
   or scratchpad. Start claims belong outside the repo, for example under
@@ -219,7 +219,7 @@ TimesFM is an optional forecast bridge (`src/python_bridge/timesfm.rs` and
   evidence paths.
 - Docs are not runtime inputs. Rust, Python, shell, provider, Auto-Quant,
   training, and workflow code must not import, parse, grep, or depend on
-  `docs/plans/*.md`. Promote any needed rule into typed config, command flags,
+  `support/docs/plans/*.md`. Promote any needed rule into typed config, command flags,
   schemas, fixtures, or tests before code consumes it.
 - Preserve unrelated dirty worktree changes. Stage only files touched for the
   current coherent slice.
@@ -274,12 +274,12 @@ TimesFM is an optional forecast bridge (`src/python_bridge/timesfm.rs` and
 ### State Directories
 
 Pattern: `state/<SYMBOL>/` for production, `state_<experiment>/` for isolated runs.
-All state dirs are `/tmp/...` by default via `--state-dir` flag. Zero-config: `./target/debug/ict-engine analyze --demo --human`.
+All state dirs are `/tmp/...` by default via `--state-dir` flag. Zero-config: `cargo run --quiet -- analyze --demo --human`.
 
 ### Why Agents Say "No Factors"
 
 1. No AGENTS.md existed before this file — agents had no entry map
-2. Factor families A-H are documented only in `docs/plans/2026-05-05-execution-tree-factor-auto-quant-todo.md` (5590 lines) — agents cannot scan a 436KB doc efficiently
+2. Factor families A-H are documented only in `support/docs/plans/2026-05-05-execution-tree-factor-auto-quant-todo.md` (5590 lines) — agents cannot scan a 436KB doc efficiently
 3. Families E, F, H now have `FactorCategory` enum variants and compute stubs — previously missing
 4. Factor compute paths are split across `factor_lab/` and `factors/` — grep for "factor" hits 20+ files with no index
 

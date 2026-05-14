@@ -1311,7 +1311,7 @@ mod tests {
         let payload =
             build_factor_research_handoff_payload(BuildFactorResearchHandoffPayloadInput {
                 symbol: "DEMO",
-                data: "examples/demo/demo-15m.json",
+                data: "support/examples/demo/demo-15m.json",
                 objective: "expansion_manipulation",
                 provider_profile_selector: None,
                 paired_data: None,
@@ -1345,7 +1345,7 @@ mod tests {
         let payload =
             build_factor_research_handoff_payload(BuildFactorResearchHandoffPayloadInput {
                 symbol: "DEMO",
-                data: "examples/demo/demo-15m.json",
+                data: "support/examples/demo/demo-15m.json",
                 objective: "expansion_manipulation",
                 provider_profile_selector: Some("thrill3r-nq-closed-loop-v1"),
                 paired_data: None,

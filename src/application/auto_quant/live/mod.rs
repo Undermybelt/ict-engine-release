@@ -1,6 +1,6 @@
 //! Auto-Quant live factor signals (Phase 2).
 //!
-//! See `docs/2026-04-26-auto-quant-live-signals-plan.md` for the full
+//! See `support/docs/2026-04-26-auto-quant-live-signals-plan.md` for the full
 //! design. This module is the ict-engine consumer: it reads
 //! `LiveFactorSignalEnvelope`s from a Redis stream populated by
 //! `Auto-Quant/auto_quant_live_signal_publisher.py`, validates them

@@ -1,5 +1,4 @@
-//! Multi-model HMM sequence clustering (Phase 2 of
-//! `docs/plans/nlp-inspired-pda-sequence-clustering-plan.md`).
+//! Multi-model HMM sequence clustering.
 //!
 //! Trains one HMM per cluster on pre-grouped `PdaToken` sequences (typically
 //! grouped by the DTW/PAM output from `cluster::cluster_pda_sequences`), then

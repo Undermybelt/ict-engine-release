@@ -1,6 +1,6 @@
 //! Auto-Quant real-trade outcome ingestion (Phase 3).
 //!
-//! See `docs/2026-04-26-auto-quant-real-trades-plan.md` for the full
+//! See `support/docs/2026-04-26-auto-quant-real-trades-plan.md` for the full
 //! design. This module turns a JSONL artifact produced by
 //! `Auto-Quant/auto_quant_export_real_trades.py` into a batch of
 //! `FeedbackRecord`s and feeds them through the existing

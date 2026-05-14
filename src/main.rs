@@ -521,7 +521,7 @@ enum Commands {
         data_root: Option<String>,
         #[arg(
             long,
-            help = "Use bundled demo candles from examples/demo/demo-15m.json for first-run analyze checks; too short for backtest"
+            help = "Use bundled demo candles from support/examples/demo/demo-15m.json for first-run analyze checks; too short for backtest"
         )]
         demo: bool,
         #[arg(
@@ -895,7 +895,7 @@ enum Commands {
     FactorCandidatePacks {
         #[arg(
             long,
-            default_value = "examples/factor_candidate_packs/curated-auto-quant-v1",
+            default_value = "support/examples/factor_candidate_packs/curated-auto-quant-v1",
             help = "Directory containing repo-local factor candidate packs"
         )]
         candidate_pack_root: String,
@@ -917,7 +917,7 @@ enum Commands {
     FactorCandidateAdmissionTargets {
         #[arg(
             long,
-            default_value = "examples/factor_candidate_packs/curated-auto-quant-v1",
+            default_value = "support/examples/factor_candidate_packs/curated-auto-quant-v1",
             help = "Directory containing repo-local factor candidate packs"
         )]
         candidate_pack_root: String,
@@ -962,7 +962,7 @@ enum Commands {
     FactorAssetClosureIntake {
         #[arg(
             long,
-            default_value = "examples/factor_candidate_packs/curated-auto-quant-v1",
+            default_value = "support/examples/factor_candidate_packs/curated-auto-quant-v1",
             help = "Directory containing repo-local factor candidate packs"
         )]
         candidate_pack_root: String,
@@ -4027,6 +4027,11 @@ fn build_factor_candidate_admission_target_artifact(
                     experience_prior: (trade_count / 2500.0).clamp(0.0, 1.0),
                     current_posterior: baseline,
                     structural_baseline_score: baseline,
+                    regime_aux_qqq_hv_level: None,
+                    regime_aux_nq_vs_200d_pct: None,
+                    regime_aux_vix3m_level: None,
+                    regime_aux_qqq_hv_pct_rank_252: None,
+                    regime_aux_vvix_over_vix: None,
                     score_model_family: Some("candidate_pack_transfer_score_v1".to_string()),
                     score_source_kind: Some("factor_candidate_pack_admission_seed".to_string()),
                     score_model_artifact_uri: Some(pack_dir.to_string_lossy().to_string()),
@@ -5998,7 +6003,7 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
                     pre_bayes_evidence_quality_score: pre_bayes_evidence_filter
                         .evidence_quality_score,
                     pre_bayes_conflict_flags: pre_bayes_evidence_filter.conflict_flags.clone(),
-                    pre_bayes_filtered_assignments: ranker_pre_bayes_filtered_assignments,
+                    pre_bayes_filtered_assignments: ranker_pre_bayes_filtered_assignments.clone(),
                     pre_bayes_soft_evidence: ranker_pre_bayes_soft_evidence,
                     market_state_evidence: market_state_evidence.clone(),
                     canonical_structural_active_regime: canonical_structural_regime_posterior
@@ -6110,6 +6115,17 @@ fn build_analyze_report(input: BuildAnalyzeReportInput<'_>) -> Result<AnalyzeRep
                     ),
                     format!("factor_hotplug_summary={}", surface.factor_hotplug_summary),
                 ];
+                for key in [
+                    "regime_aux_qqq_hv_level",
+                    "regime_aux_nq_vs_200d_pct",
+                    "regime_aux_vix3m_level",
+                    "regime_aux_qqq_hv_pct_rank_252",
+                    "regime_aux_vvix_over_vix",
+                ] {
+                    if let Some(value) = ranker_pre_bayes_filtered_assignments.get(key) {
+                        lineage.push(format!("regime_aux_context={key}={value}"));
+                    }
+                }
                 if let Some(score_line) = score_line {
                     lineage.push(score_line);
                 }
@@ -10669,6 +10685,13 @@ mod tests {
                         "regime_profit_branch_path": branch_path,
                         "stable_profit_score": 85.7407
                     },
+                    "user_vrp_nq_context": {
+                        "qqq_hv_level": 18.25,
+                        "nq_vs_200d_pct": 7.5,
+                        "vix3m_level": 16.75,
+                        "qqq_hv_pct_rank_252": 0.62,
+                        "vvix_over_vix": 5.1
+                    },
                     "trade_usable": true
                 }
             }))
@@ -10710,6 +10733,40 @@ mod tests {
         assert!(assignments
             .get("read_only_regime_bbn_label_set")
             .is_some_and(|value| value.contains("Crisis_->_CrisisReliefCarry")));
+        assert_eq!(
+            assignments.get("regime_aux_qqq_hv_level"),
+            Some(&"18.250000".to_string())
+        );
+        assert_eq!(
+            assignments.get("read_only_regime_aux_vvix_over_vix"),
+            Some(&"5.100000".to_string())
+        );
+        let execution_trace = std::fs::read_to_string(
+            temp.path()
+                .join("NQ")
+                .join(ict_engine::application::orchestration::EXECUTION_TREE_TRACE_FILE),
+        )
+        .unwrap();
+        assert!(execution_trace.contains("regime_aux_context=regime_aux_qqq_hv_level=18.250000"));
+
+        let snapshot: WorkflowSnapshot =
+            load_state(temp.path(), "NQ", ict_engine::state::WORKFLOW_SNAPSHOT_FILE).unwrap();
+        let learning_state = load_learning_state(temp.path(), "NQ").unwrap();
+        let provider_status_agent =
+            ict_engine::application::provider_catalog::ProviderCatalogAgentSurface::default();
+        let target_summary =
+            ict_engine::application::orchestration::export_structural_path_ranking_target(
+                temp.path().to_str().unwrap(),
+                "NQ",
+                &snapshot,
+                &provider_status_agent,
+                &[],
+                &learning_state.structural_prior_state,
+            )
+            .unwrap();
+        let target_csv = std::fs::read_to_string(&target_summary.csv_path).unwrap();
+        assert!(target_csv.contains("regime_aux_qqq_hv_level"));
+        assert!(target_csv.contains("18.250000"));
     }
 
     #[test]
@@ -15412,9 +15469,9 @@ mod tests {
         let (htf, mtf, ltf) =
             resolve_analyze_cli_inputs("DEMO", None, None, None, None, true).unwrap();
 
-        assert_eq!(htf, "examples/demo/demo-15m.json");
-        assert_eq!(mtf, "examples/demo/demo-15m.json");
-        assert_eq!(ltf, "examples/demo/demo-15m.json");
+        assert_eq!(htf, "support/examples/demo/demo-15m.json");
+        assert_eq!(mtf, "support/examples/demo/demo-15m.json");
+        assert_eq!(ltf, "support/examples/demo/demo-15m.json");
     }
 
     #[test]
@@ -17201,8 +17258,8 @@ mod tests {
         assert_json_strings_do_not_contain(
             &payload,
             &[
-                "docs/plans/",
-                "docs/experiments/",
+                "support/docs/plans/",
+                "support/docs/experiments/",
                 "experiments/",
                 "candidate_packs",
                 "candidate-pack",
@@ -17275,7 +17332,7 @@ mod tests {
     #[test]
     fn test_build_factor_candidate_pack_inventory_reads_curated_packs() {
         let payload = build_factor_candidate_pack_inventory(
-            "examples/factor_candidate_packs/curated-auto-quant-v1",
+            "support/examples/factor_candidate_packs/curated-auto-quant-v1",
         )
         .unwrap();
         assert_eq!(payload["summary"]["candidate_pack_count"].as_u64(), Some(7));
@@ -17297,7 +17354,7 @@ mod tests {
     #[test]
     fn test_build_factor_candidate_admission_target_artifact_preserves_branch_path() {
         let artifact = build_factor_candidate_admission_target_artifact(
-            "examples/factor_candidate_packs/curated-auto-quant-v1",
+            "support/examples/factor_candidate_packs/curated-auto-quant-v1",
             "FACTOR_CANDIDATES",
         )
         .unwrap();
@@ -17344,7 +17401,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
 
         let summary = export_factor_candidate_admission_targets(
-            "examples/factor_candidate_packs/curated-auto-quant-v1",
+            "support/examples/factor_candidate_packs/curated-auto-quant-v1",
             "FACTOR_CANDIDATES",
             temp.path().to_str().unwrap(),
         )
@@ -17410,7 +17467,7 @@ mod tests {
     fn test_persist_factor_candidate_pack_inventory_writes_ledger_and_snapshot() {
         let temp = tempfile::tempdir().unwrap();
         let payload = build_factor_candidate_pack_inventory(
-            "examples/factor_candidate_packs/curated-auto-quant-v1",
+            "support/examples/factor_candidate_packs/curated-auto-quant-v1",
         )
         .unwrap();
 
@@ -17483,7 +17540,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
 
         factor_asset_closure_intake_command(
-            "examples/factor_candidate_packs/curated-auto-quant-v1",
+            "support/examples/factor_candidate_packs/curated-auto-quant-v1",
             "config/regime_confidence_assets_v1.csv",
             "NQ",
             temp.path().to_str().unwrap(),

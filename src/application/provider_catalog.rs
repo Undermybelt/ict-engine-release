@@ -16,7 +16,7 @@ use crate::config::shell_quote;
 const PROVIDER_STATUS_AGENT_COMMAND: &str = "ict-engine provider-status --agent";
 const EXTERNAL_HTTP_DEFAULT_URL: &str = "http://127.0.0.1:6901/api/v1";
 const PROVIDER_PROFILE_SCHEMA_VERSION: &str = "provider-profile/v1";
-const REPO_PROVIDER_PROFILE_DIR: &str = "examples/provider_profiles";
+const REPO_PROVIDER_PROFILE_DIR: &str = "support/examples/provider_profiles";
 const KRAKEN_API_KEY_ENV: &str = "KRAKEN_API_KEY";
 const KRAKEN_API_SECRET_ENV: &str = "KRAKEN_API_SECRET";
 
@@ -773,7 +773,7 @@ fn probe_public_fetch_python_runtime() -> PublicFetchPythonRuntimeProbe {
     } else if !python_present {
         vec!["Install python3 before using public provider fetch scripts.".to_string()]
     } else {
-        vec!["Restore scripts/auto_quant_external/fetch_external.py before using public provider fetch scripts.".to_string()]
+        vec!["Restore support/scripts/auto_quant_external/fetch_external.py before using public provider fetch scripts.".to_string()]
     };
     PublicFetchPythonRuntimeProbe {
         ready,
@@ -785,7 +785,7 @@ fn probe_public_fetch_python_runtime() -> PublicFetchPythonRuntimeProbe {
 
 fn provider_fetch_script_exists() -> bool {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts/auto_quant_external/fetch_external.py")
+        .join("support/scripts/auto_quant_external/fetch_external.py")
         .exists()
 }
 
@@ -854,7 +854,7 @@ struct LocalRuntimeProbe {
 
 fn probe_ibkr_bridge() -> LocalRuntimeProbe {
     let script_present = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts/ibkr_bridge/__init__.py")
+        .join("support/scripts/ibkr_bridge/__init__.py")
         .exists();
     let home = home_dir();
     let consent_present = home
@@ -1015,7 +1015,8 @@ fn probe_kraken_cli() -> LocalRuntimeProbe {
         status,
         reason,
         notes: {
-            let mut notes = vec!["see docs/external/kraken-cli-agent-patterns.md".to_string()];
+            let mut notes =
+                vec!["see support/docs/external/kraken-cli-agent-patterns.md".to_string()];
             if let Some(path) = local_binary {
                 notes.push(format!("local_binary={}", path.display()));
             }

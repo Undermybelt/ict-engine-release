@@ -167,7 +167,7 @@ fn bootstrap_output_does_not_auto_reuse_personal_tomac_paths_without_profile() {
 fn provider_status_agent_accepts_opt_in_profile_path() {
     let binary = env!("CARGO_BIN_EXE_ict-engine");
     let profile_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/provider_profiles/thrill3r-nq-closed-loop-v1.json");
+        .join("support/examples/provider_profiles/thrill3r-nq-closed-loop-v1.json");
 
     let output = Command::new(binary)
         .args([
@@ -222,7 +222,7 @@ fn workflow_status_agent_accepts_opt_in_profile_path() {
     let binary = env!("CARGO_BIN_EXE_ict-engine");
     let state = TempDir::new().unwrap();
     let profile_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/provider_profiles/thrill3r-nq-closed-loop-v1.json");
+        .join("support/examples/provider_profiles/thrill3r-nq-closed-loop-v1.json");
 
     let output = Command::new(binary)
         .args([

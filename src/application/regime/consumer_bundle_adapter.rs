@@ -9,6 +9,13 @@ use std::{
 use crate::state::PreBayesEvidenceFilter;
 
 const EXPECTED_SCHEMA_VERSION: &str = "regime-consumer-bundle/v1";
+const USER_VRP_NQ_CONTEXT_KEYS: [&str; 5] = [
+    "qqq_hv_level",
+    "nq_vs_200d_pct",
+    "vix3m_level",
+    "qqq_hv_pct_rank_252",
+    "vvix_over_vix",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BundleStatus {
@@ -280,7 +287,37 @@ impl RegimeConsumerBundleAdapter {
                 format!("{score:.6}"),
             ));
         }
+        entries.extend(self.user_vrp_nq_context_assignment_entries());
         entries
+    }
+
+    pub fn user_vrp_nq_context_assignment_entries(&self) -> Vec<(String, String)> {
+        self.consumer_hints
+            .as_ref()
+            .map(|hints| &hints.user_vrp_nq_context)
+            .and_then(Value::as_object)
+            .map(|context| {
+                USER_VRP_NQ_CONTEXT_KEYS
+                    .iter()
+                    .filter_map(|key| {
+                        let value = context.get(*key)?;
+                        let rendered = if let Some(number) = value.as_f64() {
+                            format!("{number:.6}")
+                        } else {
+                            value.as_str()?.trim().to_string()
+                        };
+                        (!rendered.is_empty()).then(|| (format!("regime_aux_{key}"), rendered))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn user_vrp_nq_context_trace_entries(&self) -> Vec<String> {
+        self.user_vrp_nq_context_assignment_entries()
+            .into_iter()
+            .map(|(key, value)| format!("{key}={}", compact_trace_value(&value)))
+            .collect()
     }
 
     pub fn to_read_only_bbn_soft_evidence(&self) -> RegimeReadOnlyBbnSoftEvidence {
@@ -403,11 +440,14 @@ impl RegimeConsumerBundleAdapter {
             "regime_execution_tree_hint={}",
             self.execution_tree_hint().as_trace_value()
         ));
+        entries.extend(self.user_vrp_nq_context_trace_entries());
         entries
     }
 
     pub fn bbn_soft_evidence_trace_entries(&self) -> Vec<String> {
-        self.to_read_only_bbn_soft_evidence().trace_entries()
+        let mut entries = self.to_read_only_bbn_soft_evidence().trace_entries();
+        entries.extend(self.user_vrp_nq_context_trace_entries());
+        entries
     }
 
     pub fn append_read_only_bbn_diagnostics(

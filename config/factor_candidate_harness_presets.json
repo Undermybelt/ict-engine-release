@@ -8,8 +8,10 @@
       "status": "active",
       "promotion_state": "promotable",
       "strategy_name": "TomacNQ_RegimeVRPCompression15m",
-      "strategy_source": "scripts/auto_quant_external/strategies/TomacNQ_RegimeVRPCompression15m.py",
-      "artifact_source": {},
+      "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeVRPCompression15m.py",
+      "artifact_source": {
+        "candidate_pack_dir": "support/examples/factor_candidate_packs/curated-auto-quant-v1/family_f_vrp_compression_15m_v1"
+      },
       "expression_text": "iv_pct_rank_252 < 0.30 and hv_pct_rank_252 < 0.30 and close > ema89 and ema_fast_4h > ema_slow_4h and bullish_body",
       "operator_set": [
         "iv_pct_rank_252",
@@ -71,8 +73,10 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacNQ_RegimeTrendPullbackDense15m",
-      "strategy_source": "scripts/auto_quant_external/strategies/TomacNQ_RegimeTrendPullbackDense15m.py",
-      "artifact_source": {},
+      "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeTrendPullbackDense15m.py",
+      "artifact_source": {
+        "candidate_pack_dir": "support/examples/factor_candidate_packs/curated-auto-quant-v1/family_f_trend_pullback_dense_15m_v1"
+      },
       "expression_text": "liquid_window and (higher_trend_4h or higher_trend_1h or local_trend) and near_ema21 <= 2.4 and reacceleration and 35 <= rsi <= 74",
       "operator_set": [
         "liquid_window",
@@ -137,8 +141,10 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacNQ_RegimeLiquiditySweepReclaim15mWide",
-      "strategy_source": "scripts/auto_quant_external/strategies/TomacNQ_RegimeLiquiditySweepReclaim15mWide.py",
-      "artifact_source": {},
+      "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeLiquiditySweepReclaim15mWide.py",
+      "artifact_source": {
+        "candidate_pack_dir": "support/examples/factor_candidate_packs/curated-auto-quant-v1/family_d_liquidity_sweep_reclaim_15m_wide_v1"
+      },
       "expression_text": "liquid_window and (higher_trend_4h or higher_trend_1h) and sweep_below and reclaim_close and body_strength > 0.25",
       "operator_set": [
         "liquid_window",
@@ -203,8 +209,10 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacNQ_KillzoneBreakout",
-      "strategy_source": "scripts/auto_quant_external/strategies/TomacNQ_KillzoneBreakout.py",
-      "artifact_source": {},
+      "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_KillzoneBreakout.py",
+      "artifact_source": {
+        "candidate_pack_dir": "support/examples/factor_candidate_packs/curated-auto-quant-v1/family_a_killzone_breakout_1h_v1"
+      },
       "expression_text": "am_killzone and close > high_24h and ema_fast_4h > ema_slow_4h",
       "operator_set": [
         "am_killzone",
@@ -264,8 +272,10 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacNQ_KillzoneBreakoutDisplacement",
-      "strategy_source": "scripts/auto_quant_external/strategies/TomacNQ_KillzoneBreakout.py",
-      "artifact_source": {},
+      "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_KillzoneBreakout.py",
+      "artifact_source": {
+        "candidate_pack_dir": "support/examples/factor_candidate_packs/curated-auto-quant-v1/family_a_killzone_displacement_pending_v1"
+      },
       "expression_text": "displacement-enhanced session breakout variant pending reusable artifact",
       "operator_set": [
         "session_breakout",
@@ -312,8 +322,10 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacNQ_RegimeFVGRetrace",
-      "strategy_source": "scripts/auto_quant_external/strategies/TomacNQ_RegimeFVGRetrace.py",
-      "artifact_source": {},
+      "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeFVGRetrace.py",
+      "artifact_source": {
+        "candidate_pack_dir": "support/examples/factor_candidate_packs/curated-auto-quant-v1/family_a_fvg_retrace_1h_v1"
+      },
       "expression_text": "bullish fair-value-gap exists, later retraces into the gap, rejects back above the lower bound, and fires only when 4h trend remains aligned",
       "operator_set": [
         "fvg_lower",
@@ -373,8 +385,10 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacNQ_RegimeFVGRetrace5m",
-      "strategy_source": "scripts/auto_quant_external/strategies/TomacNQ_RegimeFVGRetrace5m.py",
-      "artifact_source": {},
+      "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeFVGRetrace5m.py",
+      "artifact_source": {
+        "candidate_pack_dir": "support/examples/factor_candidate_packs/curated-auto-quant-v1/family_a_fvg_retrace_5m_v1"
+      },
       "expression_text": "5m fair-value-gap retest with 15m/1h/4h resonance gating, intended to convert Family A structure evidence into denser intraday coverage",
       "operator_set": [
         "fvg_lower",
@@ -445,7 +459,7 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacNQKillzoneBreakout15m",
-      "strategy_source": "docs/plans/2026-05-05-execution-tree-factor-auto-quant-todo.md",
+      "strategy_source": "config/factor_candidate_harness_presets.json#family_a_killzone_breakout_15m_v1",
       "artifact_source": {},
       "expression_text": "15m killzone breakout with 1h/4h trend context, intended as Family A timeframe-coverage evidence rather than a stronger replacement of the 1h base",
       "operator_set": [
@@ -508,7 +522,7 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacNQ_KillzoneBreakout1dRegime",
-      "strategy_source": "docs/plans/2026-05-05-execution-tree-factor-auto-quant-todo.md",
+      "strategy_source": "config/factor_candidate_harness_presets.json#family_a_killzone_breakout_1d_regime_v1",
       "artifact_source": {},
       "expression_text": "NQ killzone breakout gated by daily-bias regime logic, intended to test whether a stronger 1d context filter improves Family A quality",
       "operator_set": [
@@ -571,7 +585,7 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacNQKillzoneBreakout1m",
-      "strategy_source": "docs/plans/2026-05-05-execution-tree-factor-auto-quant-todo.md",
+      "strategy_source": "config/factor_candidate_harness_presets.json#family_a_killzone_breakout_1m_v1",
       "artifact_source": {},
       "expression_text": "1m killzone breakout with 15m/1h/4h resonance, intended to close the low-timeframe Family A coverage lane and test whether ultra-short execution improves or degrades quality",
       "operator_set": [
@@ -640,7 +654,7 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacKillzoneBreakout",
-      "strategy_source": "scripts/auto_quant_external/strategies/TomacKillzoneBreakout.py",
+      "strategy_source": "support/scripts/auto_quant_external/strategies/TomacKillzoneBreakout.py",
       "artifact_source": {},
       "expression_text": "ES killzone breakout with the existing generic breakout logic and ES profile evidence, used as cross-market family expansion proof",
       "operator_set": [
@@ -701,7 +715,7 @@
       "status": "active",
       "promotion_state": "candidate_only",
       "strategy_name": "TomacKillzoneBreakout",
-      "strategy_source": "scripts/auto_quant_external/strategies/TomacKillzoneBreakout.py",
+      "strategy_source": "support/scripts/auto_quant_external/strategies/TomacKillzoneBreakout.py",
       "artifact_source": {},
       "expression_text": "EUR killzone breakout with the generic breakout logic, used as a low-density cross-market proof of the shared profile surface",
       "operator_set": [
@@ -762,7 +776,7 @@
       "status": "active",
       "promotion_state": "regime_only",
       "strategy_name": null,
-      "strategy_source": "scripts/research/regime_artifact_bundle.py",
+      "strategy_source": "support/scripts/research/regime_artifact_bundle.py",
       "artifact_source": {},
       "reusable_input_kind": "regime_benchmark_json",
       "expression_text": "classifier / transition / resonance gate before next execution-factor promotion",

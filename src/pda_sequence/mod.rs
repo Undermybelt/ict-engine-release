@@ -1,5 +1,4 @@
-//! NLP-inspired PDA sequence clustering (Phase 1 skeleton of
-//! `docs/plans/nlp-inspired-pda-sequence-clustering-plan.md`).
+//! NLP-inspired PDA sequence clustering.
 //!
 //! This module is intentionally standalone:
 //! - no main.rs wiring

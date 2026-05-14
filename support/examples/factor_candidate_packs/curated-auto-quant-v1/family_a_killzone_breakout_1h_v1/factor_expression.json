@@ -1,0 +1,57 @@
+{
+  "schema_version": "factor-expression/v1",
+  "candidate_id": "family_a_killzone_breakout_1h_v1",
+  "display_name": "Killzone Breakout 1h",
+  "family": "Family A",
+  "status": "active",
+  "promotion_state": "candidate_only",
+  "strategy_name": "TomacNQ_KillzoneBreakout",
+  "mutation_id": null,
+  "base_factor": null,
+  "expression_text": "am_killzone and close > high_24h and ema_fast_4h > ema_slow_4h",
+  "operator_set": [
+    "am_killzone",
+    "high_24h",
+    "ema_fast_4h",
+    "ema_slow_4h"
+  ],
+  "complexity": 4,
+  "paradigm": "session breakout",
+  "expected_regime": null,
+  "target_market_hypothesis": [
+    "NQ/USD",
+    "IWM/USD",
+    "GLD/USD"
+  ],
+  "base_timeframe": "1h",
+  "context_timeframes": [
+    "4h",
+    "1d"
+  ],
+  "regime_role": "execution_only",
+  "evidence_window": "freqtrade 8Y candidate check pending profile evidence",
+  "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_KillzoneBreakout.py",
+  "filter_belief_execution_mapping": {
+    "pre_bayes_targets": [
+      "session_breakout_gate",
+      "structure_setup_gate"
+    ],
+    "belief_targets": [
+      "entry_quality",
+      "session_quality"
+    ],
+    "path_ranking_targets": [
+      "recommended_path_bundle",
+      "structural_path_confidence"
+    ],
+    "execution_tree_targets": [
+      "execution_readiness",
+      "prediction_vote_score"
+    ],
+    "execution_tree_blockers_intended": [
+      "high_drawdown_breakout_conflict",
+      "weak_follow_through_quality"
+    ],
+    "structural_feedback_required": true
+  }
+}

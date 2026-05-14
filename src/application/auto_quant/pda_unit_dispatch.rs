@@ -287,15 +287,15 @@ fn materialize_unit_workspace(
             .with_context(|| format!("copying {}", filename))?;
     }
     fs::copy(
-        repo_root.join("scripts/auto_quant_external/run_tomac.py"),
+        repo_root.join("support/scripts/auto_quant_external/run_tomac.py"),
         workspace_root.join("run_tomac.py"),
     )?;
     fs::copy(
-        repo_root.join("scripts/auto_quant_external/prepare_external.py"),
+        repo_root.join("support/scripts/auto_quant_external/prepare_external.py"),
         workspace_root.join("prepare_external.py"),
     )?;
     fs::copy(
-        repo_root.join("scripts/auto_quant_external/config.tomac.json"),
+        repo_root.join("support/scripts/auto_quant_external/config.tomac.json"),
         workspace_root.join("config.tomac.json"),
     )?;
 

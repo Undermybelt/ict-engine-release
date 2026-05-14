@@ -424,7 +424,7 @@ mod tests {
     fn high_confidence_profile_matches_repo_example() {
         let profile = MarketStateProfile::high_confidence_profile();
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("docs/examples/market-state-nq-confidence-profile.json");
+            .join("support/docs/examples/market-state-nq-confidence-profile.json");
         let config = MarketStateConfig::load(&path).expect("load repo example profile");
 
         assert_eq!(

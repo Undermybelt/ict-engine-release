@@ -146,8 +146,10 @@ pub fn load_candles_csv<P: AsRef<Path>>(path: P) -> Result<Vec<Candle>> {
         .map(|value| value.trim().to_ascii_lowercase())
         .collect::<Vec<_>>();
 
-    let timestamp_idx =
-        find_header_index(&headers, &["timestamp", "time", "datetime", "ts_event"])?;
+    let timestamp_idx = find_header_index(
+        &headers,
+        &["timestamp", "time", "datetime", "ts_event", "date"],
+    )?;
     let open_idx = find_header_index(&headers, &["open", "o"])?;
     let high_idx = find_header_index(&headers, &["high", "h"])?;
     let low_idx = find_header_index(&headers, &["low", "l"])?;
@@ -600,6 +602,21 @@ mod tests {
         assert!(candles[0].timestamp < candles[1].timestamp);
         assert_eq!(candles[1].close, 102.5);
         assert_eq!(candles[1].volume, 2000.0);
+    }
+
+    #[test]
+    fn test_load_candles_csv_accepts_date_header() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            temp.path(),
+            "date,open,high,low,close,volume\n\
+             2026-05-12T00:00:00Z,100,101,99,100.5,1000\n",
+        )
+        .unwrap();
+
+        let candles = load_candles_csv(temp.path()).unwrap();
+        assert_eq!(candles.len(), 1);
+        assert_eq!(candles[0].close, 100.5);
     }
 
     #[test]

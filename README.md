@@ -1,3 +1,5 @@
+[中文 README](README.zh-CN.md)
+
 # ICT Engine
 
 Agent-first market-structure research from a clean terminal.
@@ -145,9 +147,9 @@ Python wrappers are intentionally conservative. They print configuration by
 default and only run backends when you pass `--run`.
 
 ```bash
-python3 scripts/search_local.py --show-config
-python3 scripts/search_cluster.py --show-config
-python3 scripts/evaluate_bottleneck.py --show-config
+python3 support/scripts/search_local.py --show-config
+python3 support/scripts/search_cluster.py --show-config
+python3 support/scripts/evaluate_bottleneck.py --show-config
 ```
 
 Outside a maintainer workstation, pass explicit data roots. Do not rely on
@@ -180,13 +182,48 @@ dirty research working tree.
 | Path | Purpose |
 |---|---|
 | `src/` | Rust CLI, analysis, orchestration, provider, and training surfaces |
-| `examples/` | public demo/provider/factor candidate examples |
+| `support/examples/` | public demo/provider/factor candidate examples |
 | `config/` | small public fixture/config surfaces |
-| `scripts/` | optional Python research wrappers and helpers |
-| `docs/README.md` | documentation trust map and folder policy |
-| `docs/audits/release-signoff.md` | current release readiness record |
-| `docs/release-mirror-runbook.md` | private release mirror flow |
+| `support/scripts/` | optional Python research wrappers and helpers |
+| `support/docs/README.md` | documentation trust map and folder policy |
+| `support/docs/audits/release-signoff.md` | current release readiness record |
+| `support/docs/release-mirror-runbook.md` | private release mirror flow |
 | `AGENT.md` | operating contract for AI agents working in this repo |
+
+## Install And Package Policy
+
+This project is licensed under the PolyForm Noncommercial License 1.0.0 and is
+not currently published as a public package-manager artifact.
+
+Supported local routes:
+
+```bash
+cargo install --path .
+cargo run -- --help
+```
+
+Package-manager stance:
+
+| Channel | Status | Reason |
+|---|---|---|
+| Cargo local install | Supported with `cargo install --path .` | local use does not redistribute the project |
+| crates.io | Blocked for this release flow | public registry publication needs a dedicated channel review under the PolyForm terms |
+| npm / npx | Blocked for public registry use | `npx` normally executes packages fetched from npm; publishing there needs a dedicated channel review |
+| Homebrew public tap/core | Blocked for this release flow | public formulae distribute source/binaries and need a dedicated channel review |
+| private local wrappers | Allowed for the copyright holder or authorized private users | useful for local ergonomics without granting third-party redistribution rights |
+
+If the project later needs public `npx`, Homebrew, crates.io, Docker, or binary
+release distribution, run a separate packaging slice that verifies the channel
+complies with PolyForm Noncommercial 1.0.0 and any project-specific notices.
+
+Policy references:
+
+- [Cargo manifest fields](https://doc.rust-lang.org/cargo/reference/manifest.html):
+  `license` and `publish`.
+- [npm package metadata](https://docs.npmjs.com/cli/v10/configuring-npm/package-json):
+  `license`, `UNLICENSED`, and `private`.
+- [Homebrew license guidelines](https://docs.brew.sh/License-Guidelines):
+  public formulae need redistributable licensing.
 
 ## Release Policy
 
@@ -200,10 +237,12 @@ Release rules:
   maintainer-local paths;
 - keep default outputs free of private keys, tokens, account ids, and absolute
   local paths;
-- refresh `docs/audits/release-signoff.md` and
-  `docs/release-notes-draft.md` before publishing;
-- follow `docs/release-mirror-runbook.md` for mirror tag and GitHub release
-  creation.
+- refresh `support/docs/audits/release-signoff.md` and
+  `support/docs/release-notes-draft.md` before publishing;
+- follow `support/docs/release-mirror-runbook.md` for mirror tag and GitHub release
+  creation;
+- do not publish public package-manager artifacts unless the license is changed
+  or written permission grants that exact distribution channel.
 
 ## FAQ
 
@@ -228,19 +267,8 @@ Read `AGENT.md`, then use `provider-status`, `workflow-status`, `analyze`,
 `pre-bayes-status`, and `policy-training-status` with an explicit `/tmp`
 `--state-dir`.
 
-## 中文简介
-
-`ict-engine` 是一个 Rust CLI 研究工作台，用来把市场数据整理成可审计的结构证据、SMT 确认、regime 后验概率、训练/准入状态和执行树读回。
-
-首跑：
-
-```bash
-cargo check
-cargo run -- analyze --symbol DEMO --demo --state-dir /tmp/ict-engine-first-run --human
-```
-
-原则：默认开箱可跑，状态显式，输出短而可读，agent 面使用结构化字段，发布只走干净 export。
-
 ## License
 
-MIT. See `LICENSE`.
+This project uses the PolyForm Noncommercial License 1.0.0. Noncommercial use,
+modification, and distribution are permitted under that license; commercial use
+requires separate permission. See `LICENSE`.

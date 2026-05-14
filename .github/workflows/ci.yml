@@ -28,6 +28,9 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
+      - name: Docs runtime isolation
+        run: python3 support/scripts/ci/check_docs_runtime_isolation.py
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 

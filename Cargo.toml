@@ -3,9 +3,14 @@ name = "ict-engine"
 version = "0.1.2"
 edition = "2021"
 description = "ICT Expansion Trading Engine - Probability-based trading analysis"
-license = "MIT"
+license = "PolyForm-Noncommercial-1.0.0"
 repository = "https://github.com/Undermybelt/ict-engine-release"
 authors = ["ICT Engine contributors"]
+publish = false
+
+[[example]]
+name = "round2_tucker_snapshot"
+path = "support/examples/round2_tucker_snapshot.rs"
 
 [dependencies]
 ndarray = "0.15"

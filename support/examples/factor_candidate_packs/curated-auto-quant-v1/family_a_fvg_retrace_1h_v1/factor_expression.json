@@ -1,0 +1,60 @@
+{
+  "schema_version": "factor-expression/v1",
+  "candidate_id": "family_a_fvg_retrace_1h_v1",
+  "display_name": "FVG Retrace 1h",
+  "family": "Family A",
+  "status": "active",
+  "promotion_state": "candidate_only",
+  "strategy_name": "TomacNQ_RegimeFVGRetrace",
+  "mutation_id": null,
+  "base_factor": null,
+  "expression_text": "bullish fair-value-gap exists, later retraces into the gap, rejects back above the lower bound, and fires only when 4h trend remains aligned",
+  "operator_set": [
+    "fvg_lower",
+    "fvg_upper",
+    "fvg_width",
+    "ema_fast_4h",
+    "ema_slow_4h",
+    "body_strength",
+    "ema21"
+  ],
+  "complexity": 7,
+  "paradigm": "structural retrace imbalance retest",
+  "expected_regime": null,
+  "target_market_hypothesis": [
+    "NQ/USD",
+    "SPY/USD",
+    "IWM/USD",
+    "GLD/USD"
+  ],
+  "base_timeframe": "1h",
+  "context_timeframes": [
+    "4h"
+  ],
+  "regime_role": "execution_only",
+  "evidence_window": "freqtrade 8Y NQ: 2018-01-01 -> 2025-12-31; cross-market 1h: 2025-05-17 -> 2025-12-30",
+  "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeFVGRetrace.py",
+  "filter_belief_execution_mapping": {
+    "pre_bayes_targets": [
+      "imbalance_retest_gate",
+      "trend_alignment_gate"
+    ],
+    "belief_targets": [
+      "entry_quality",
+      "structure_displacement_evidence"
+    ],
+    "path_ranking_targets": [
+      "recommended_path_bundle",
+      "structural_path_confidence"
+    ],
+    "execution_tree_targets": [
+      "execution_readiness",
+      "prediction_vote_score"
+    ],
+    "execution_tree_blockers_intended": [
+      "thin_density",
+      "mixed_cross_market_quality"
+    ],
+    "structural_feedback_required": true
+  }
+}

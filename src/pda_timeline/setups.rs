@@ -7,7 +7,7 @@
 //! ## Scope (v2 — P1b base + P1c extended)
 //!
 //! 27 of the 30 canonical setups in
-//! `docs/2026-04-27-pda-factor-universe-plan.md` §4.1 are now
+//! `support/docs/2026-04-27-pda-factor-universe-plan.md` §4.1 are now
 //! shipped as named matchers. The plan's three remaining SMT
 //! variants (`EquityFuturesSmt`, `CurrencyFuturesSmt`,
 //! `GoldVixDivergence`) are intentionally **not** distinct

@@ -1,5 +1,4 @@
-//! End-to-end PDA sequence analysis (Phase 3 subset of
-//! `docs/plans/nlp-inspired-pda-sequence-clustering-plan.md`).
+//! End-to-end PDA sequence analysis.
 //!
 //! Glues the emitter, DTW/PAM clustering, multi-model HMM training, and
 //! FCGR + majority-vote ensemble into one artifact-producing function.

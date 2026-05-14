@@ -1,0 +1,64 @@
+{
+  "schema_version": "factor-expression/v1",
+  "candidate_id": "family_a_fvg_retrace_5m_v1",
+  "display_name": "FVG Retrace 5m",
+  "family": "Family A",
+  "status": "active",
+  "promotion_state": "candidate_only",
+  "strategy_name": "TomacNQ_RegimeFVGRetrace5m",
+  "mutation_id": null,
+  "base_factor": null,
+  "expression_text": "5m fair-value-gap retest with 15m/1h/4h resonance gating, intended to convert Family A structure evidence into denser intraday coverage",
+  "operator_set": [
+    "fvg_lower",
+    "fvg_upper",
+    "fvg_width",
+    "ema_fast_15m",
+    "ema_slow_15m",
+    "ema_fast_1h",
+    "ema_slow_1h",
+    "ema_fast_4h",
+    "ema_slow_4h",
+    "body_strength",
+    "ema21"
+  ],
+  "complexity": 11,
+  "paradigm": "structural retrace imbalance retest with multi-timeframe resonance",
+  "expected_regime": null,
+  "target_market_hypothesis": [
+    "NQ/USD"
+  ],
+  "base_timeframe": "5m",
+  "context_timeframes": [
+    "15m",
+    "1h",
+    "4h"
+  ],
+  "regime_role": "execution_only",
+  "evidence_window": "freqtrade 8Y NQ 5m: 2018-01-03 -> 2025-12-31",
+  "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeFVGRetrace5m.py",
+  "filter_belief_execution_mapping": {
+    "pre_bayes_targets": [
+      "imbalance_retest_gate",
+      "multi_timeframe_resonance_gate"
+    ],
+    "belief_targets": [
+      "entry_quality",
+      "structure_displacement_evidence",
+      "micro_timeframe_resonance"
+    ],
+    "path_ranking_targets": [
+      "recommended_path_bundle",
+      "structural_path_confidence"
+    ],
+    "execution_tree_targets": [
+      "execution_readiness",
+      "prediction_vote_score"
+    ],
+    "execution_tree_blockers_intended": [
+      "negative_quality_despite_density",
+      "stop_loss_dominates_tail"
+    ],
+    "structural_feedback_required": true
+  }
+}

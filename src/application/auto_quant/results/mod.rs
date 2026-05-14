@@ -14,7 +14,7 @@
 //! This module **never** writes to the BBN posterior — that path is
 //! reserved for `apply_feedback_to_trade_outcome_network` driven by
 //! real-trade `FeedbackRecord`s. See
-//! `docs/2026-04-26-auto-quant-bbn-prior-init-plan.md` for the
+//! `support/docs/2026-04-26-auto-quant-bbn-prior-init-plan.md` for the
 //! Phase 1 contract.
 
 mod log_parser;

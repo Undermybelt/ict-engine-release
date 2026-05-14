@@ -1,7 +1,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::net::{SocketAddr, TcpStream};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use super::harness::{MarketDataHarnessIbkrSpec, MarketDataHarnessTask, ProviderExecutionRequest};
 use super::tradingview_mcp::{fetch_tradingview_ohlcv, TradingViewMcpClient};
@@ -10,6 +14,17 @@ use crate::data::realtime::yfinance_runtime::YahooFinanceProvider;
 use crate::types::Candle;
 
 pub(crate) const CONTROL_MATRIX_IBKR_FETCH_SCRIPT_ENV: &str = "ICT_ENGINE_IBKR_FETCH_SCRIPT";
+pub(crate) const CONTROL_MATRIX_IBKR_GATEWAY_PORT_ENV: &str = "ICT_ENGINE_IBKR_GATEWAY_PORT";
+const IBKR_GATEWAY_HOST: &str = "127.0.0.1";
+const IBKR_GATEWAY_PORT_CANDIDATES: [u16; 4] = [7497, 7496, 4002, 4001];
+const IBKR_GATEWAY_PORT_CACHE_RELATIVE_PATH: &str = ".ict-engine/ibkr_gateway_port.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IbkrGatewayPortCache {
+    host: String,
+    port: u16,
+    source: String,
+}
 
 pub(crate) fn fetch_reference_candles_for_task(
     task: &MarketDataHarnessTask,
@@ -97,7 +112,7 @@ fn fetch_ibkr_historical_candles(
 ) -> Result<Vec<Candle>> {
     let script = std::env::var(CONTROL_MATRIX_IBKR_FETCH_SCRIPT_ENV).unwrap_or_else(|_| {
         format!(
-            "{}/scripts/auto_quant_external/fetch_external.py",
+            "{}/support/scripts/auto_quant_external/fetch_external.py",
             env!("CARGO_MANIFEST_DIR")
         )
     });
@@ -106,10 +121,49 @@ fn fetch_ibkr_historical_candles(
         contract.symbol.to_ascii_lowercase(),
         Utc::now().timestamp_nanos_opt().unwrap_or_default()
     ));
+    let args = build_ibkr_historical_args(
+        &script,
+        contract,
+        interval,
+        start,
+        end,
+        temp.to_str().unwrap_or("ibkr.csv"),
+        selected_ibkr_gateway_port(),
+    );
+    let output = Command::new("python3")
+        .args(args.iter().map(String::as_str))
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to spawn ibkr historical fetch for '{}'",
+                contract.symbol
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "ibkr historical fetch failed for '{}'{}",
+            contract.symbol,
+            command_output_excerpt(&output, Some(ibkr_gateway_agent_prompt())),
+        );
+    }
+    let result = load_csv_candles(&temp);
+    let _ = std::fs::remove_file(&temp);
+    result
+}
+
+fn build_ibkr_historical_args(
+    script: &str,
+    contract: &MarketDataHarnessIbkrSpec,
+    interval: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    output: &str,
+    gateway_port: Option<u16>,
+) -> Vec<String> {
     let duration = ibkr_duration_from_range(start, end);
     let bar_size = ibkr_bar_size(interval);
     let mut args = vec![
-        script,
+        script.to_string(),
         "ibkr-historical".to_string(),
         "--symbol".to_string(),
         contract.symbol.clone(),
@@ -124,27 +178,115 @@ fn fetch_ibkr_historical_candles(
         "--duration".to_string(),
         duration,
         "--output".to_string(),
-        temp.to_str().unwrap_or("ibkr.csv").to_string(),
+        output.to_string(),
     ];
     if let Some(primary_exchange) = contract.primary_exchange.as_ref() {
         args.push("--primary-exchange".to_string());
         args.push(primary_exchange.clone());
     }
-    let status = Command::new("python3")
-        .args(args.iter().map(String::as_str))
-        .status()
-        .with_context(|| {
-            format!(
-                "failed to spawn ibkr historical fetch for '{}'",
-                contract.symbol
-            )
-        })?;
-    if !status.success() {
-        bail!("ibkr historical fetch failed for '{}'", contract.symbol);
+    if let Some(port) = gateway_port {
+        args.push("--port".to_string());
+        args.push(port.to_string());
     }
-    let result = load_csv_candles(&temp);
-    let _ = std::fs::remove_file(&temp);
-    result
+    args
+}
+
+fn selected_ibkr_gateway_port() -> Option<u16> {
+    selected_ibkr_gateway_port_with(
+        || std::env::var(CONTROL_MATRIX_IBKR_GATEWAY_PORT_ENV).ok(),
+        home_dir().as_deref(),
+        ibkr_gateway_port_reachable,
+    )
+}
+
+fn selected_ibkr_gateway_port_with(
+    env_lookup: impl Fn() -> Option<String>,
+    home_dir: Option<&Path>,
+    reachable: impl Fn(&str, u16) -> bool,
+) -> Option<u16> {
+    if let Some(port) = env_lookup().and_then(|value| value.trim().parse::<u16>().ok()) {
+        return Some(port);
+    }
+    if let Some(cache) = read_cached_ibkr_gateway_port(home_dir) {
+        if cache.host == IBKR_GATEWAY_HOST && reachable(&cache.host, cache.port) {
+            return Some(cache.port);
+        }
+    }
+    let selected = first_reachable_ibkr_gateway_port_with(IBKR_GATEWAY_HOST, &reachable);
+    if let Some(port) = selected {
+        write_cached_ibkr_gateway_port(home_dir, IBKR_GATEWAY_HOST, port);
+    }
+    selected
+}
+
+fn first_reachable_ibkr_gateway_port_with(
+    host: &str,
+    reachable: impl Fn(&str, u16) -> bool,
+) -> Option<u16> {
+    IBKR_GATEWAY_PORT_CANDIDATES
+        .into_iter()
+        .find(|port| reachable(host, *port))
+}
+
+fn ibkr_gateway_port_reachable(host: &str, port: u16) -> bool {
+    let Ok(addr) = format!("{host}:{port}").parse::<SocketAddr>() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
+}
+
+fn command_output_excerpt(output: &std::process::Output, suffix: Option<&str>) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let excerpt = if !stderr.is_empty() { stderr } else { stdout };
+    let base = if excerpt.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ": {}",
+            excerpt.lines().take(3).collect::<Vec<_>>().join(" | ")
+        )
+    };
+    match suffix {
+        Some(suffix) if !suffix.is_empty() && base.is_empty() => format!(": {suffix}"),
+        Some(suffix) if !suffix.is_empty() => format!("{base} | {suffix}"),
+        _ => base,
+    }
+}
+
+fn ibkr_gateway_agent_prompt() -> &'static str {
+    "IBKR gateway port guidance: run support/scripts/ibkr_bridge/setup.py --require-gateway once, or set ICT_ENGINE_IBKR_GATEWAY_PORT=<7497|7496|4002|4001>; market-data-harness caches a reachable auto-probed port in ~/.ict-engine/ibkr_gateway_port.json"
+}
+
+fn read_cached_ibkr_gateway_port(home_dir: Option<&Path>) -> Option<IbkrGatewayPortCache> {
+    let path = ibkr_gateway_port_cache_path(home_dir)?;
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn write_cached_ibkr_gateway_port(home_dir: Option<&Path>, host: &str, port: u16) {
+    let Some(path) = ibkr_gateway_port_cache_path(home_dir) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let payload = IbkrGatewayPortCache {
+        host: host.to_string(),
+        port,
+        source: "auto_probe".to_string(),
+    };
+    if let Ok(content) = serde_json::to_string_pretty(&payload) {
+        let _ = std::fs::write(path, content);
+    }
+}
+
+fn ibkr_gateway_port_cache_path(home_dir: Option<&Path>) -> Option<PathBuf> {
+    home_dir.map(|home| home.join(IBKR_GATEWAY_PORT_CACHE_RELATIVE_PATH))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(PathBuf::from)
 }
 
 fn fetch_tradingview_options_summary(symbol: &str) -> Result<OptionsChainSummary> {
@@ -324,4 +466,72 @@ fn ibkr_bar_size(interval: &str) -> String {
         _ => "1 day",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn ibkr_historical_args_include_configured_gateway_port() {
+        let contract = MarketDataHarnessIbkrSpec {
+            symbol: "QQQ".to_string(),
+            sec_type: "STK".to_string(),
+            exchange: "SMART".to_string(),
+            currency: "USD".to_string(),
+            primary_exchange: None,
+        };
+        let start = Utc.with_ymd_and_hms(2026, 4, 1, 0, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap();
+
+        let args = build_ibkr_historical_args(
+            "support/scripts/auto_quant_external/fetch_external.py",
+            &contract,
+            "1d",
+            start,
+            end,
+            "out.csv",
+            Some(4002),
+        );
+
+        assert!(args.windows(2).any(|items| items == ["--port", "4002"]));
+    }
+
+    #[test]
+    fn ibkr_gateway_selection_reuses_reachable_cached_port() {
+        let home = tempfile::tempdir().unwrap();
+        let config_dir = home.path().join(".ict-engine");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("ibkr_gateway_port.json"),
+            r#"{"host":"127.0.0.1","port":4002,"source":"auto_probe"}"#,
+        )
+        .unwrap();
+
+        let selected = selected_ibkr_gateway_port_with(
+            || None,
+            Some(home.path()),
+            |host, port| host == "127.0.0.1" && port == 4002,
+        );
+
+        assert_eq!(selected, Some(4002));
+    }
+
+    #[test]
+    fn ibkr_gateway_selection_caches_first_reachable_port() {
+        let home = tempfile::tempdir().unwrap();
+
+        let selected = selected_ibkr_gateway_port_with(
+            || None,
+            Some(home.path()),
+            |host, port| host == "127.0.0.1" && port == 4002,
+        );
+
+        assert_eq!(selected, Some(4002));
+        let cache = read_cached_ibkr_gateway_port(Some(home.path())).unwrap();
+        assert_eq!(cache.host, "127.0.0.1");
+        assert_eq!(cache.port, 4002);
+        assert_eq!(cache.source, "auto_probe");
+    }
 }

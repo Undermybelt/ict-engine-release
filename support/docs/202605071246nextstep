@@ -1,0 +1,717 @@
+基于这份 TODO，结论先说：
+
+**不是“全完备”，但已经从“工具/路径搭建”推进到“有可部署候选 + 有清晰剩余风险”的阶段。**
+特别是：**regime 已经有可部署版本，但不是完备；BBN 已经证明有用，但不是通用完备；CatBoost/执行树链路仍偏未完备，尤其是 CatBoost policy surface 与 execution feature surface 还没有被充分闭环。**
+
+## 1. 这个 TODO 已经完成了什么
+
+**工程与流程层面已经打通很多：**
+
+* 已经把 factor backlog 从当前 Rust registry 解耦，允许在 Auto-Quant / external helper 里写 hardcoded factor，而不修改 `ict-engine` runtime；文档明确 `ict-engine` 作为 read-only execution-tree judge，Auto-Quant 负责 factor author/mutator。
+* 已经确定 reverse chain：`execution tree -> execution features -> CatBoost vote -> BBN evidence -> HMM/regime filter -> Auto-Quant factors`，并且要求不要直接从 execution-tree branch 跳到 factor，要先定位瓶颈层。
+* Auto-Quant 外部路径已可用：`synthetic_ohlcv` profile、`--auxiliary-evidence`、strategy export/import、prior-init、workflow-status 等路径都被验证过；Family A 不再卡在“fixed crypto-only managed contract”。
+* 已经确认本地多 timeframe 数据可用到 `1m/5m/15m/1h/4h/1d`，但 `1w/1M` 仍未证明。
+
+**Factor / strategy 探索层面：**
+
+* Family A/B/C/F/G 都至少跑过第一轮；Family A 仍是早期最强 active lane。
+* Family A 在 NQ、ES 上有正向候选；YM/XAU/EUR 不是同一套结构因子能直接解决，YM 有 runtime blocker，XAU 当前 flat，EUR 更像需要别的 family。
+* NQ 的结构/setup 候选能提升 backtest，但多次 prior-init 后 execution-tree 核心输出没有动，说明“只改 BBN trade_outcome prior”不够，瓶颈在更上游的 `factor_alignment / factor_uncertainty / liquidity_context / execution_readiness` 等 surface。
+
+**Regime 方向取得了实质进展：**
+
+* TODO 明确接受了“regime-first”：先把 regime / cluster 判别做好，交易因子只能在已知 regime 内选择；regime factor 不要求 trade_count。
+* 早期 hybrid regime vote 不够好，长跨度 NQ `15m/1h/4h/1d` macro_f1 只有约 `0.28-0.31`；加入 independent outcome truth 后更弱。
+* 后续加入 volume / indicator / PDA/ICT proxy + ExtraTrees 后，regime 分类明显改善；其中 `base+pda + ExtraTrees` 成为领先候选，在 `15m/1h/4h/1d` 都有正证据。15m controlled run 达到 `eval_family_f1=0.4859`、`eval_macro_f1=0.3703`、`transition_f1=0.7179`。
+* ES 作为 primary market 也做了 sanity check：`eval_family_f1=0.4050`、`transition_f1=0.7020`，证明不是纯 NQ artifact，但 ES 样本更少，不能算 full market closure。
+
+**更后面的项目状态里，已经有 deployable 级别的 regime / execution 组合：**
+
+* 文档记录了 100 slices 后的 honest summary：产生了 3 个 promotable execution candidates、一个 deployable 4-class regime classifier × 4-class term-structure classifier，以及 19 个 multi-source-family candidates；但 honest deployable Sharpe 估计是 `0.5-1.0` 年化，`1.5-2.0` 只适用于类似 2023-2025 的 favorable regime。
+* Slice 96 认为 regime classifier genuinely deployable：用 regime deny rules 后，equal-weight basket Sharpe `0.233 -> 0.806`，inverse-vol basket `0.448 -> 0.880`，最大回撤约减半。
+* Slice 97/98 进一步加入 VIX9D/VIX3M term-structure，形成第二 regime dimension，并首次把 deployable basket Sharpe 推到 1.0 以上。
+
+## 2. Regime 是否完备？
+
+**结论：不完备，但“可部署版本”已经成立。**
+
+可部署的证据是：regime classifier + term-structure 规则已经能在 8Y trade exports 上显著提升 basket Sharpe 并降低 drawdown；Slice 96 直接写了 “Regime classifier IS deployable”。
+
+但不完备的原因也很明确：
+
+* `base+pda + ExtraTrees` 仍只是 leading candidate，不是 production closure；它仍缺 cross-market 大矩阵、`1w/1M`、更多 independent labels，例如 HMM/Viterbi、change-point、walk-forward regimes。
+* ES 只有 sanity check，不是 full market-family closure；文档也明确 ES bar count 小于 NQ，不能据此宣布市场覆盖完备。
+* 2025 pure bull regime 里，某些 BBN/regime overlay 会 degenerate：V2.5d 在 2025 所有市场都 0 trades，V2.5b 也在多市场 underperform baseline。说明 regime/BBN filter 对 regime mix 敏感，不是全环境万能。
+
+所以我会给它打分：**regime = deployable v1 / v2，未完备。**
+它已经能用于选择/过滤交易因子，但还不能说“跨市场、跨周期、跨标签源完全闭环”。
+
+## 3. BBN 是否完备？
+
+**结论：BBN evidence → execution 闭环已经被证明有价值，但 BBN classifier 本身不完备。**
+
+已完成的强点：
+
+* 已经做了 BBN evidence ranking，top evidence 包括 `qqq_hv_level`、`nq_vs_200d_pct`、`vix3m_level`，top-5 又加入 `qqq_hv_pct_rank_252` 与 `vvix_over_vix`。
+* Naive Bayes BBN OOS 发现单纯 macro_F1 不强：2023-2025 test macro_F1 约 `0.26`，但 extreme class / crash-edge 有信息。
+* 最关键进展是：BBN posterior 不是按直觉“看多就加仓”有用，而是作为 VRP 的 anti-momentum / death-zone filter 有用。Slice 121 在 n=976 pooled trades 上确认 `bull_score` 高区间是负向过滤信号。
+* Slice 122/123 表明 VRP V2.5 能显著改善部分 timeframe 的 Sharpe 与 drawdown；但 6Y OOS 又削弱了 3Y 乐观结论。
+
+不完备的原因：
+
+* BBN 自身的 OOS macro_F1 很低，6Y 甚至只有约 `0.197`；文档也说“classifier itself is WEAKER on harder period”。
+* Slice 124 说明 BBN overlay 在 pure bull year 会退化，V2.5d 2025 全市场 0 trades；所以它更像 stress/crisis sleeve 或 conditional overlay，不是全局替代 V2 baseline。
+* 文档建议要找新 edge，需要不同 evidence，例如 skew、OI/options-flow、GEX、futures basis、single-name cross-section；这说明当前 BBN evidence set 还不完备。
+
+所以：**BBN = 已形成可用闭环，但不是完备 classifier；它更像“有用的条件过滤/风险 overlay”，而不是最终 regime engine。**
+
+## 4. CatBoost / 执行树是否完备？
+
+**结论：执行树作为 judge/框架基本成型；CatBoost policy surface 不完备；execution-tree 闭环也没有完全完备。**
+
+文档里 CatBoost 层的目标是“改善 continuation vs hesitation vs failure 的 class separation，并提高 `prediction_vote_score`，同时不牺牲 execution realism”。 但从已完成记录看，大量工作集中在：
+
+* Auto-Quant factor generation；
+* BBN prior-init；
+* regime classifier；
+* VRP / vol-regime / term-structure execution overlay。
+
+相反，真正的 CatBoost policy layer 并没有看到同等程度的“训练—OOS—导入—执行树输出变化”的闭环证据。早期 no-code plateau 也说明：Auto-Quant 能改 trade priors，但没有改动 execution tree 当前最关键的上游 surfaces；核心 execution-tree fields 如 `execution_readiness`、`factor_alignment`、`factor_uncertainty`、`liquidity_context` 等没有被实质推动。
+
+执行树本身的规则/branch map 很清楚：它围绕 `execution_readiness`、`prediction_vote_score`、`evidence_quality`、`ising_phase_transition_risk`、`pythagorean_overstretch`、spectral inputs 分支；而且强调 `execution_readiness` 不是纯方向分数，方向强也可能被执行层 block。 这说明 tree judge 设计是清楚的，但是否“完备”取决于上游输入是否足够。
+
+所以判断是：
+
+* **Execution-tree judge：框架完备度较高，可继续作为只读裁判使用。**
+* **CatBoost vote layer：未完备，缺少系统性 OOS policy-surface 训练和 execution-tree before/after 证据。**
+* **整体 execution-tree closed loop：部分闭环。BBN/regime/VRP 已闭环，CatBoost/policy vote 与 execution feature enrichment 还没有完全闭环。**
+
+## 5. 建议下一步
+
+我建议不要再把重点放在“继续堆更多单策略 backtest”。优先级应该是：
+
+1. **把 regime v1/v2 固化成可复现实验矩阵**
+   固定 `base+pda + ExtraTrees`、4-class regime × term-structure、VRP V2 baseline / V2.5 sleeves，做统一 walk-forward + cross-market summary。重点不是再找单次最高 Sharpe，而是确认哪些 rule 在 NQ/SPY/IWM/DIA/GLD/ES 上稳定。
+
+2. **补独立 regime labels**
+   当前最关键缺口仍是 HMM/Viterbi、change-point、walk-forward labels。TODO 自己也说，production adoption 之前需要 teacher/label source 之外的 independent validation。
+
+3. **把 BBN 定位为 overlay，而不是主 classifier**
+   BBN 的价值已经证明在 anti-momentum / stress overlay，而不是直接“posterior 看涨就做多”。应保留 V2 baseline 作为 steady-state，V2.5b/d 作为 conditional sleeve；不要用 2023-2025 的高 Sharpe 直接覆盖 6Y / 2025 cross-market 的 caveat。
+
+4. **补 CatBoost policy layer 的真实闭环**
+   现在 reverse chain 里 CatBoost 是明显薄弱层。下一步应该显式训练 policy surface：目标不是 return，而是 continuation / hesitation / failure、execution_readiness uplift、prediction_vote_score calibration，并做 `analyze` before/after 对比。
+
+5. **补 Family G / options evidence 的可 replay 数据**
+   `--auxiliary-evidence` surface 已经有了，但 reusable options / dealer artifact 仍是 blocker。Family G 不应靠 Yahoo/临时 live fetch；需要 IBKR / TradingView / options snapshot 的 time-aligned cache。
+
+6. **处理 entry-drought / data-span 异常**
+   100-slice summary 明确说 entry-drought 是下一步 first investigation；不解释 8Y entry behavior，Sharpe / drawdown 仍可能是 partial-period estimate。
+
+一句话总结：**这个 TODO 已经把“研究路线、外部执行路径、regime-first、BBN overlay、部分 deployable 策略”做出来了；但“完备性”还差在跨市场/跨周期/独立标签验证，以及 CatBoost policy layer 与 execution feature surface 的真实闭环。**
+
+下面是我按你这个项目当前缺口筛出来的一组**论文/方法 + 公开 repo + 可直接落地的 vNext TODO 文档**。筛选原则是：只保留能直接改善你现在的几个痛点——**regime 独立标签、CatBoost policy surface、BBN evidence、Family G options/dealer replay 数据、entry drought、walk-forward 防过拟合**。你现有 TODO 已经明确：第一关是 regime/cluster discrimination；regime factor 不要求交易，只要求跨长跨度、市场、周期准确分类；交易因子必须在 regime 可信后再选。
+
+## 1. 推荐论文 / 方法来源
+
+### A. Regime / HMM / Change-point
+
+1. **Regime-Switching Factor Investing with Hidden Markov Models**
+   用 HMM 识别市场 regime，再按 regime 切换 factor model。它和你的方向高度一致：不是先找单策略，而是先找 regime，再在 regime 内选 factor。([MDPI][1])
+   **项目用途**：给当前 `base+pda + ExtraTrees` 增加一个独立 HMM/Viterbi label source，满足 TODO 里“不能只靠 MECE/self-baseline，需要 independent validation”的要求。
+
+2. **ruptures: change point detection in Python**
+   ruptures 是离线 change-point detection 库，支持多种 parametric / non-parametric segmentation 算法。([GitHub][2])
+   **项目用途**：把 change-point state 作为 regime classifier 的第二独立标签源，专门验证 transition_f1，不再只看 future outcome labels。
+
+3. **Purged / Combinatorial Purged Cross-Validation + Triple Barrier / Meta-labeling**
+   金融时间序列不能直接普通 K-fold；purging/embargo 是为了防止 label horizon 与训练窗口重叠导致信息泄漏。MLFinLab/DeepWiki 对 PurgedKFold、CombinatorialPurgedKFold、embargo 的用途讲得很清楚。([DeepWiki][3]) Triple-barrier labeling 用 profit-taking、stop-loss、vertical barrier 替代固定 horizon，更贴近真实交易路径。([GitHub][4])
+   **项目用途**：给 CatBoost policy target、entry failure target、regime outcome target 统一换成 leakage-safe labels。
+
+### B. CatBoost / Policy Surface
+
+4. **CatBoost: unbiased boosting with categorical features**
+   CatBoost 的 ordered boosting 是为减少 target leakage / prediction shift 设计的，适合你这种含 regime、session、market、timeframe 等类别特征的 policy surface。([NeurIPS Papers][5])
+   **项目用途**：专门训练 Layer 2：`continuation / hesitation / failure`，输出 `prediction_vote_score`、`policy_confidence`、`policy_uncertainty`，而不是继续只把 Auto-Quant 策略结果写进 BBN prior。
+
+5. **Temporal Fusion Transformer, TFT**
+   TFT 结合多 horizon forecast、feature selection、gating、attention，并强调 interpretability。([arXiv][6])
+   **项目用途**：不是第一优先，但适合后续做 multi-timeframe resonance：让模型显式学 `1m/5m/15m/1h/4h/1d` context 哪些在不同 regime 中有效。
+
+### C. Execution / Microstructure / Dealer / VRP
+
+6. **DeepLOB: Deep Convolutional Neural Networks for Limit Order Books**
+   DeepLOB 用 CNN 捕捉 LOB 空间结构，用 LSTM 捕捉时间依赖，目标是预测高频价格方向。([arXiv][7])
+   **项目用途**：如果后面能拿到 LOB / quote / depth 数据，它可以启发 `execution_readiness`、`liquidity_context`、crowding、fragility 的特征，不建议现在直接深度学习化。
+
+7. **Equity Volatility Term Premia / Understanding the Volatility Risk Premium**
+   NY Fed 论文把 realized variance、variance swap、VIX futures、term premia 联系起来；AQR 的 VRP 白皮书把 VRP 定义为提供市场下跌保险所获得的补偿。([Federal Reserve Bank of New York][8])
+   **项目用途**：支撑你现在已经很强的 VRP / term-structure sleeve，不要只把 VIX9D/VIX3M 当经验规则；应该扩展成 term-structure feature family。
+
+## 2. 推荐公开 repo
+
+| repo / 工具                                    | 用在本项目哪里                                                                                 | 采用优先级                                                     |
+| -------------------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| **hmmlearn**                                 | HMM/Viterbi independent regime labels；验证 regime transition/persistence                  | 高；小而直接 ([GitHub][9])                                      |
+| **ruptures**                                 | change-point labels；验证 transition_event / break states                                  | 高 ([GitHub][2])                                           |
+| **catboost/catboost**                        | Layer 2 policy vote：continuation / hesitation / failure；概率输出校准前的主模型                     | 高 ([GitHub][10])                                          |
+| **mlfinpy / mlfinlab references**            | Purged CV、CPCV、triple barrier、sample weights、meta-labeling                              | 高；先参考实现，不一定直接依赖 ([Mlfin.py][11])                          |
+| **Microsoft Qlib**                           | 参考完整 AI quant workflow：data processing、model training、backtest、risk、portfolio、execution | 中高；适合借鉴 pipeline，不建议大规模迁移 ([GitHub][12])                  |
+| **OpenBB**                                   | Family G options/dealer 数据入口；options chain、macro/market data connector                  | 高；解决 `--auxiliary-evidence` 缺 replay 数据的问题 ([GitHub][13]) |
+| **gamma-exposure-indicator / gex-explained** | GEX、gamma flip、dealer hedging pressure 的实现参考                                            | 中；需要严格验证数据质量 ([GitHub][14])                               |
+| **vectorbt**                                 | 大规模参数矩阵、entry drought 快速诊断、候选批量筛选                                                       | 中高；适合外部 helper ([Vectorbt][15])                           |
+| **MAPIE / sklearn calibration**              | `factor_uncertainty`、prediction set、概率校准、uncertainty gate                               | 中高 ([Scikit-learn][16])                                   |
+| **sktime**                                   | time-series classification / clustering / anomaly / changepoint 的统一 API 参考              | 中 ([GitHub][17])                                          |
+| **DeepLOB repo**                             | 后续有 LOB/quote 数据时，用作 execution microstructure feature reference                         | 低到中；数据依赖大 ([GitHub][18])                                  |
+
+## 3. 可直接贴进项目的 vNext TODO 文档
+
+下面这段可以直接追加到你的 TODO 文件里，作为下一轮 prompt / todo。
+
+---
+
+# Execution-Tree Auto-Quant vNext: Literature/Repo-Guided TODO
+
+## Objective
+
+Advance the current project from “deployable but not complete” to a more robust regime-first, evidence-aware, policy-calibrated factor-iteration loop.
+
+The next loop must not optimize standalone strategy Sharpe first. It must first improve:
+
+1. independent regime validation;
+2. CatBoost policy-vote surface;
+3. BBN evidence usefulness as conditional overlay, not naive posterior trust;
+4. replayable options/dealer evidence for Family G;
+5. entry-drought diagnosis;
+6. leakage-safe walk-forward / purged validation.
+
+This keeps the existing rule: `ict-engine` remains the read-only execution-tree judge; Auto-Quant and external helpers remain the place for candidate authoring and research iteration.
+
+## Source-Informed Method Map
+
+### Method Group A: Independent Regime Labels
+
+Use the following public methods as independent regime-label sources:
+
+* HMM/Viterbi labels using `hmmlearn`.
+* Change-point segments using `ruptures`.
+* Triple-barrier / meta-label outcome states using AFML-style labeling.
+* Existing MECE / outcome / behavior labels remain useful, but they are not sufficient alone.
+
+Acceptance criteria:
+
+* A regime candidate cannot be promoted only because it improves backtest Sharpe.
+* It must beat the current regime baseline on at least two independent label families:
+
+  * structural / MECE;
+  * HMM/Viterbi;
+  * change-point;
+  * triple-barrier / forward outcome;
+  * walk-forward OOS behavior.
+* Track at minimum:
+
+  * `macro_f1`;
+  * `family_f1`;
+  * `covered_precision`;
+  * `coverage`;
+  * `transition_f1`;
+  * `flip_rate`;
+  * `mean_segment_bars`;
+  * per-regime confusion matrix.
+
+Near-term target:
+
+* Keep `base+pda + ExtraTrees` as the current leading baseline.
+* Add HMM and change-point validation before claiming regime completeness.
+* Validate on `NQ`, `ES`, then `SPY/QQQ/IWM` or available local proxies.
+* Do not call `NQ + ES` full closure.
+
+## Workstream 1: HMM / Viterbi Regime Validation
+
+Create external helper:
+
+`external_regime_hmm_viterbi.py`
+
+Inputs:
+
+* long-span candles;
+* feature matrix used by current regime helper;
+* optional `4h/1d` context;
+* optional paired market context.
+
+Models:
+
+* Gaussian HMM with 3, 4, 5, and 6 states.
+* Fit only on train window.
+* Decode train/test with Viterbi.
+* Map hidden states to interpretable families by realized return, realized volatility, drawdown, trend efficiency, and compression metrics.
+
+Outputs:
+
+* `hmm_state_id`;
+* `hmm_family_label`;
+* `hmm_transition_flag`;
+* state persistence stats;
+* transition matrix;
+* state-level performance attribution.
+
+Acceptance:
+
+* HMM labels must be evaluated as independent validation, not used as the only truth.
+* Promote only if current regime classifier agrees with HMM family labels better than baseline and improves transition timing without excessive flip-rate.
+
+## Workstream 2: Change-Point Regime Validation
+
+Create external helper:
+
+`external_regime_changepoint_labels.py`
+
+Use `ruptures` to generate offline change-point segments.
+
+Algorithms to test:
+
+* PELT;
+* Binseg;
+* Window;
+* KernelCPD if runtime allows.
+
+Signals to segment:
+
+* log returns;
+* realized volatility;
+* ATR-normalized range;
+* trend efficiency;
+* drawdown;
+* VIX / term-structure features when available.
+
+Outputs:
+
+* segment id;
+* segment family;
+* transition windows;
+* regime duration distribution;
+* change-point proximity score.
+
+Acceptance:
+
+* Existing regime classifier must detect transitions within a tolerance window around change points.
+* Add `changepoint_transition_f1` to regime benchmark output.
+* Penalize noisy models that over-detect transitions.
+
+## Workstream 3: CatBoost Policy-Vote Surface
+
+Problem:
+
+Current loops changed BBN priors and strategy backtests, but did not reliably move upstream surfaces such as `factor_alignment`, `factor_uncertainty`, `liquidity_context`, or `execution_readiness`.
+
+Create external helper:
+
+`external_policy_surface_catboost.py`
+
+Target labels:
+
+* `continuation`;
+* `hesitation`;
+* `failure`;
+* optional `reversal_success`;
+* optional `execution_blocked_but_direction_right`.
+
+Labeling method:
+
+* triple-barrier or vertical-barrier outcome;
+* purge overlapping labels;
+* embargo validation folds;
+* separate labels by regime family.
+
+Features:
+
+* current factor family scores;
+* base+pda regime outputs;
+* HMM state;
+* change-point proximity;
+* term-structure class;
+* BBN posterior bins;
+* session / liquidity-window;
+* cross-market confirmation;
+* volatility / VRP features;
+* options/dealer fields when available.
+
+Model:
+
+* CatBoost first.
+* * No deep model until CatBoost baseline is exhausted.
+
+Metrics:
+
+* macro-F1 over policy classes;
+* Brier score;
+* log loss;
+* calibration curve;
+* top-decile precision;
+* regime-conditioned confusion matrix;
+* before/after effect on:
+
+  * `prediction_vote_score`;
+  * `factor_alignment`;
+  * `factor_uncertainty`;
+  * `execution_readiness`;
+  * final execution-tree branch.
+
+Acceptance:
+
+* Do not promote if it improves return but does not improve execution-tree surfaces.
+* Require calibrated probabilities or explicit uncertainty bands.
+* Use sklearn calibration or MAPIE-style prediction sets to convert model confidence into `factor_uncertainty`.
+
+## Workstream 4: BBN Evidence Upgrade
+
+Current lesson:
+
+BBN macro-F1 can be weak while still useful as an anti-momentum / conditional execution overlay. Therefore, the BBN should not be judged only by classifier macro-F1.
+
+BBN next targets:
+
+1. capital allocation / sleeve sizing;
+2. stress/crash protection;
+3. strategy-family selection inside regime;
+4. evidence contradiction detection.
+
+New evidence candidates:
+
+* skew;
+* put/call open interest;
+* options volume imbalance;
+* GEX / gamma flip;
+* futures basis;
+* VIX term-structure slope and curvature;
+* VVIX/VIX;
+* single-name breadth;
+* cross-sectional dispersion;
+* credit / rates proxy if available.
+
+Acceptance:
+
+* A BBN overlay must show:
+
+  * Sharpe lift or drawdown reduction;
+  * robust rolling windows;
+  * no collapse in pure-bull single-regime years;
+  * clear opportunity-cost accounting.
+* V2 baseline remains the steady-state reference.
+* V2.5-style filters are conditional sleeves, not universal replacements.
+
+## Workstream 5: Family G Replayable Options / Dealer Evidence
+
+Problem:
+
+`--auxiliary-evidence` exists, but no reliable reusable options/dealer artifact is available. Do not keep retrying Yahoo/live paths as if provider failure were model failure.
+
+Create artifact format:
+
+`AuxiliaryMarketEvidence.v2.json`
+
+Required fields:
+
+* `spot_symbol`;
+* `options_symbol`;
+* `asof`;
+* `source`;
+* `spot_price`;
+* `iv_atm`;
+* `iv_rank`;
+* `term_structure`;
+* `put_call_oi_ratio`;
+* `put_call_volume_ratio`;
+* `gamma_exposure_total`;
+* `gamma_flip_level`;
+* `call_wall`;
+* `put_wall`;
+* `dealer_regime`;
+* `data_quality`;
+* `staleness_seconds`.
+
+Data paths to test:
+
+1. OpenBB options chains;
+2. CBOE-exported CSV when available;
+3. broker/export snapshots;
+4. local cached snapshots;
+5. TradingView only if authenticated/replayable;
+6. no live-only data unless persisted.
+
+Acceptance:
+
+* Every Family G run must cite its auxiliary artifact path.
+* No Family G candidate can be accepted from an unpersisted live fetch.
+* Mark each lane as:
+
+  * `covered`;
+  * `cache_only`;
+  * `credential_missing`;
+  * `provider_blocked`;
+  * `stale`;
+  * `data_missing`.
+
+## Workstream 6: Entry-Drought Diagnostic
+
+Problem:
+
+The 100-slice summary says entry drought must be investigated before trusting 8Y performance estimates.
+
+Create helper:
+
+`entry_drought_diagnostic_v2.py`
+
+Tests:
+
+* Compare candidate entry counts by year, regime, timeframe, and market.
+* Detect zero-entry windows.
+* Run simplified versions:
+
+  * no informative timeframe;
+  * no session filter;
+  * no PDA filter;
+  * no regime filter;
+  * one-condition-at-a-time ablation;
+  * wider threshold variants.
+* Separate:
+
+  * data alignment issue;
+  * over-gating issue;
+  * strategy logic issue;
+  * true regime scarcity.
+
+Acceptance:
+
+* No execution factor promotion if it has unexplained multi-year entry drought.
+* If removing one condition restores density, mark that condition as suspect.
+* If no simplification restores density, retire or rewrite the strategy class.
+
+## Workstream 7: Fast Factor Matrix / Portfolio Diversity
+
+Use vectorized external matrix testing for early exploration, then import only serious candidates back into `ict-engine`.
+
+Candidate families to add:
+
+* trend / CTA;
+* cross-sectional momentum;
+* mean reversion / liquidity;
+* VRP / IV-HV compression;
+* term-structure inversion;
+* dealer gamma / options pressure;
+* session-liquidity;
+* crash-protection sleeve;
+* carry / funding where data exists.
+
+Acceptance:
+
+* Do not rank only by standalone Sharpe.
+* Track:
+
+  * pairwise return correlation;
+  * incremental portfolio Sharpe;
+  * drawdown contribution;
+  * payoff shape;
+  * stress-period correlation.
+* Prefer a weaker but orthogonal factor over a stronger duplicate if portfolio-level metrics improve.
+
+## Workstream 8: Validation Standard
+
+Every promoted model or factor must include:
+
+* train/test dates;
+* market list;
+* timeframe list;
+* provider/cache source;
+* feature set;
+* label source;
+* purging/embargo setting;
+* walk-forward windows;
+* per-window metrics;
+* failure modes;
+* execution-tree before/after.
+
+Minimum validation matrix:
+
+* NQ: `1m/5m/15m/1h/4h/1d`;
+* ES: at least `15m/1h/4h/1d`;
+* SPY/QQQ/IWM if data reachable;
+* `1w/1M` prepared or explicitly marked missing;
+* one non-index market only after index matrix is stable.
+
+Stop rule:
+
+* Stop a lane if it repeats the same failure cluster three times.
+* Stop if improvement is only backtest return and not regime / evidence / execution-tree movement.
+* Stop if data is provider-blocked after the full attempt matrix is logged.
+
+## Immediate Next 5 Tasks
+
+1. Implement HMM/Viterbi independent labels for NQ `15m/1h/4h/1d`.
+2. Implement ruptures change-point labels for the same ladder.
+3. Train CatBoost policy surface for `continuation / hesitation / failure` using purged walk-forward labels.
+4. Build `AuxiliaryMarketEvidence.v2` snapshot schema and test OpenBB/CBOE/local options-chain ingestion.
+5. Run entry-drought diagnostic across current promotable execution candidates before adding more strategies.
+
+## Expected Output After Next Slice
+
+Each next slice must append:
+
+* what was run;
+* exact command;
+* data span;
+* market/timeframe coverage;
+* model/factor candidates;
+* metrics;
+* execution-tree before/after;
+* whether the result changes:
+
+  * regime confidence;
+  * BBN evidence quality;
+  * CatBoost policy vote;
+  * execution readiness;
+  * portfolio diversity.
+
+---
+
+我会把优先级压成一句话：**先补 HMM + change-point 独立 regime labels，再训练 CatBoost policy surface；同时把 Family G options/dealer 数据做成可 replay artifact。** 这三件事比继续堆新策略更能提高项目完备性。
+
+[1]: https://www.mdpi.com/1911-8074/13/12/311?utm_source=chatgpt.com "Regime-Switching Factor Investing with Hidden Markov Models"
+[2]: https://github.com/deepcharles/ruptures?utm_source=chatgpt.com "ruptures: change point detection in Python - GitHub"
+[3]: https://deepwiki.com/quantopian/mlfinlab/5.2-cross-validation?utm_source=chatgpt.com "Cross-Validation | quantopian/mlfinlab | DeepWiki"
+[4]: https://github.com/nkonts/barrier-method?utm_source=chatgpt.com "GitHub - nkonts/barrier-method: An expansion of the Triple-Barrier ..."
+[5]: https://papers.neurips.cc/paper/7898-catboost-unbiased-boosting-with-categorical-features.pdf?utm_source=chatgpt.com "CatBoost: unbiased boosting with categorical features"
+[6]: https://arxiv.org/abs/1912.09363?utm_source=chatgpt.com "Temporal Fusion Transformers for Interpretable Multi-horizon Time Series Forecasting"
+[7]: https://arxiv.org/abs/1808.03668?utm_source=chatgpt.com "DeepLOB: Deep Convolutional Neural Networks for Limit Order Books"
+[8]: https://www.newyorkfed.org/medialibrary/media/research/staff_reports/sr867.pdf?utm_source=chatgpt.com "Equity Volatility Term Premia - Federal Reserve Bank of New York"
+[9]: https://github.com/hmmlearn/hmmlearn?utm_source=chatgpt.com "GitHub - hmmlearn/hmmlearn: Hidden Markov Models in Python, with scikit ..."
+[10]: https://github.com/catboost/catboost?utm_source=chatgpt.com "GitHub - catboost/catboost: A fast, scalable, high performance Gradient ..."
+[11]: https://mlfinpy.readthedocs.io/?utm_source=chatgpt.com "Mlfin.py"
+[12]: https://github.com/microsoft/qlib?utm_source=chatgpt.com "GitHub - microsoft/qlib: Qlib is an AI-oriented Quant investment ..."
+[13]: https://github.com/OpenBB-finance/OpenBB?utm_source=chatgpt.com "GitHub - OpenBB-finance/OpenBB: Financial data platform for analysts ..."
+[14]: https://github.com/VandersonTorres/gamma-exposure-indicator?utm_source=chatgpt.com "Gamma Exposure Indicator - GitHub"
+[15]: https://vectorbt.dev/?utm_source=chatgpt.com "Getting started - VectorBT"
+[16]: https://scikit-learn.org/stable/modules/calibration.html?utm_source=chatgpt.com "1.16. Probability calibration — scikit-learn 1.8.0 documentation"
+[17]: https://github.com/sktime/sktime?utm_source=chatgpt.com "GitHub - sktime/sktime: A unified framework for machine learning with ..."
+[18]: https://github.com/zcakhaa/DeepLOB-Deep-Convolutional-Neural-Networks-for-Limit-Order-Books?utm_source=chatgpt.com "zcakhaa/DeepLOB-Deep-Convolutional-Neural-Networks-for-Limit-Order-Books"
+
+---
+
+## 2026-05-07 Next Slice: change-point helper + entry-drought v2
+
+### what was run
+
+* Added `support/scripts/auto_quant_external/external_regime_changepoint_labels.py` as an offline helper for independent change-point regime labels.
+* Added `support/scripts/auto_quant_external/entry_drought_diagnostic_v2.py` to extend the earlier drought diagnostic with gate ablations, suspect-gate ranking, issue classification, and `TomacNQ_RegimeVRPCompression15m` coverage.
+* Added `support/scripts/auto_quant_external/tests/test_next_slice_helpers.py` to pin the minimal helper behavior:
+  * nearby breakpoints cluster correctly;
+  * transition proximity peaks around breakpoints;
+  * gate-ablation ranking identifies the binding gate and classifies the issue as over-gating.
+
+### exact command
+
+* Failing-first unit test:
+  * `python3 -m unittest support/scripts/auto_quant_external/tests/test_next_slice_helpers.py`
+  * first failure: `ModuleNotFoundError: No module named 'entry_drought_diagnostic_v2'`
+* Green verification after implementation:
+  * `python3 -m unittest support/scripts/auto_quant_external/tests/test_next_slice_helpers.py`
+  * `python3 -m py_compile support/scripts/auto_quant_external/external_regime_changepoint_labels.py support/scripts/auto_quant_external/entry_drought_diagnostic_v2.py support/scripts/auto_quant_external/tests/test_next_slice_helpers.py`
+* Real entry-drought run:
+  * `uv run --with pandas --with numpy --with pyarrow python3 support/scripts/auto_quant_external/entry_drought_diagnostic_v2.py --candidate TomacNQ_RegimeTrendPullbackDense15m --candidate TomacNQ_RegimeLiquiditySweepReclaim15mWide --candidate TomacNQ_RegimePersistenceClusterDense15m --candidate TomacNQ_RegimeVRPCompression15m --json-out /tmp/ict-engine-entry-drought-v2.json`
+* Bounded change-point smoke:
+  * `uv run --with pandas --with numpy --with pyarrow --with ruptures python3 - <<'PY' ... head(120) ... algorithms=['window'] ... PY`
+
+### data span
+
+* Entry-drought v2:
+  * NQ `15m`, `1h`, `4h`
+  * span: `2018-01-01` to `2025-12-31`
+  * external daily IV/HV inputs from `/tmp/ict-engine-ibkr-probe/qqq.iv.1d.10y.csv` and `/tmp/ict-engine-ibkr-probe/qqq.hv.1d.10y.csv`
+* Bounded change-point smoke:
+  * NQ `15m`
+  * first 120 bars from `/Users/thrill3r/Auto-Quant/user_data/data/NQ_USD-15m.feather`
+
+### market/timeframe coverage
+
+* This slice did not expand cross-market coverage yet.
+* Coverage gained:
+  * entry-drought tooling now explicitly covers four current 15m promotable candidates, including the IV/HV compression lane;
+  * change-point helper path is implemented and locally smoke-tested on bounded NQ `15m`.
+
+### model/factor candidates
+
+* `TomacNQ_RegimeTrendPullbackDense15m`
+* `TomacNQ_RegimeLiquiditySweepReclaim15mWide`
+* `TomacNQ_RegimePersistenceClusterDense15m`
+* `TomacNQ_RegimeVRPCompression15m`
+
+### metrics
+
+From `/tmp/ict-engine-entry-drought-v2.json`:
+
+* `TomacNQ_RegimeTrendPullbackDense15m`
+  * `issue_class=over_gating_issue`
+  * `baseline_density=0.238631`
+  * top suspect gates:
+    * `reacceleration` with `density_lift=0.211578`
+    * `liquid_window` with `density_lift=0.137290`
+    * `trend_or` with `density_lift=0.042254`
+* `TomacNQ_RegimeLiquiditySweepReclaim15mWide`
+  * `issue_class=over_gating_issue`
+  * `baseline_density=0.010310`
+  * top suspect gates:
+    * `sweep_and_reclaim` with `density_lift=0.152448`
+    * `body_strength_25` with `density_lift=0.021380`
+* `TomacNQ_RegimePersistenceClusterDense15m`
+  * `issue_class=over_gating_issue`
+  * `baseline_density=0.319375`
+  * top suspect gates:
+    * `liquid_window` with `density_lift=0.176476`
+    * `persistence` with `density_lift=0.082344`
+    * `trend_or` with `density_lift=0.047380`
+* `TomacNQ_RegimeVRPCompression15m`
+  * `issue_class=over_gating_issue`
+  * `baseline_density=0.029796`
+  * top suspect gates:
+    * `liquid_window` with `density_lift=0.050203`
+    * `bullish_body` with `density_lift=0.021130`
+    * `not_collapsing` with `density_lift=0.013484`
+
+From the bounded change-point smoke:
+
+* helper completed on 120 NQ `15m` bars in about 9 seconds using the `window` detector
+* produced 3 clustered breakpoints at bars `40`, `65`, `90`
+* produced 4 segment summaries over 120 rows
+
+### execution-tree before/after
+
+* No `ict-engine analyze` / execution-tree import path was run in this slice.
+* Therefore there is no new execution-tree before/after delta yet.
+* This slice is tooling/evidence preparation for the next regime-validation lane, not a runtime-closure claim.
+
+### whether the result changes
+
+* regime confidence:
+  * slightly up on process quality, not on regime accuracy yet
+  * reason: the project now has a concrete offline change-point helper path plus a bounded smoke result, but not yet the full `15m/1h/4h/1d` benchmark matrix
+* BBN evidence quality:
+  * unchanged
+* CatBoost policy vote:
+  * unchanged
+* execution readiness:
+  * unchanged at runtime level
+  * improved at research-loop level because the drought tooling now identifies which gate to relax before writing more near-duplicate strategies
+* portfolio diversity:
+  * unchanged directly
+  * but the drought output shows which candidate families are sparse for different reasons, which helps avoid continuing density-starved duplicates blindly
+
+### conclusion
+
+* Immediate Task 5 is now materially advanced:
+  * there is a real `entry_drought_diagnostic_v2.py` output for the current 15m candidate set, not just a narrative note
+* Immediate Task 2 is partially advanced:
+  * the change-point helper exists, is unit-tested, compiles, and passes a bounded NQ `15m` smoke
+  * the full `NQ 15m/1h/4h/1d` ladder benchmark is still not done
+* The next high-signal move is now narrower:
+  * wire `external_regime_changepoint_labels.py` into a benchmarkable `15m/1h/4h/1d` matrix
+  * then use the v2 drought output to relax the specific binding gates instead of adding more same-shape strategy variants
