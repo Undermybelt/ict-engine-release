@@ -4513,11 +4513,7 @@ fn run_expansion_sop(
                 &resolved_multi_timeframe_inputs,
             )?
             .into_iter()
-            .chain(
-                build_multi_timeframe_research_signal(&resolved_multi_timeframe_inputs)?
-                    .summary
-                    .into_iter(),
-            )
+            .chain(build_multi_timeframe_research_signal(&resolved_multi_timeframe_inputs)?.summary)
             .collect::<Vec<_>>();
             let scores =
                 expansion_factor_scores_for_market(registry, &candles, lookback, atr_multiplier)?;

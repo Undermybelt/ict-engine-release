@@ -396,7 +396,7 @@ pub(crate) fn build_workflow_snapshot(input: BuildWorkflowSnapshotInput<'_>) -> 
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
-    phases.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    phases.sort_by_key(|phase| phase.timestamp);
     let current = phases.last().cloned();
     let blocking_truth = workflow_blocking_truth(
         symbol,
