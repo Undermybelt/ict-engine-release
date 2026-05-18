@@ -1,0 +1,46 @@
+{
+  "artifact_version": "catboost-policy-v1",
+  "model_family": "catboost",
+  "target_kind": "post_bbn_policy_action",
+  "feature_schema_version": "policy_features_v1",
+  "categorical_features": [
+    "factor_alignment",
+    "factor_uncertainty",
+    "gating_status",
+    "selected_entry_quality",
+    "recommended_command",
+    "selected_direction"
+  ],
+  "numerical_features": [
+    "evidence_quality_score",
+    "risk_reward",
+    "kelly_fraction"
+  ],
+  "target_label_space": ["Observe", "Bull", "Bear"],
+  "trees": [
+    {
+      "feature": "gating_status",
+      "split_type": "categorical",
+      "threshold": null,
+      "category_match": "observe_only",
+      "yes": 0,
+      "no": 1
+    }
+  ],
+  "leaf_outputs": [
+    {
+      "leaf_id": "leaf_observe_only",
+      "action": "Observe",
+      "qualification": "disqualified",
+      "confidence_band": "low",
+      "recommended_command": "recommended_command_unavailable",
+      "invalidation_triggers": [
+        "gate_changes_from=observe_only"
+      ]
+    }
+  ],
+  "notes": [
+    "example_external_training_artifact",
+    "schema_only_not_runtime_binding"
+  ]
+}

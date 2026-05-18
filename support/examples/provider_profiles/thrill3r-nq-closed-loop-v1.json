@@ -1,0 +1,179 @@
+{
+  "schema_version": "provider-profile/v1",
+  "profile_id": "thrill3r_nq_closed_loop_v1",
+  "display_name": "Thrill3r NQ Closed Loop v1",
+  "opt_in_only": true,
+  "summary": "Personal NQ workflow: local Tomac historical MTF data plus QQQ spot/options and VIX, with yfinance zero-config first and optional external runtime reuse.",
+  "data_contracts": [
+    {
+      "contract_id": "tomac_clean_root",
+      "category": "historical",
+      "required": true,
+      "label": "Tomac cleaned multi-timeframe futures root",
+      "symbols": ["NQ"],
+      "timeframes": ["1d", "1h", "15m"],
+      "path_hint": "<cleaned-mtf-root>",
+      "notes": [
+        "Optional deeper drill-down uses 5m and 1m if available."
+      ]
+    },
+    {
+      "contract_id": "qqq_spot_context",
+      "category": "market_context",
+      "required": true,
+      "label": "Paired ETF context",
+      "symbols": ["QQQ"],
+      "timeframes": ["1d", "1h", "15m"],
+      "notes": [
+        "Used for paired spot structure and context."
+      ]
+    },
+    {
+      "contract_id": "vix_overlay",
+      "category": "market_context",
+      "required": true,
+      "label": "Volatility overlay",
+      "symbols": ["^VIX"],
+      "timeframes": ["1d", "1h"],
+      "notes": [
+        "Used for volatility regime overlay."
+      ]
+    },
+    {
+      "contract_id": "qqq_options_surface",
+      "category": "options",
+      "required": true,
+      "label": "QQQ options Greeks / IV / OI",
+      "symbols": ["QQQ"],
+      "timeframes": ["snapshot"],
+      "notes": [
+        "The workflow expects explicit Greeks, implied volatility, and open interest when options enrichment is active."
+      ]
+    },
+    {
+      "contract_id": "live_symbol_bindings",
+      "category": "live",
+      "required": false,
+      "label": "Live analyze symbol bindings",
+      "symbols": ["NQ=F", "QQQ"],
+      "timeframes": ["live"],
+      "notes": [
+        "Futures uses NQ=F; spot and options use QQQ."
+      ]
+    },
+    {
+      "contract_id": "kraken_authenticated_credentials",
+      "category": "credentials",
+      "required": false,
+      "label": "Kraken authenticated API credentials",
+      "symbols": ["BTCUSD", "ETHUSD"],
+      "timeframes": ["rest", "websocket"],
+      "notes": [
+        "Use for authenticated kraken-cli workflows only.",
+        "The official kraken-cli auth surface uses the REST API key/secret pair; websocket key material remains external unless a later local integration needs it."
+      ]
+    }
+  ],
+  "provider_tracks": [
+    {
+      "track_id": "research_zero_config",
+      "label": "Zero-config research companion data",
+      "required": true,
+      "mode": "any_of",
+      "provider_ids": ["yfinance"],
+      "activation_hints": [
+        "factor-research",
+        "factor-backtest",
+        "market-data-harness",
+        "research",
+        "backtest"
+      ],
+      "notes": [
+        "YFinance is the zero-config first choice for public research companion data."
+      ]
+    },
+    {
+      "track_id": "options_enriched",
+      "label": "Options Greeks / IV / OI enrichment",
+      "required": true,
+      "mode": "any_of",
+      "provider_ids": ["tradingview_mcp"],
+      "activation_hints": [
+        "market-data-harness",
+        "factor-research",
+        "factor-backtest",
+        "options",
+        "greeks",
+        "implied_volatility",
+        "open_interest"
+      ],
+      "notes": [
+        "Required when the workflow wants explicit options enrichment rather than a public-HTTP fallback."
+      ]
+    },
+    {
+      "track_id": "live_zero_config",
+      "label": "Zero-config live analyze",
+      "required": true,
+      "mode": "any_of",
+      "provider_ids": ["yfinance"],
+      "activation_hints": [
+        "analyze-live",
+        "live"
+      ],
+      "notes": [
+        "Use this first when the user wants the no-setup path."
+      ]
+    },
+    {
+      "track_id": "live_operator_runtime",
+      "label": "Operator-managed live runtime reuse",
+      "required": false,
+      "mode": "any_of",
+      "provider_ids": ["external_http_runtime", "crypto_public_runtime"],
+      "activation_hints": [
+        "analyze-live",
+        "live",
+        "external_http_runtime",
+        "crypto_public_runtime"
+      ],
+      "notes": [
+        "Opt in only when the user explicitly wants an external or crypto-public runtime instead of the zero-config yfinance lane."
+      ]
+    },
+    {
+      "track_id": "ibkr_local_bridge",
+      "label": "IBKR local bridge reuse",
+      "required": false,
+      "mode": "all_of",
+      "provider_ids": ["ibkr", "ibkr_bridge"],
+      "activation_hints": [
+        "ibkr",
+        "gateway",
+        "tws",
+        "historical",
+        "live"
+      ],
+      "notes": [
+        "Opt in only when the user explicitly wants IBKR local access."
+      ]
+    },
+    {
+      "track_id": "kraken_cli_authenticated",
+      "label": "Kraken CLI authenticated workflow",
+      "required": false,
+      "mode": "any_of",
+      "provider_ids": ["kraken_cli"],
+      "activation_hints": [
+        "kraken",
+        "crypto",
+        "rest",
+        "websocket",
+        "wallet"
+      ],
+      "notes": [
+        "Opt in only when the user explicitly wants Kraken CLI-backed workflows."
+      ]
+    }
+  ]
+}

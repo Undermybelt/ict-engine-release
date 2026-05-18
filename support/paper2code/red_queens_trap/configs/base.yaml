@@ -1,0 +1,24 @@
+# Configuration for Red Queen's Trap safety module
+# Paper: https://arxiv.org/abs/2512.15732v1
+
+friction:
+  taker_fee_pct: 0.04       # §3 — "Taker Fee of 0.04%"
+  slippage_pct: 0.02        # §3 — "dynamic Slippage averaging 0.02%"
+  # Round-trip = 2 × (0.04% + 0.02%) = 0.12%
+
+survivor_bias:
+  stagnation_warning_threshold: 0.3    # warn if >30% stagnant
+  bias_gap_warning_threshold: 0.01     # warn if survivor bias >1%
+  zombie_return_threshold: 0.0         # zombie = alive but negative return
+
+mode_collapse:
+  correlation_warning_threshold: 0.7   # warn if mean correlation >0.7
+  effective_n_minimum: 2.0             # warn if effective strategies <2
+  direction_agreement_threshold: 0.8   # warn if >80% same direction
+  correlated_dd_threshold: 0.2         # warn if >20% periods all down
+
+capital_decay:
+  decay_warning_threshold: 0.3         # warn if total decay >30%
+  drawdown_warning_threshold: 0.2      # warn if max drawdown >20%
+  bailout_warning_threshold: 0.1       # warn if bailouts >10% of initial
+  catastrophic_threshold: 0.5          # §5 — >50% = catastrophic

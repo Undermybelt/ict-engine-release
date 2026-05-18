@@ -1,0 +1,43 @@
+# §Bornholdt model + §Monte Carlo simulation 超参数
+# 每个参数标注来源章节
+
+model:
+  # §Bornholdt model: minority effect α=10
+  alpha: 10.0
+  
+  # §Bornholdt model: inverse temperature β=1.7
+  beta: 1.7
+  
+  # §Monte Carlo simulation: "two-dimensional lattice composed of 32×32 agents"
+  lattice_size: 32
+
+simulation:
+  # §Monte Carlo simulation: "1,000,000 iterations"
+  n_iterations: 1000000
+  
+  # §Monte Carlo simulation: "warm-up period of approximately t<100,000"
+  warmup: 100000
+  
+  # §Monte Carlo simulation: "Δt=100"
+  delta_t: 100
+  
+  # §Monte Carlo simulation: "square with periodic boundary conditions"
+  periodic_bc: true
+
+coupling:
+  # [UNSPECIFIED] 论文只说"neighbour interaction"未给 J_ij 具体值
+  # Using: J=1 for nearest neighbors (标准 Ising)
+  # Alternatives: random coupling, distance-decay
+  J: 1.0
+  neighbor_type: "nearest"  # nearest | all_to_all | random
+
+analysis:
+  # §Autocorrelation of Returns: "τ={0,...,150}"
+  max_lag: 150
+  
+  # §Autocorrelation of Returns: η 在 [0.2, 0.4]
+  eta_empirical_min: 0.2
+  eta_empirical_max: 0.4
+  
+  # §Inferential Statistics: normality test threshold
+  normality_alpha: 0.05

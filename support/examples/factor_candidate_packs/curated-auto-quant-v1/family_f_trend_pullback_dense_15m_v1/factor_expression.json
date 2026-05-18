@@ -1,0 +1,60 @@
+{
+  "schema_version": "factor-expression/v1",
+  "candidate_id": "family_f_trend_pullback_dense_15m_v1",
+  "display_name": "Trend Pullback Dense 15m",
+  "family": "Family F",
+  "status": "active",
+  "promotion_state": "candidate_only",
+  "strategy_name": "TomacNQ_RegimeTrendPullbackDense15m",
+  "mutation_id": null,
+  "base_factor": null,
+  "expression_text": "liquid_window and (higher_trend_4h or higher_trend_1h or local_trend) and near_ema21 <= 2.4 and reacceleration and 35 <= rsi <= 74",
+  "operator_set": [
+    "liquid_window",
+    "ema_fast_4h",
+    "ema_slow_4h",
+    "ema_fast_1h",
+    "ema_slow_1h",
+    "ema21",
+    "ema89",
+    "near_ema21",
+    "rsi"
+  ],
+  "complexity": 9,
+  "paradigm": "trend continuation pullback",
+  "expected_regime": null,
+  "target_market_hypothesis": [
+    "NQ/USD"
+  ],
+  "base_timeframe": "15m",
+  "context_timeframes": [
+    "1h",
+    "4h"
+  ],
+  "regime_role": "execution_only",
+  "evidence_window": "freqtrade 8Y: 2018-01-01 -> 2025-12-31",
+  "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeTrendPullbackDense15m.py",
+  "filter_belief_execution_mapping": {
+    "pre_bayes_targets": [
+      "trend_setup_gate",
+      "regime_conflict_filter"
+    ],
+    "belief_targets": [
+      "entry_quality",
+      "multi_timeframe_resonance"
+    ],
+    "path_ranking_targets": [
+      "recommended_path_bundle",
+      "structural_path_confidence"
+    ],
+    "execution_tree_targets": [
+      "execution_readiness",
+      "prediction_vote_score"
+    ],
+    "execution_tree_blockers_intended": [
+      "bearish_stress_conflict",
+      "term_structure_backwardation_conflict"
+    ],
+    "structural_feedback_required": true
+  }
+}

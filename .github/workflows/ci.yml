@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - green-baseline
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          cache-bin: false
+
+      - name: Toolchain sanity
+        run: |
+          command -v rustup
+          command -v cargo
+          command -v rustfmt
+          rustup --version
+          cargo --version
+          cargo fmt --version
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Docs runtime isolation
+        run: python3 support/scripts/ci/check_docs_runtime_isolation.py
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test

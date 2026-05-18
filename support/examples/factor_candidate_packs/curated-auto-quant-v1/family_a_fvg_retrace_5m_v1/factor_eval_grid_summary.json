@@ -1,0 +1,52 @@
+{
+  "schema_version": "factor-eval-grid-summary/v1",
+  "selected_strategy": "TomacNQ_RegimeFVGRetrace5m",
+  "timeframe": "1h",
+  "candidate_status": "active",
+  "promotion_state": "candidate_only",
+  "breadth_matrix": {
+    "NQ/USD": {
+      "status": "covered",
+      "trade_count": 82,
+      "trade_density_label": "preferred_density",
+      "sharpe": -0.019861949257550405,
+      "win_rate_pct": 41.463415,
+      "profit_factor": 0.8398779191759544,
+      "total_profit_pct": -0.47,
+      "max_drawdown_pct": 1.716007
+    }
+  },
+  "trade_density_summary": {
+    "aggregate_trade_count": 82,
+    "aggregate_label": "preferred_density",
+    "covered_market_count": 1
+  },
+  "aggregate_metrics": {
+    "sharpe": -0.019861949257550405,
+    "win_rate_pct": 41.463415,
+    "profit_factor": 0.8398779191759544,
+    "total_profit_pct": -0.47008,
+    "max_drawdown_pct": 1.716007,
+    "trade_count": 82
+  },
+  "resonance_summary": {
+    "base_timeframe": "5m",
+    "context_stack": [
+      "15m",
+      "1h",
+      "4h"
+    ],
+    "resonance_by_timeframe": {
+      "15m": "fast_trend_vote",
+      "1h": "primary_trend_vote",
+      "4h": "macro_trend_vote"
+    }
+  },
+  "autoresearch": {
+    "effective_status": null,
+    "decision_counts": {},
+    "failure_tag_counts": {},
+    "best_attempt_score_delta": null
+  },
+  "cross_market_evidence": {}
+}

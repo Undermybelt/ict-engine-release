@@ -1,0 +1,61 @@
+{
+  "volatility": {
+    "low_threshold": 0.2,
+    "normal_threshold": 0.6,
+    "elevated_threshold": 0.9,
+    "crisis_threshold": 0.95,
+    "atr_period": 14,
+    "percentile_lookback": 252,
+    "clustering_window": 20
+  },
+  "liquidity": {
+    "high_threshold": 0.7,
+    "low_threshold": 0.3,
+    "range_high_liq_threshold": 0.4,
+    "volume_lookback": 20,
+    "range_lookback": 20
+  },
+  "structure": {
+    "trend_threshold": 25.0,
+    "mean_revert_threshold": 0.02,
+    "range_ratio_threshold": 0.6,
+    "adx_period": 14,
+    "ma_period": 20,
+    "range_lookback": 50
+  },
+  "behavior": {
+    "volume_spike_threshold": 2.0,
+    "rsi_extreme_threshold": 75.0,
+    "crowding_window": 10,
+    "exhaustion_window": 20,
+    "rsi_period": 14
+  },
+  "aggregate_weights": {
+    "volatility": 0.3,
+    "liquidity": 0.2,
+    "structure": 0.3,
+    "behavior": 0.2
+  },
+  "enhanced_aggregation": {
+    "extreme_min_confidence": 0.65,
+    "trend_min_confidence": 0.5,
+    "reversal_min_confidence": 0.5,
+    "consistency_weight": 0.1,
+    "base_confidence": 0.5,
+    "volatility_weight": 0.12,
+    "liquidity_weight": 0.08,
+    "structure_weight": 0.55,
+    "behavior_weight": 0.25,
+    "high_consistency_bonus": 0.05,
+    "medium_consistency_bonus": 0.02,
+    "price_direction_window": 20,
+    "price_direction_threshold": 2.0
+  },
+  "enabled": {
+    "volatility": true,
+    "liquidity": true,
+    "structure": true,
+    "behavior": true
+  },
+  "user_label": "nq_confidence_profile"
+}

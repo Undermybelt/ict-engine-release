@@ -1,0 +1,76 @@
+"""
+TomacNQ_RegimePersistenceClusterWide — denser NQ trend-persistence regime candidate.
+
+Paradigm: regime-cluster persistence
+Hypothesis: The first persistence candidate was profitable but anecdotal; relaxing the EMA-count and ADX filters should reveal whether persistence is density-constrained or genuinely rare in this NQ slice.
+Parent: TomacNQ_RegimePersistenceCluster
+Created: 2026-05-06
+Status: active external candidate
+Uses MTF: yes
+"""
+from __future__ import annotations
+
+import talib.abstract as ta
+from freqtrade.strategy import IStrategy, informative
+from pandas import DataFrame
+
+
+class TomacNQ_RegimePersistenceClusterWide(IStrategy):
+    INTERFACE_VERSION = 3
+
+    timeframe = "1h"
+    can_short = False
+
+    minimal_roi = {"0": 100}
+    stoploss = -0.026
+
+    trailing_stop = True
+    trailing_stop_positive = 0.005
+    trailing_stop_positive_offset = 0.012
+    trailing_only_offset_is_reached = True
+
+    process_only_new_candles = True
+    use_exit_signal = True
+    exit_profit_only = False
+    ignore_roi_if_entry_signal = False
+
+    startup_candle_count: int = 240
+
+    @informative("4h")
+    def populate_indicators_4h(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe["ema_fast"] = ta.EMA(dataframe, timeperiod=21)
+        dataframe["ema_slow"] = ta.EMA(dataframe, timeperiod=89)
+        return dataframe
+
+    def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe["ema13"] = ta.EMA(dataframe, timeperiod=13)
+        dataframe["ema34"] = ta.EMA(dataframe, timeperiod=34)
+        dataframe["ema89"] = ta.EMA(dataframe, timeperiod=89)
+        dataframe["rsi"] = ta.RSI(dataframe, timeperiod=14)
+        dataframe["atr"] = ta.ATR(dataframe, timeperiod=14)
+        dataframe["ema13_slope"] = dataframe["ema13"].diff(3) / dataframe["atr"]
+        dataframe["above_ema13_count"] = (
+            (dataframe["close"] > dataframe["ema13"]).rolling(5).sum()
+        )
+        dataframe["hour_utc"] = dataframe["date"].dt.hour
+        return dataframe
+
+    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe["enter_long"] = 0
+        liquid_window = (dataframe["hour_utc"] >= 10) & (dataframe["hour_utc"] <= 22)
+        higher_trend = dataframe["ema_fast_4h"] > dataframe["ema_slow_4h"]
+        ema_stack = (dataframe["ema13"] > dataframe["ema34"]) & (dataframe["ema34"] > dataframe["ema89"])
+        persistence = (dataframe["above_ema13_count"] >= 3) & (dataframe["ema13_slope"] > -0.03)
+        not_exhausted = (dataframe["rsi"] >= 46) & (dataframe["rsi"] <= 74)
+        dataframe.loc[
+            liquid_window & higher_trend & ema_stack & persistence & not_exhausted,
+            "enter_long",
+        ] = 1
+        return dataframe
+
+    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe["exit_long"] = 0
+        lost_persistence = dataframe["close"] < dataframe["ema34"]
+        exhausted = dataframe["rsi"] > 80
+        dataframe.loc[lost_persistence | exhausted, "exit_long"] = 1
+        return dataframe

@@ -1,0 +1,59 @@
+{
+  "schema_version": "factor-expression/v1",
+  "candidate_id": "family_f_vrp_compression_15m_v1",
+  "display_name": "VRP Compression 15m",
+  "family": "Family F",
+  "status": "active",
+  "promotion_state": "promotable",
+  "strategy_name": "TomacNQ_RegimeVRPCompression15m",
+  "mutation_id": null,
+  "base_factor": null,
+  "expression_text": "iv_pct_rank_252 < 0.30 and hv_pct_rank_252 < 0.30 and close > ema89 and ema_fast_4h > ema_slow_4h and bullish_body",
+  "operator_set": [
+    "iv_pct_rank_252",
+    "hv_pct_rank_252",
+    "ema89",
+    "ema_fast_4h",
+    "ema_slow_4h",
+    "bullish_body"
+  ],
+  "complexity": 6,
+  "paradigm": "vol-regime compression",
+  "expected_regime": null,
+  "target_market_hypothesis": [
+    "NQ/USD",
+    "GLD/USD",
+    "IWM/USD"
+  ],
+  "base_timeframe": "15m",
+  "context_timeframes": [
+    "4h",
+    "1d"
+  ],
+  "regime_role": "mixed",
+  "evidence_window": "freqtrade 8Y: 2018-01-01 -> 2025-12-31",
+  "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeVRPCompression15m.py",
+  "filter_belief_execution_mapping": {
+    "pre_bayes_targets": [
+      "volatility_compression_gate",
+      "supportive_term_structure"
+    ],
+    "belief_targets": [
+      "bbn_vol_regime_evidence",
+      "entry_quality"
+    ],
+    "path_ranking_targets": [
+      "structural_path_confidence",
+      "recommended_path_bundle"
+    ],
+    "execution_tree_targets": [
+      "transition_guardrail",
+      "observe_gate"
+    ],
+    "execution_tree_blockers_intended": [
+      "none_on_pre_bayes",
+      "path_ranker_missing_external_scores"
+    ],
+    "structural_feedback_required": true
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "schema_version": "factor-expression/v1",
+  "candidate_id": "family_d_liquidity_sweep_reclaim_15m_wide_v1",
+  "display_name": "Liquidity Sweep Reclaim 15m Wide",
+  "family": "Family D",
+  "status": "active",
+  "promotion_state": "candidate_only",
+  "strategy_name": "TomacNQ_RegimeLiquiditySweepReclaim15mWide",
+  "mutation_id": null,
+  "base_factor": null,
+  "expression_text": "liquid_window and (higher_trend_4h or higher_trend_1h) and sweep_below and reclaim_close and body_strength > 0.25",
+  "operator_set": [
+    "liquid_window",
+    "ema_fast_4h",
+    "ema_slow_4h",
+    "ema_fast_1h",
+    "ema_slow_1h",
+    "low_12bar",
+    "low_2bar",
+    "sweep_below",
+    "reclaim_close",
+    "body_strength"
+  ],
+  "complexity": 10,
+  "paradigm": "mean reversion sweep reclaim",
+  "expected_regime": null,
+  "target_market_hypothesis": [
+    "NQ/USD"
+  ],
+  "base_timeframe": "15m",
+  "context_timeframes": [
+    "1h",
+    "4h"
+  ],
+  "regime_role": "execution_only",
+  "evidence_window": "freqtrade 8Y: 2018-01-01 -> 2025-12-31",
+  "strategy_source": "support/scripts/auto_quant_external/strategies/TomacNQ_RegimeLiquiditySweepReclaim15mWide.py",
+  "filter_belief_execution_mapping": {
+    "pre_bayes_targets": [
+      "stretch_reversion_gate",
+      "liquidity_window_gate"
+    ],
+    "belief_targets": [
+      "entry_quality",
+      "reversion_support"
+    ],
+    "path_ranking_targets": [
+      "recommended_path_bundle",
+      "structural_path_confidence"
+    ],
+    "execution_tree_targets": [
+      "execution_readiness",
+      "prediction_vote_score"
+    ],
+    "execution_tree_blockers_intended": [
+      "backwardation_conflict"
+    ],
+    "structural_feedback_required": true
+  }
+}

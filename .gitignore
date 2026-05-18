@@ -1,0 +1,17 @@
+/target
+/.DS_Store
+/.pytest_cache/
+/path_ranker_model/
+/state
+/state*/
+/state_experiments/
+/.local-artifacts/
+__pycache__/
+*.pyc
+tmp_cycle_seed_spec.json
+*.log
+catboost_info/
+
+# IBKR bridge user-local configs
+support/scripts/ibkr_bridge/my_config*
+support/scripts/ibkr_bridge/__pycache__/

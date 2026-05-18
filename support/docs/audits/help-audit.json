@@ -1,0 +1,143 @@
+{
+  "summary": {
+    "root_help_has_version_flag": true,
+    "command_count": 22,
+    "commands_with_missing_help": 0,
+    "status": "pass"
+  },
+  "commands": [
+    {
+      "command": "analyze",
+      "option_count": 12,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "analyze-live",
+      "option_count": 11,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "train",
+      "option_count": 5,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "backtest",
+      "option_count": 12,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "update",
+      "option_count": 10,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "factor-research",
+      "option_count": 15,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "factor-mutation-status",
+      "option_count": 8,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "factor-autoresearch",
+      "option_count": 18,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "factor-autoresearch-status",
+      "option_count": 6,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "research-verdict",
+      "option_count": 3,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "evidence-quality-breakdown",
+      "option_count": 4,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "factor-backtest",
+      "option_count": 12,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "clean-futures",
+      "option_count": 5,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "futures-sop",
+      "option_count": 4,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "expansion-sop",
+      "option_count": 9,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "factor-pipeline-debug",
+      "option_count": 11,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "workflow-status",
+      "option_count": 15,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "pre-bayes-status",
+      "option_count": 5,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "pre-bayes-diff",
+      "option_count": 4,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "artifact-lineage",
+      "option_count": 8,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "artifact-status",
+      "option_count": 16,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    },
+    {
+      "command": "artifact-diff",
+      "option_count": 5,
+      "missing_description_count": 0,
+      "missing_descriptions": []
+    }
+  ],
+  "missing": []
+}

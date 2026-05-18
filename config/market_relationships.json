@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "markets": [
+    {
+      "market_key": "NQ",
+      "related_futures_symbols": ["ES", "YM"],
+      "related_etf_companions": ["SPY", "DIA"],
+      "related_options_companions": ["SPY", "DIA"],
+      "related_cfd_symbols": ["NAS100", "US500", "US30"],
+      "related_crypto_symbols": ["BTC", "ETH", "SOL"],
+      "options_volatility_proxy": "^VXN"
+    },
+    {
+      "market_key": "ES",
+      "related_futures_symbols": ["NQ", "YM"],
+      "related_etf_companions": ["QQQ", "DIA"],
+      "related_options_companions": ["QQQ", "DIA"],
+      "related_cfd_symbols": ["US500", "NAS100", "US30"],
+      "related_crypto_symbols": ["BTC", "ETH"],
+      "options_volatility_proxy": "^VIX"
+    },
+    {
+      "market_key": "YM",
+      "related_futures_symbols": ["NQ", "ES"],
+      "related_etf_companions": ["QQQ", "SPY"],
+      "related_options_companions": ["QQQ", "SPY"],
+      "related_cfd_symbols": ["US30", "NAS100", "US500"],
+      "related_crypto_symbols": ["BTC", "ETH"],
+      "options_volatility_proxy": "^VIX"
+    },
+    {
+      "market_key": "GC",
+      "related_futures_symbols": ["SI"],
+      "related_etf_companions": ["SLV"],
+      "related_options_companions": ["SLV"],
+      "related_cfd_symbols": ["XAUUSD", "XAGUSD"],
+      "related_crypto_symbols": ["BTC", "ETH"],
+      "options_volatility_proxy": "^GVZ"
+    },
+    {
+      "market_key": "CL",
+      "related_futures_symbols": ["BZ"],
+      "related_etf_companions": ["BNO"],
+      "related_options_companions": ["BNO"],
+      "related_cfd_symbols": ["USOIL", "UKOIL"],
+      "related_crypto_symbols": ["BTC", "ETH", "SOL"],
+      "options_volatility_proxy": "^OVX"
+    },
+    {
+      "market_key": "BTC",
+      "related_futures_symbols": [],
+      "related_etf_companions": [],
+      "related_options_companions": [],
+      "related_cfd_symbols": ["BTCUSD"],
+      "related_crypto_symbols": ["ETH", "SOL"],
+      "options_volatility_proxy": null
+    },
+    {
+      "market_key": "ETH",
+      "related_futures_symbols": [],
+      "related_etf_companions": [],
+      "related_options_companions": [],
+      "related_cfd_symbols": ["ETHUSD"],
+      "related_crypto_symbols": ["BTC", "SOL"],
+      "options_volatility_proxy": null
+    },
+    {
+      "market_key": "SOL",
+      "related_futures_symbols": [],
+      "related_etf_companions": [],
+      "related_options_companions": [],
+      "related_cfd_symbols": ["SOLUSD"],
+      "related_crypto_symbols": ["BTC", "ETH"],
+      "options_volatility_proxy": null
+    }
+  ]
+}

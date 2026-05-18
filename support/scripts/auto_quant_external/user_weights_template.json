@@ -1,0 +1,16 @@
+{
+  "_comment": "用户可编辑此文件自定义加权求和回退权重",
+  "evidence_quality_score": 0.20,
+  "risk_reward": 0.15,
+  "kelly_fraction": 0.10,
+  "htf_alignment_score": 0.15,
+  "mtf_alignment_score": 0.10,
+  "hmm_manipulation_expansion_prob": 0.10,
+  "fvgs_open": -0.05,
+  "atr_consumption_ratio": -0.10,
+  "_notes": [
+    "正值 = 正向贡献",
+    "负值 = 风险惩罚",
+    "总和应约等于 1.0（自动归一化）"
+  ]
+}

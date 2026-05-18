@@ -1,0 +1,79 @@
+# IBKR live data bridge — example configuration
+#
+# Copy to my_config.yaml (or anywhere you like) and edit subscriptions.
+# Default file ships with `subscriptions: []` so a fresh checkout will
+# connect to Gateway, idle, and consume zero market-data lines.
+#
+# Run with:
+#     python support/scripts/ibkr_bridge/bridge.py --config support/scripts/ibkr_bridge/my_config.yaml
+
+gateway:
+  host: 127.0.0.1
+  # 7497 = paper trading (default).  7496 = live trading.
+  port: 7497
+  # Each concurrent IBKR client must use a unique clientId.
+  # Bridge default = 20.  Reserved by us:
+  #     10 = OpenAlice
+  #     20 = ibkr-bridge (this file's default)
+  #     21 = fetch_external.py ibkr-historical
+  #     99 = account probe (throwaway)
+  client_id: 20
+
+redis:
+  url: redis://localhost:6379
+
+publishing:
+  # Each Redis Stream is bounded with XADD MAXLEN ~stream_maxlen.
+  # 10000 5-second bars ≈ 14 hours of data per symbol.
+  stream_maxlen: 10000
+  # Snapshot Hash TTL.  0 = no expire (recommended).
+  snapshot_ttl_sec: 0
+
+# Subscriptions.  Empty list = idle bridge (no market-data lines consumed).
+# Each entry produces:
+#     ibkr:bars:{symbol}:5sec    (if 'real_time_bars' in feed)
+#     ibkr:ticks:{symbol}        (if 'market_data' in feed)
+#     ibkr:snapshot:{symbol}     (always, latest values)
+#
+# IBKR pacing notes:
+#     * 'real_time_bars' returns 5-second OHLC; 1 streaming line per symbol.
+#     * 'market_data' returns bid/ask/last quote ticks; 1 streaming line.
+#     * Each subscription costs 1 line whether or not you actually use it.
+#     * Default account ceiling is 100 streaming lines (see capabilities.json).
+#
+# Examples (uncomment to enable):
+
+subscriptions: []
+
+# subscriptions:
+#   - symbol: AAPL
+#     sec_type: STK
+#     exchange: SMART
+#     currency: USD
+#     feed: [real_time_bars, market_data]
+#
+#   - symbol: SPY
+#     sec_type: STK
+#     exchange: SMART
+#     currency: USD
+#     feed: [real_time_bars]
+#
+#   - symbol: EURUSD
+#     sec_type: CASH
+#     exchange: IDEALPRO
+#     currency: USD
+#     feed: [market_data]
+#
+#   - symbol: ES
+#     sec_type: FUT
+#     exchange: CME
+#     currency: USD
+#     last_trade_date: '20260619'
+#     multiplier: '50'
+#     feed: [real_time_bars]
+#
+#   - symbol: SPX
+#     sec_type: IND
+#     exchange: CBOE
+#     currency: USD
+#     feed: [market_data]

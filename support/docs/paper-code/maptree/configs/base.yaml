@@ -1,0 +1,33 @@
+# MAPTree / BCART 超参数
+# 论文：arXiv 2309.15312
+
+bcart:
+  # [UNSPECIFIED] Beta-Binomial 先验参数
+  # Using: α=β=1（均匀先验，标准选择）
+  alpha_prior: 1.0
+  beta_prior: 1.0
+  
+  # [UNSPECIFIED] 树结构先验：P(T) ∝ λ^(#leaves)
+  # Using: λ=0.5
+  complexity_penalty: 0.5
+  
+  # [UNSPECIFIED] 最大搜索深度
+  max_depth: 10
+  
+  # [UNSPECIFIED] 最小叶节点样本数
+  # Using: 5 (sklearn 默认)
+  min_samples_leaf: 5
+
+search:
+  # [UNSPECIFIED] 候选分裂点采样
+  # Using: 0 = 全部枚举（精确搜索）
+  max_thresholds: 0
+  
+  # [UNSPECIFIED] 特征采样
+  # Using: 0 = 全部特征
+  max_features: 0
+
+evaluation:
+  test_size: 0.3
+  random_state: 42
+  noise_levels: [0.0, 0.1, 0.2, 0.3]
